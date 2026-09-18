@@ -249,3 +249,37 @@ for (const opening of [1, 0.5, 0.2, 0]) {
     console.log('PD pump, valve', opening, '→', r.ok, r.error ?? '', 'Q', (r.devices.P.flow * 60000).toFixed(2), 'L/min · head', r.devices.P.dH.toFixed(1), 'm')
   }
 }
+
+// jet pump: a 40 m motive supply lifting water from a sump 3 m down into a tank 5 m up, for three area ratios
+{
+  for (const throat of [0.011, 0.014, 0.02]) {
+    const m: Model = {
+      fluid: FLUIDS[0],
+      nodes: [
+        node('HP', 'reservoir', { head: 40 }),
+        node('S', 'reservoir', { head: -3 }),
+        node('T', 'reservoir', { head: 5 }),
+        node('J', 'jetpump', { nozzleDiameter: 0.008, throatDiameter: throat }),
+      ],
+      edges: [
+        pipe('m', 'HP', 'J', 'r', 'm', { length: 5, diameter: 0.025 }),
+        pipe('s', 'S', 'J', 'r', 's', { length: 4, diameter: 0.04 }),
+        pipe('d', 'J', 'T', 'd', 'l', { length: 5, diameter: 0.04 }),
+      ],
+    }
+    const r = engine.solve(m)
+    const x = r.nodes.J?.extra
+    console.log(
+      'jet pump, throat',
+      throat * 1000,
+      'mm →',
+      r.ok,
+      r.error ?? '',
+      x
+        ? `motive ${(x.q1 * 60000).toFixed(1)} + entrained ${(x.q2 * 60000).toFixed(1)} L/min · M ${x.M.toFixed(2)} · N ${x.N.toFixed(3)} (model ${x.Nmodel.toFixed(3)}) · η ${(x.M * x.N * 100).toFixed(0)} %`
+        : '',
+      r.solveMs.toFixed(0) + ' ms',
+      r.warnings.map((w) => w.text),
+    )
+  }
+}

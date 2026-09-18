@@ -125,6 +125,12 @@ export function KindIcon({ kind }: { kind: Kind | 'pipe' | 'network' }) {
           <path d="M16 20v2M12 21l-1.500 3M20 21l1.500 3M16 26v2" stroke="var(--accent)" />
         </>
       )}
+      {kind === 'jetpump' && (
+        <>
+          <path d="M3 9h8l6 3h3l9-3M3 19h8l6-3h3l9 3M10 19v9" />
+          <path d="M3 14h13" stroke="var(--accent)" strokeWidth="2.400" />
+        </>
+      )}
       {kind === 'tee' && <path d="M3 12h26M3 20h9v9M29 20h-9v9" />}
       {kind === 'threeway' && (
         <>

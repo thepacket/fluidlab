@@ -18,6 +18,7 @@ export type Kind =
   | 'tee'
   | 'threeway'
   | 'airvalve'
+  | 'jetpump'
   | 'stager'
   | 'schedule'
   | 'timer'
@@ -144,6 +145,7 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
   leak: { name: 'Leaky joint', prefix: 'LK', blurb: 'A junction that loses water with pressure' },
   tee: { name: 'Tee (with losses)', prefix: 'TE', blurb: 'Three-way joint: run ≈ 0.4, branch ≈ 1.0' },
   threeway: { name: 'Three-way valve', prefix: 'TV', blurb: 'Mixes A and B into AB — or diverts' },
+  jetpump: { name: 'Jet pump (ejector)', prefix: 'JP', blurb: 'A motive jet entrains a second stream' },
   airvalve: { name: 'Air valve', prefix: 'AV', blurb: 'Vents air; breaks a vacuum in a surge' },
   stager: { name: 'Pump sequencer', prefix: 'SQ', blurb: 'Stages pumps on demand, rotates the lead' },
   schedule: { name: 'Setpoint scheduler', prefix: 'SC', blurb: 'Day / night value on the lab clock' },
@@ -215,6 +217,8 @@ export function defaultProps(kind: Kind): Props {
       return { elevation: 0, diameter: 0.04, kRun: 0.4, kBranch: 1.0 }
     case 'threeway':
       return { elevation: 0, diameter: 0.025, position: 0.5, kOpen: 3, trim: 'linear' }
+    case 'jetpump':
+      return { elevation: 0, nozzleDiameter: 0.008, throatDiameter: 0.014, kn: 0.05, ktd: 0.2, ks: 0.1 }
     case 'airvalve':
       return { elevation: 0, mode: 'combination' }
     case 'stager':

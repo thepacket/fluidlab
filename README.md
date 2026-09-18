@@ -13,7 +13,7 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 
 ## What's in it
 
-- **Network editor** (React Flow): 25 components plus the catalogue, loose port-to-port pipes, snap grid, minimap, 90° rotation (`R`),
+- **Network editor** (React Flow): 26 components plus the catalogue, loose port-to-port pipes, snap grid, minimap, 90° rotation (`R`),
   undo/redo (`⌘Z` / `⇧⌘Z`, 100 steps, slider drags and typing coalesce into one step).
 - **Runs off the main thread**: EPANET lives in a Web Worker behind a latest-wins client (no backlog while dragging a
   slider); falls back to the main thread if workers are unavailable.
@@ -76,6 +76,12 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   sensing principles with their own losses, pitot and sight glass, U-tube manometer display, totalisers, CSV export
   of everything recorded. Control: **pump sequencer** (staging with hysteresis, shared trimmed speed, lead rotation),
   **setpoint scheduler**, PID remote setpoint, S/R latch, emergency stop.
+- **Jet pump (ejector)**: three ports, and both of its internal links depend on heads elsewhere in the network — the
+  nozzle sees motive − suction, the entrainment curve scales with motive − discharge — which no single EPANET element
+  can express. The engine wraps EPANET in a relaxed fixed-point: solve, read those heads, rebuild the nozzle's K and
+  the entrainment pump curve from Cunningham's N(M, R) model, solve again (settles in a handful of passes, ~10 ms).
+  Inspector shows M, N, R, efficiency M·N and the characteristic with the operating point. In the water-hammer
+  engine it is a plain junction.
 - **Thermal layer** (`src/engine/thermal.ts`): once flows are known, water temperature is carried round the loop —
   mixed at junctions, reset by a boiler, given up by emitters (NTU model against a constant room temperature).
   Shows as a "Thermal" pipe-colour overlay with temperatures and heat duty per part. Steady-state, no pipe heat loss.
@@ -87,10 +93,10 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **35 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **36 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
   valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
-  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer). `scripts/control-sim.ts` runs the loops closed
+  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli

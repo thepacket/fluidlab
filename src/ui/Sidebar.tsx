@@ -23,7 +23,7 @@ const presets = (kind: Kind, table: Record<string, { name: string; blurb: string
 
 const GROUPS: { name: string; items: PaletteItem[] }[] = [
   { name: 'Sources & storage', items: (['reservoir', 'tank', 'vessel'] as Kind[]).map(item) },
-  { name: 'Pumps', items: [item('pump'), ...presets('pump', PUMP_PRESETS)] },
+  { name: 'Pumps', items: [item('pump'), ...presets('pump', PUMP_PRESETS), item('jetpump')] },
   { name: 'Valves', items: [...(['valve', 'threeway', 'relief', 'airvalve'] as Kind[]).map(item), ...presets('valve', VALVE_PRESETS)] },
   {
     name: 'Nodes',

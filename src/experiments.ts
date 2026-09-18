@@ -18,6 +18,7 @@ export const NODE_SIZE: Record<Kind, [number, number]> = {
   tee: [56, 56],
   threeway: [92, 84],
   airvalve: [60, 72],
+  jetpump: [132, 84],
   stager: [108, 84],
   schedule: [96, 84],
   leak: [44, 44],
@@ -47,6 +48,7 @@ export const PORT_Y: Record<Kind, number> = {
   tee: 0.5,
   threeway: 0.4524,
   airvalve: 0.833,
+  jetpump: 0.405,
   stager: 0.5,
   schedule: 0.5,
   leak: 0.5,
@@ -1401,5 +1403,39 @@ export const EXPERIMENTS: Experiment[] = [
         .wire('t3', 'o3')
         .done()
     },
+  },
+  {
+    id: 'jet-pump',
+    no: '36',
+    title: 'Jet pump',
+    concept: 'Momentum exchange · area ratio',
+    formula: 'N = (H_d − H_s) / (H_m − H_d)   ·   η = M · N',
+    brief:
+      'No moving parts: a fast motive jet drags water out of the sump and the mixture recovers pressure in the diffuser. The nozzle-to-throat area ratio sets its character — a tight throat lifts a little water a long way, a wide one moves a lot of water a little way. It never beats about 35 % efficiency, which is the price of having nothing to wear out down a well. (Its two internal links depend on heads elsewhere in the network, so the engine re-solves until they settle.)',
+    steps: [
+      'Select the jet pump: motive flow, entrained flow, the ratios M and N, and the efficiency M·N.',
+      'Change the throat diameter and watch M and N trade against each other.',
+      'Raise the delivery tank: past a certain head the jet still runs but entrains nothing.',
+    ],
+    goal: {
+      text: 'Entrain at least 70 L/min from the sump',
+      check: (r) => {
+        const x = r.nodes['jp']?.extra
+        return { done: (x?.q2 ?? 0) / LPM >= 70, readout: x ? `${(x.q2 / LPM).toFixed(0)} L/min · M ${x.M.toFixed(2)} · η ${(x.M * x.N * 100).toFixed(0)} %` : '—' }
+      },
+    },
+    select: 'jp',
+    build: () =>
+      new Rig()
+        .add('hp', 'reservoir', 90, 250, { sourceType: 'mains', pressure: 400e3, elevation: 0 }, 'Motive supply')
+        .add('jp', 'jetpump', 450, 263, { nozzleDiameter: 0.008, throatDiameter: 0.0105 }, 'Ejector')
+        .add('sump', 'reservoir', 250, 560, { head: -3 }, 'Sump')
+        .add('m', 'meter', 700, 263, { diameter: 0.04 }, 'Delivered')
+        .add('dst', 'reservoir', 930, 120, { head: 5 }, 'Header tank')
+        .pipe('hp', 'jp', { length: 5, diameter: 0.025 }, ['r', 'm'], 'Motive line')
+        .pipe('sump', 'jp', { length: 4, diameter: 0.04 }, ['r', 's'], 'Suction lift')
+        .pipe('jp', 'm', { length: 2, diameter: 0.04 }, ['d', 'in'])
+        .pipe('m', 'dst', { length: 6, diameter: 0.04 }, ['out', 'b'])
+        .done(),
   },
 ]

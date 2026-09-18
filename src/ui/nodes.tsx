@@ -55,6 +55,14 @@ function Ports({ kind, rot }: { kind: Kind; rot: number }) {
         {kind === 'pid' && <Handle id="rsp" type="source" position={Position.Bottom} className="port port-signal" />}
       </>
     )
+  if (kind === 'jetpump')
+    return (
+      <>
+        <Handle id="m" type="source" position={Position.Left} className="port port-in" style={{ top: '40.5%' }} />
+        <Handle id="s" type="source" position={Position.Bottom} className="port port-in" style={{ left: '38%' }} />
+        <Handle id="d" type="source" position={Position.Right} className="port port-out" style={{ top: '40.5%' }} />
+      </>
+    )
   if (kind === 'threeway')
     return (
       <>
@@ -1102,6 +1110,39 @@ export const ThreeWayNode = memo(({ id, data, selected }: NodeProps<LabNode>) =>
   )
 })
 
+export const JetPumpNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const r = useLab((s) => s.results.nodes[id])
+  const paused = useLab((s) => !s.running)
+  const x = r?.extra
+  const cM = usePressureColor(x?.pMotive)
+  const cS = usePressureColor(x?.pSuction)
+  const cD = usePressureColor(r?.pressure)
+  const jetting = (x?.q1 ?? 0) > 1e-8
+  return (
+    <Shell id={id} kind="jetpump" selected={selected} label={data.label} sub={x ? `${fmt(x.q1, 'flow', units)} + ${fmtU(x.q2, 'flow', units)} · η ${Math.round(x.M * x.N * 100)} %` : undefined}>
+      <svg width="132" height="84" viewBox="0 0 132 84">
+        <defs>
+          <linearGradient id={`jp-${id}`} x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stopColor={cS} />
+            <stop offset="1" stopColor={cD} />
+          </linearGradient>
+        </defs>
+        {/* suction chamber, throat and diffuser */}
+        <path d="M34,14 H62 L74,26 H86 L132,18 V50 L86,42 H74 L62,54 H60 V84 H40 V54 H34 Z" fill="#04070d" />
+        <path d="M38,18 H60 L73,30 H86 L132,22 V46 L86,38 H73 L60,50 H56 V84 H44 V50 H38 Z" fill={`url(#jp-${id})`} />
+        {/* the motive nozzle pokes into the chamber */}
+        <path d="M0,24 H40 L60,31 V37 L40,44 H0 Z" fill="#04070d" />
+        <path d="M0,28 H40 L58,32.500 V35.500 L40,40 H0 Z" fill={cM} style={{ filter: `drop-shadow(0 0 4px ${cM})` }} />
+        {jetting && <path className="spray" d="M60,34 H92" style={{ animationDuration: '.35s', animationPlayState: paused ? 'paused' : 'running' }} />}
+        <path d="M34,14 H62 L74,26 H86 L132,18 M132,50 L86,42 H74 L62,54 H60 M40,54 H34 V14" fill="none" stroke="#5a7099" strokeWidth="2.500" strokeLinejoin="round" />
+        <rect x="6" y="20" width="5" height="28" rx="1.500" fill="#5a7099" />
+        <rect x="122" y="14" width="5" height="40" rx="1.500" fill="#5a7099" />
+      </svg>
+    </Shell>
+  )
+})
+
 export const AirValveNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const r = useLab((s) => s.results.nodes[id])
   const c = usePressureColor(r?.pressure)
@@ -1378,4 +1419,5 @@ export const nodeTypes = {
   tee: TeeNode,
   threeway: ThreeWayNode,
   airvalve: AirValveNode,
+  jetpump: JetPumpNode,
 }

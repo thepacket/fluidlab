@@ -4,6 +4,8 @@ import { solver } from '../engine/client'
 import { DEMAND_PATTERNS, demandFactor, dischargeDevice, LOSS_DEVICES, PUMP_TYPES, PIPE_STANDARDS, TRIMS, VALVE_BODIES, lossDevice } from '../model/catalog'
 import { PV_SOURCES, fmtClock, timerState } from '../model/control'
 import {
+  jetN,
+  jetR,
   METER_TYPES,
   SOURCE_TYPES,
   TANK_SHAPES,
@@ -162,6 +164,14 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'diameter', label: 'Bore', q: 'diameter' },
     { key: 'kOpen', label: 'K of a fully open leg', q: 'none' },
     { key: 'trim', label: 'Characteristic', q: 'none', type: 'select', options: TRIMS },
+    elevation,
+  ],
+  jetpump: [
+    { key: 'nozzleDiameter', label: 'Motive nozzle', q: 'diameter' },
+    { key: 'throatDiameter', label: 'Mixing throat', q: 'diameter' },
+    { key: 'kn', label: 'Nozzle loss K', q: 'none' },
+    { key: 'ks', label: 'Suction entry loss K', q: 'none' },
+    { key: 'ktd', label: 'Throat + diffuser loss K', q: 'none' },
     elevation,
   ],
   airvalve: [
@@ -900,6 +910,27 @@ function KvField({ props, onChange }: { props: Props; onChange: (patch: Props) =
   )
 }
 
+/** The jet pump's characteristic: pressure ratio against flow ratio, with where it is running now. */
+function JetChart({ id }: { id: string }) {
+  const node = useLab((s) => s.nodes.find((n) => n.id === id))
+  const x = useLab((s) => s.results.nodes[id]?.extra)
+  if (!node) return null
+  const p = node.data.props
+  const curve = (f: (M: number) => number) => Array.from({ length: 61 }, (_, i) => ({ x: i * 0.05, y: f(i * 0.05) })).filter((pt) => pt.y >= 0)
+  return (
+    <Chart
+      series={[
+        { name: 'Pressure ratio N', color: SERIES.blue, points: curve((M) => jetN(M, p)), area: true },
+        { name: 'Efficiency M·N', color: SERIES.orange, points: curve((M) => M * jetN(M, p)) },
+      ]}
+      markers={x && x.q1 > 1e-8 ? [{ x: x.M, y: x.N, label: `M ${x.M.toFixed(2)} · N ${x.N.toFixed(2)}`, color: '#ffffff' }] : []}
+      xLabel="Flow ratio M = Q₂ / Q₁"
+      yLabel="Ratio (–)"
+      height={180}
+    />
+  )
+}
+
 function GradeChart({ id }: { id?: string }) {
   const s = useLab()
   const pts = useMemo(() => gradeLine(model(s), s.results, id), [s.results, id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -1136,6 +1167,17 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
             </>
           )
         })()}
+      {kind === 'jetpump' && n!.extra && (
+        <>
+          <Row label="Motive flow Q₁" value={fmtU(n!.extra.q1, 'flow', u)} />
+          <Row label="Entrained flow Q₂" value={fmtU(n!.extra.q2, 'flow', u)} tone={n!.extra.q2 > 1e-8 ? 'good' : 'bad'} />
+          <Row label="Area ratio R" value={jetR(node!.data.props).toFixed(3)} />
+          <Row label="Flow ratio M = Q₂/Q₁" value={n!.extra.M.toFixed(2)} />
+          <Row label="Pressure ratio N" value={n!.extra.N.toFixed(3)} />
+          <Row label="Efficiency M·N" value={`${(n!.extra.M * n!.extra.N * 100).toFixed(0)} %`} />
+          <Row label="Motive → suction pressure" value={`${fmt(n!.extra.pMotive, 'pressure', u)} → ${fmtU(n!.extra.pSuction, 'pressure', u)}`} />
+        </>
+      )}
       {kind === 'leak' && <Row label="Lost per day" value={`${(n!.outflow * 86400).toFixed(1)} m³`} tone={n!.outflow > 1e-7 ? 'warn' : 'good'} />}
       {kind === 'reservoir' && node!.data.props.sourceType === 'well' && (
         <Row label="Drawdown" value={`${fmtU(node!.data.props.staticLevel - n!.head, 'head', u)} below the static level`} tone="warn" />
@@ -1200,7 +1242,15 @@ export function Inspector() {
         : kind !== 'pipe' && isControl(kind)
           ? [['trend', 'Trend']]
           : [
-              ...(kind === 'pump' ? [['main', 'Pump curve']] : kind === 'pipe' ? [['main', 'ΔP (Q)']] : props.pattern && props.pattern !== 'constant' ? [['main', 'Daily pattern']] : []),
+              ...(kind === 'pump'
+                ? [['main', 'Pump curve']]
+                : kind === 'pipe'
+                  ? [['main', 'ΔP (Q)']]
+                  : kind === 'jetpump'
+                    ? [['main', 'Characteristic']]
+                    : props.pattern && props.pattern !== 'constant'
+                      ? [['main', 'Daily pattern']]
+                      : []),
               ['trend', 'Trend'],
               ['grade', 'Grade line'],
             ]
@@ -1258,6 +1308,7 @@ export function Inspector() {
             </button>
           </>
         )}
+        {active === 'main' && kind === 'jetpump' && <JetChart id={id} />}
         {active === 'main' && kind === 'timer' && <ScheduleChart id={id} />}
         {active === 'main' && (kind === 'junction' || kind === 'outlet') && <PatternChart pattern={props.pattern} base={props.demand} />}
         {active === 'main' && (kind === 'switch' || kind === 'pid') && <LoopCharts id={id} kind={kind} />}

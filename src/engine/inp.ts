@@ -1,7 +1,24 @@
 // EPANET adapter, part 1: translate a FluidLab model into an EPANET .inp file.
 // Units: LPS / SI  →  flow L/s, length m, diameter mm, roughness mm (D-W), pressure m.
 import { demandFactor, dischargeDevice, lossDevice } from '../model/catalog'
-import { G, area, sourceHead, wellDrawdown, pumpShape, pumpPoints, meterK, elementK, fittingK, ratedDp, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
+import {
+  G,
+  area,
+  jetCurve,
+  jetMotiveFlow,
+  sourceHead,
+  wellDrawdown,
+  pumpShape,
+  pumpPoints,
+  meterK,
+  elementK,
+  fittingK,
+  ratedDp,
+  tankHeight,
+  valveK,
+  vesselPressure,
+  vesselWater,
+} from '../model/physics'
 import { isControl, isInline, type Model, type Warning } from '../model/types'
 
 export interface Compiled {
@@ -18,7 +35,16 @@ export interface Compiled {
   empty: boolean
 }
 
+/** Where the outer jet-pump iteration currently stands, per jet pump. */
+export interface JetState {
+  /** motive flow, m³/s */
+  q1: number
+  /** H_motive − H_discharge, m */
+  dHmd: number
+}
+
 export interface Overrides {
+  jets?: Record<string, JetState>
   pumpSpeed?: Record<string, number>
 }
 
@@ -84,7 +110,7 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
     ] as const) {
       const nd = byId.get(id)
       if (!nd || !h || !nodeIds[id]) continue
-      if (nd.data.kind === 'tee' || (nd.data.kind === 'threeway' && h !== 'ab')) (subPorts[id] ??= {})[h] = `${nodeIds[id]}${h}`
+      if (nd.data.kind === 'tee' || (nd.data.kind === 'threeway' && h !== 'ab') || (nd.data.kind === 'jetpump' && h !== 'd')) (subPorts[id] ??= {})[h] = `${nodeIds[id]}${h}`
     }
 
   const port = (nodeId: string, handle?: string | null): string | undefined => {
@@ -199,6 +225,23 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
           V.push(`${sub}s ${sub} ${id} ${n(p.diameter * 1000)} TCV ${n(isFinite(K) ? K : 1e9)} 0`)
           if (!isFinite(K)) ST.push(`${sub}s CLOSED`)
         }
+      }
+    } else if (k === 'jetpump') {
+      // Two links into the discharge node: the motive nozzle (a throttle whose K delivers the current motive flow)
+      // and the entrainment side (a pump whose curve is Cunningham's N(M) at the current motive conditions).
+      // Both depend on heads elsewhere in the network, so the engine re-solves until they stop moving.
+      const id = nodeIds[nd.id]
+      const jet = overrides.jets?.[nd.id] ?? { q1: jetMotiveFlow(p, 30), dHmd: 20 }
+      J.push(`${id} ${n(p.elevation)} 0`)
+      const ports = subPorts[nd.id] ?? {}
+      for (const sub of Object.values(ports)) J.push(`${sub} ${n(p.elevation)} 0`)
+      if (ports.m) {
+        const K = jet.q1 > 1e-9 ? (jet.dHmd * 2 * G * area(p.nozzleDiameter) ** 2) / (jet.q1 * jet.q1) : 1e9
+        V.push(`${ports.m}s ${ports.m} ${id} ${n(p.nozzleDiameter * 1000)} TCV ${n(Math.min(1e9, Math.max(1e-3, K)))} 0`)
+      }
+      if (ports.s) {
+        for (const [q, h] of jetCurve(p, Math.max(jet.q1, 1e-7), jet.dHmd)) CU.push(`C${ports.s} ${n(q * 1000)} ${n(Math.max(0, h))}`)
+        PU.push(`${ports.s}s ${ports.s} ${id} HEAD C${ports.s}`)
       }
     } else if (k === 'airvalve') {
       J.push(`${nodeIds[nd.id]} ${n(p.elevation)} 0`)

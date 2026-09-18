@@ -5,6 +5,8 @@ import { lossDevice } from '../model/catalog'
 import {
   G,
   P_ATM,
+  jetMotiveFlow,
+  jetN,
   area,
   sourceElevation,
   tankHeight,
@@ -22,7 +24,7 @@ import {
 } from '../model/physics'
 import { EMPTY_RESULTS, isControl, type Model, type Results, type Warning } from '../model/types'
 import { solveThermal } from './thermal'
-import { command, commandedOff, compile, floatTank, valvePosition, type Overrides } from './inp'
+import { command, commandedOff, compile, floatTank, valvePosition, type JetState, type Overrides } from './inp'
 
 /** Any solver FluidLab can plug in (EPANET today; water-hammer / gas later). */
 export interface HydraulicEngine {
@@ -46,9 +48,53 @@ class EpanetEngine implements HydraulicEngine {
     return this.loading
   }
 
+  /**
+   * A jet pump's two links depend on heads elsewhere in the network (the nozzle sees motive − suction, the
+   * entrainment curve scales with motive − discharge), which no single EPANET element can express. So: solve,
+   * read those heads, update both links, solve again — a relaxed fixed point that settles in a handful of passes.
+   */
+  private convergeJets(model: Model, overrides: Overrides): Record<string, JetState> {
+    const jets = model.nodes.filter((nd) => nd.data.kind === 'jetpump')
+    const state: Record<string, JetState> = Object.fromEntries(jets.map((j) => [j.id, { q1: jetMotiveFlow(j.data.props, 30), dHmd: 20 }]))
+    for (let pass = 0; pass < 30; pass++) {
+      const c = compile(model, { ...overrides, jets: state })
+      if (c.empty) break
+      const project = new Project(this.ws!)
+      let change = 0
+      try {
+        this.ws!.writeFile('jet.inp', c.inp)
+        project.open('jet.inp', 'jet.rpt', 'jet.bin')
+        project.solveH()
+        const head = (id: string) => project.getNodeValue(project.getNodeIndex(id), NodeProperty.Head)
+        for (const j of jets) {
+          const ports = c.subPorts[j.id]
+          if (c.excluded.includes(j.id) || !ports?.m) continue
+          const Hm = head(ports.m)
+          const Hd = head(c.nodeIds[j.id])
+          const Hs = ports.s ? head(ports.s) : Hd
+          const target = { q1: jetMotiveFlow(j.data.props, Hm - Hs), dHmd: Math.max(0.01, Hm - Hd) }
+          const cur = state[j.id]
+          change = Math.max(change, Math.abs(target.q1 - cur.q1) / Math.max(1e-9, target.q1), Math.abs(target.dHmd - cur.dHmd) / Math.max(0.01, target.dHmd))
+          state[j.id] = { q1: cur.q1 + 0.6 * (target.q1 - cur.q1), dHmd: cur.dHmd + 0.6 * (target.dHmd - cur.dHmd) }
+        }
+      } catch {
+        break
+      } finally {
+        try {
+          project.close()
+        } catch {
+          /* already closed */
+        }
+      }
+      if (change < 2e-3) break
+    }
+    return state
+  }
+
   solve(model: Model, overrides: Overrides = {}): Results {
     const t0 = performance.now()
     if (!this.ws) return { ...EMPTY_RESULTS, error: 'Solver still loading' }
+    if (model.nodes.some((nd) => nd.data.kind === 'jetpump')) overrides = { ...overrides, jets: this.convergeJets(model, overrides) }
     const c = compile(model, overrides)
     const warnings: Warning[] = [...c.warnings]
     if (c.empty) {
@@ -89,6 +135,26 @@ class EpanetEngine implements HydraulicEngine {
           const rawDemand = project.getNodeValue(idx, NodeProperty.Demand) / 1000
           const demand = Math.abs(rawDemand) < 1e-7 ? 0 : rawDemand // residual seepage through "closed" links is solver noise
           const pressure = (h - elevation) * rhoG
+          if (kind === 'jetpump') {
+            const ports = c.subPorts[nd.id] ?? {}
+            const q1 = ports.m ? flowOf(`${ports.m}s`) : 0
+            const q2 = ports.s ? flowOf(`${ports.s}s`) : 0
+            const hm = ports.m ? head(ports.m) : h
+            const hs = ports.s ? head(ports.s) : h
+            const M = q1 > 1e-9 ? q2 / q1 : 0
+            res.nodes[nd.id] = {
+              head: h,
+              pressure,
+              elevation,
+              outflow: 0,
+              extra: { q1, q2, M, N: hm - h > 1e-6 ? (h - hs) / (hm - h) : 0, Nmodel: jetN(M, p), pMotive: (hm - elevation) * rhoG, pSuction: (hs - elevation) * rhoG },
+            }
+            if ((hs - elevation) * rhoG + P_ATM < fluid.vaporPressure * 1.5)
+              warnings.push({ id: nd.id, level: 'error', text: `${nd.data.label}: suction chamber is at vapour pressure — the jet is cavitating` })
+            else if (ports.m && q1 > 1e-8 && q2 < 1e-8)
+              warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: motive jet running but nothing is entrained — the discharge head is too high for this area ratio` })
+            continue
+          }
           if (kind === 'threeway') {
             const leg = (h: string) => (c.subPorts[nd.id]?.[h] ? flowOf(`${c.subPorts[nd.id][h]}s`) : 0)
             res.nodes[nd.id] = { head: h, pressure, elevation, outflow: 0, extra: { flowA: leg('a'), flowB: leg('b') } }

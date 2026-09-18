@@ -103,6 +103,11 @@ for (const ex of EXPERIMENTS) {
       prop('bv1').opening = o
       again('BV1 ' + o)
     }
+  if (ex.id === 'jet-pump')
+    for (const d of [0.012, 0.014, 0.018]) {
+      prop('jp').throatDiameter = d
+      again('throat ' + d * 1000 + ' mm')
+    }
   if (ex.id === 'standpipe')
     for (const d of [0.0779, 0.1023]) {
       for (const e of edges) if (e.data?.label.startsWith('Riser')) e.data.props.diameter = d

@@ -275,3 +275,42 @@ export const METER_TYPES = [
   { id: 'sight', name: 'Sight glass (indication only)', k: 0.3 },
 ]
 export const meterK = (p: Props) => METER_TYPES.find((m) => m.id === (p.meterType ?? 'magnetic'))?.k ?? 0
+
+// ---- jet pump (ejector) ---------------------------------------------------------------------------
+// A high-pressure motive jet entrains a second stream and the mixture recovers pressure in a diffuser.
+// Cunningham's one-dimensional model, in the usual ratios:
+//   R = nozzle area / throat area      M = entrained flow / motive flow
+//   N = (H_discharge − H_suction) / (H_motive − H_discharge)      efficiency = M · N
+// A small R moves a lot of water a little way; a large R moves a little water a long way.
+
+export const jetR = (p: Props) => Math.min(0.9, Math.max(0.02, (p.nozzleDiameter / p.throatDiameter) ** 2))
+
+/** Pressure ratio N at flow ratio M. Falls from N₀ at M = 0 to zero at the largest flow ratio the pump can carry. */
+export function jetN(M: number, p: Props): number {
+  const R = jetR(p)
+  const num = 2 * R + (2 * R * R * M * M) / (1 - R) - R * R * (1 + M) ** 2 * (1 + p.ktd) - ((R * R * M * M) / (1 - R) ** 2) * (1 + p.ks)
+  return num / (1 + p.kn - num)
+}
+/** Motive flow: the nozzle discharges into the suction chamber, so it sees (H_motive − H_suction). */
+export const jetMotiveFlow = (p: Props, headMotiveToSuction: number) => area(p.nozzleDiameter) * Math.sqrt((2 * G * Math.max(0, headMotiveToSuction)) / (1 + p.kn))
+
+/** The entrainment side as a pump curve [flow, head] for a given motive flow and (H_motive − H_discharge). */
+export function jetCurve(p: Props, q1: number, headMotiveToDischarge: number): [number, number][] {
+  const pts: [number, number][] = []
+  const dH = Math.max(0.01, headMotiveToDischarge)
+  for (let i = 0; i <= 40; i++) {
+    const M = i * 0.15
+    const N = jetN(M, p)
+    if (N <= 0) {
+      // close the curve on the axis, where it crosses
+      const [q0, h0] = pts[pts.length - 1] ?? [0, 0]
+      const hNeg = N * dH
+      pts.push([q0 + ((M * q1 - q0) * h0) / Math.max(1e-9, h0 - hNeg), 0])
+      break
+    }
+    pts.push([M * q1, N * dH])
+  }
+  // the solver wants head strictly falling with flow
+  for (let k = 1; k < pts.length; k++) if (pts[k][1] >= pts[k - 1][1]) pts[k][1] = pts[k - 1][1] - 1e-4
+  return pts
+}
