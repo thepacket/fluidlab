@@ -1,16 +1,17 @@
 // FluidLab model layer. Everything here is stored in SI (m, m³/s, Pa, kg, s).
 
-export type Kind = 'reservoir' | 'tank' | 'junction' | 'outlet' | 'gauge' | 'pump' | 'valve' | 'meter' | 'element' | 'dpgauge' | 'timer' | 'manual' | 'switch' | 'pid' | 'logic' | 'lamp'
+export type Kind =
+  'reservoir' | 'tank' | 'junction' | 'outlet' | 'gauge' | 'pump' | 'valve' | 'meter' | 'element' | 'dpgauge' | 'fitting' | 'relief' | 'timer' | 'manual' | 'switch' | 'pid' | 'logic' | 'lamp'
 
 /** two-port components: compiled to a link between two hidden junctions */
-export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter', 'element', 'dpgauge']
+export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter', 'element', 'dpgauge', 'fitting']
 /** controllers: no fluid passes through them, they switch other components over signal wires */
 export const CONTROL_KINDS: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'lamp']
 export const isControl = (k: Kind) => CONTROL_KINDS.includes(k)
 /** components a controller can switch */
 export const CONTROLLABLE: Kind[] = ['pump', 'valve', 'outlet']
 /** components that can be turned in 90° steps on the bench */
-export const ROTATABLE: Kind[] = ['pump', 'valve', 'meter', 'element', 'outlet']
+export const ROTATABLE: Kind[] = ['pump', 'valve', 'meter', 'element', 'outlet', 'fitting', 'relief']
 export const isInline = (k: Kind) => INLINE_KINDS.includes(k)
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -107,6 +108,8 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
   meter: { name: 'Flow meter', prefix: 'FM', blurb: 'Inline flow readout' },
   element: { name: 'Venturi / orifice', prefix: 'FE', blurb: 'Differential-pressure flow element' },
   dpgauge: { name: 'Differential gauge', prefix: 'DP', blurb: 'ΔP between two tapping points' },
+  fitting: { name: 'Loss device', prefix: 'FT', blurb: 'Fittings and equipment from the catalogue' },
+  relief: { name: 'Relief valve', prefix: 'RV', blurb: 'Lifts above its set pressure, vents to atmosphere' },
   timer: { name: 'Timer', prefix: 'TM', blurb: 'Switches pumps, valves and taps on a schedule' },
   manual: { name: 'Manual switch', prefix: 'HS', blurb: 'Click it on the bench to start / stop' },
   switch: { name: 'Limit switch', prefix: 'SW', blurb: 'Level · pressure · flow, with hysteresis' },
@@ -137,6 +140,10 @@ export function defaultProps(kind: Kind): Props {
       return { elevation: 0, elementType: 'venturi', diameter: 0.04, throat: 0.02, cd: 0.98 }
     case 'dpgauge':
       return { elevation: 0 }
+    case 'fitting':
+      return { elevation: 0, variant: 'elbow90', diameter: 0.04, k: 0.75 }
+    case 'relief':
+      return { elevation: 0, setPressure: 400e3, diameter: 0.025 }
     case 'timer':
       return { enabled: true, mode: 'cycle', onTime: 300, offTime: 300, startOn: true, delay: 600, action: 'on' }
     case 'manual':
@@ -193,6 +200,10 @@ export interface DeviceResult {
   // valve
   K?: number
   velocity?: number
+  // catalogue loss devices
+  ratedShare?: number
+  // valves: flow coefficient at the current position (m³/h per √bar)
+  kv?: number
   // venturi / orifice
   tapDp?: number
   permanentLoss?: number

@@ -44,12 +44,34 @@ export function pipeHeadloss(q: number, p: Props, fluid: Fluid) {
   return ((f * p.length) / p.diameter + (p.minorK || 0)) * ((v * v) / (2 * G))
 }
 
-/** Equal-percentage valve characteristic (rangeability 50): K rises steeply as the valve closes. */
-export function valveK(opening: number, kOpen: number): number {
+/**
+ * Loss coefficient of a throttling valve at a given opening. The trim sets how the flow capacity Cv grows with
+ * travel — equal-percentage (rangeability 50), linear, or quick-opening — and K = K_open / (Cv/Cv_open)².
+ */
+export function valveK(opening: number, kOpen: number, trim: string = 'equal'): number {
   const x = Math.min(1, Math.max(0, opening))
   if (x <= 0.001) return Infinity
-  const relCv = Math.pow(50, x - 1)
+  const relCv = trim === 'linear' ? x : trim === 'quick' ? Math.sqrt(x) : Math.pow(50, x - 1)
   return kOpen / (relCv * relCv)
+}
+
+/** Flow coefficient Kv (m³/h of water at 1 bar drop) of a loss K on a bore d. Cv(US) = Kv / 0.865. */
+export const kvOf = (K: number, d: number) => (isFinite(K) && K > 0 ? 3600 * area(d) * Math.sqrt(200 / K) : 0)
+
+// ---- catalogue loss devices ------------------------------------------------------------
+
+/** Bore the solver sees, and the K on that bore, for a K-model fitting. Reducers and expanders follow from their two diameters. */
+export function fittingK(p: Props, byDiameters?: 'contraction' | 'expansion') {
+  if (!byDiameters) return { bore: p.diameter, K: Math.max(0, p.k) }
+  const small = Math.min(p.diameter, p.d2)
+  const b2 = (small / Math.max(p.diameter, p.d2)) ** 2
+  return { bore: small, K: byDiameters === 'contraction' ? 0.5 * (1 - b2) : (1 - b2) ** 2 }
+}
+
+/** Pressure drop (Pa) of a rated device at flow q: the datasheet point scaled by (Q/Q_r)ⁿ, worsened by fouling. */
+export function ratedDp(q: number, p: Props) {
+  const clean = p.ratedDp * Math.pow(Math.abs(q) / Math.max(1e-9, p.ratedFlow), p.exponent)
+  return clean / (1 - Math.min(0.95, Math.max(0, p.fouling ?? 0))) ** 2
 }
 
 // Pump curve from a single design point, identical to EPANET's 1-point curve:

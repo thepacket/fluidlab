@@ -153,7 +153,8 @@ function Bench() {
     const onAdd = (e: Event) => {
       const el = document.querySelector('.bench')!.getBoundingClientRect()
       const p = screenToFlowPosition({ x: el.left + el.width / 2 + (Math.random() - 0.5) * 120, y: el.top + el.height / 2 + (Math.random() - 0.5) * 120 })
-      addNode((e as CustomEvent<Kind>).detail, p.x, p.y)
+      const [kind, variant] = (e as CustomEvent<string>).detail.split(':')
+      addNode(kind as Kind, p.x, p.y, variant)
     }
     window.addEventListener('fluidlab:add', onAdd)
     return () => window.removeEventListener('fluidlab:add', onAdd)
@@ -162,10 +163,10 @@ function Bench() {
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
-      const kind = e.dataTransfer.getData('application/fluidlab') as Kind
+      const [kind, variant] = e.dataTransfer.getData('application/fluidlab').split(':') as [Kind, string?]
       if (!kind) return
       const p = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-      addNode(kind, p.x, p.y)
+      addNode(kind, p.x, p.y, variant)
     },
     [addNode, screenToFlowPosition],
   )

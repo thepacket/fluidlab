@@ -3,6 +3,7 @@ import { create } from 'zustand'
 import { solver } from './engine/client'
 import { EXPERIMENTS, NODE_SIZE, PORT_Y, type LabEdge, type LabNode } from './experiments'
 import { EMPTY_CONTROL, PV_CONSUMERS, PV_SOURCES, SIGNAL_CONSUMERS, sameControl, stepControl, type ControlState } from './model/control'
+import { lossDevice } from './model/catalog'
 import { area } from './model/physics'
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
 import { METRIC, type UnitPrefs } from './model/units'
@@ -50,7 +51,8 @@ interface State {
   onNodesChange: (c: NodeChange<LabNode>[]) => void
   onEdgesChange: (c: EdgeChange<LabEdge>[]) => void
   onConnect: (c: Connection) => void
-  addNode: (kind: Kind, x: number, y: number) => void
+  /** `variant` picks a catalogue entry when the kind is a data-driven family (loss devices) */
+  addNode: (kind: Kind, x: number, y: number, variant?: string) => void
   updateNode: (id: string, patch: Props) => void
   updateEdge: (id: string, patch: Props) => void
   rename: (id: string, label: string) => void
@@ -124,8 +126,8 @@ const signature = (s: State) =>
     s.controls,
   ])
 
-function nextLabel(nodes: LabNode[], kind: Kind) {
-  const prefix = KIND_META[kind].prefix
+function nextLabel(nodes: LabNode[], kind: Kind, prefixOverride?: string) {
+  const prefix = prefixOverride ?? KIND_META[kind].prefix
   const used = new Set(nodes.map((n) => n.data.label))
   let i = 1
   while (used.has(`${prefix}${i}`)) i++
@@ -192,8 +194,9 @@ export const useLab = create<State>((set, get) => ({
       ) as LabEdge[],
     })
   },
-  addNode: (kind, x, y) => {
+  addNode: (kind, x, y, variant) => {
     get().checkpoint()
+    const spec = kind === 'fitting' && variant ? lossDevice(variant) : undefined
     const [w, h] = NODE_SIZE[kind]
     const nodes = get().nodes.map((n) => ({ ...n, selected: false }))
     const node: LabNode = {
@@ -201,7 +204,7 @@ export const useLab = create<State>((set, get) => ({
       type: kind,
       position: { x: x - w / 2, y: y - h * PORT_Y[kind] },
       selected: true,
-      data: { kind, label: nextLabel(nodes, kind), props: defaultProps(kind) },
+      data: { kind, label: nextLabel(nodes, kind, spec?.prefix), props: spec ? { ...defaultProps(kind), variant: spec.id, ...spec.defaults } : defaultProps(kind) },
     }
     set({ nodes: [...nodes, node], edges: get().edges.map((e) => ({ ...e, selected: false })) })
   },

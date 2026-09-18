@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { gradeLine, pipeCurve, pumpCurve, type XY } from '../engine/analysis'
 import { solver } from '../engine/client'
+import { LOSS_DEVICES, PIPE_STANDARDS, TRIMS, VALVE_BODIES, lossDevice } from '../model/catalog'
 import { PV_SOURCES, fmtClock, timerState } from '../model/control'
 import { beta, elementLossFraction } from '../model/physics'
 import { ELEMENT_TYPES, FLUIDS, KIND_META, MATERIALS, ROTATABLE, VALVE_TYPES, isControl, type Kind, type Props } from '../model/types'
@@ -60,6 +61,8 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
   ],
   valve: [
     { key: 'valveType', label: 'Type', q: 'none', type: 'select', options: VALVE_TYPES },
+    { key: 'body', label: 'Body', q: 'none', type: 'select', options: VALVE_BODIES, show: (p) => p.valveType === 'throttle' },
+    { key: 'trim', label: 'Characteristic', q: 'none', type: 'select', options: TRIMS, show: (p) => p.valveType === 'throttle' },
     { key: 'opening', label: 'Opening', q: 'percent', type: 'slider', max: 1, show: (p) => p.valveType === 'throttle' },
     { key: 'pressureSetting', label: 'Pressure setpoint', q: 'pressure', show: (p) => p.valveType === 'prv' || p.valveType === 'psv' },
     { key: 'flowSetting', label: 'Flow setpoint', q: 'flow', show: (p) => p.valveType === 'fcv' },
@@ -77,6 +80,18 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     elevation,
   ],
   dpgauge: [elevation],
+  fitting: [
+    { key: 'variant', label: 'Catalogue part', q: 'none', type: 'select', options: LOSS_DEVICES },
+    { key: 'diameter', label: 'Bore', q: 'diameter' },
+    { key: 'd2', label: 'Second bore', q: 'diameter', show: (p) => !!lossDevice(p.variant).byDiameters },
+    { key: 'k', label: 'Loss coefficient K', q: 'none', show: (p) => lossDevice(p.variant).model === 'k' && !lossDevice(p.variant).byDiameters },
+    { key: 'ratedDp', label: 'Rated pressure drop', q: 'pressure', show: (p) => lossDevice(p.variant).model === 'rated' },
+    { key: 'ratedFlow', label: '… at a flow of', q: 'flow', show: (p) => lossDevice(p.variant).model === 'rated' },
+    { key: 'exponent', label: 'Exponent n (2 = turbulent)', q: 'none', show: (p) => lossDevice(p.variant).model === 'rated' },
+    { key: 'fouling', label: 'Fouling', q: 'percent', type: 'slider', max: 0.95, show: (p) => !!lossDevice(p.variant).fouls },
+    elevation,
+  ],
+  relief: [{ key: 'setPressure', label: 'Set pressure', q: 'pressure' }, { key: 'diameter', label: 'Orifice bore', q: 'diameter' }, elevation],
   timer: [
     { key: 'enabled', label: 'Enabled', q: 'none', type: 'toggle' },
     {
@@ -237,6 +252,8 @@ function FieldRow({ f, props, pvq, onChange }: { f: Field; props: Props; pvq: Qu
           onChange={(e) => {
             const raw = e.target.value
             const patch: Props = { [f.key]: raw === 'true' ? true : raw === 'false' ? false : raw }
+            if (f.key === 'body') Object.assign(patch, (({ kOpen, trim }) => ({ kOpen, trim }))(VALVE_BODIES.find((b) => b.id === raw)!))
+            if (f.key === 'variant') Object.assign(patch, lossDevice(raw).defaults) // a different part brings its own datasheet numbers
             if (f.key === 'elementType') patch.cd = e.target.value === 'orifice' ? 0.61 : 0.98
             if (f.key === 'material' && e.target.value !== 'custom') patch.roughness = MATERIALS.find((m) => m.id === e.target.value)!.roughness
             onChange(patch)
@@ -274,10 +291,50 @@ function FieldRow({ f, props, pvq, onChange }: { f: Field; props: Props; pvq: Qu
         onCommit={(si) => {
           const patch: Props = { [f.key]: si }
           if (f.key === 'roughness') patch.material = 'custom'
+          if (f.key === 'diameter' && props.std) patch.std = '' // a typed bore is no longer a catalogue size
           onChange(patch)
         }}
       />
     </div>
+  )
+}
+
+/** Pick a real pipe: standard + nominal size set the bore, material and roughness together. */
+function PipeSizePicker({ props, onChange }: { props: Props; onChange: (patch: Props) => void }) {
+  const std = PIPE_STANDARDS.find((x) => x.id === props.std)
+  const apply = (stdId: string, label?: string) => {
+    const next = PIPE_STANDARDS.find((x) => x.id === stdId)
+    if (!next) return onChange({ std: '', size: '' })
+    // keep the nearest bore when only the standard changes
+    const size = next.sizes.find((z) => z.label === label) ?? next.sizes.reduce((best, z) => (Math.abs(z.id / 1000 - props.diameter) < Math.abs(best.id / 1000 - props.diameter) ? z : best))
+    onChange({ std: next.id, size: size.label, diameter: size.id / 1000, material: next.material, roughness: MATERIALS.find((m) => m.id === next.material)!.roughness })
+  }
+  return (
+    <>
+      <div className="field">
+        <span>Pipe standard</span>
+        <select value={std?.id ?? ''} onChange={(e) => apply(e.target.value)}>
+          <option value="">Custom bore</option>
+          {PIPE_STANDARDS.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      {std && (
+        <div className="field">
+          <span>Nominal size</span>
+          <select value={props.size ?? ''} onChange={(e) => apply(std.id, e.target.value)}>
+            {std.sizes.map((z) => (
+              <option key={z.label} value={z.label}>
+                {z.label} · {z.id} mm
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -649,6 +706,8 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
         <Row label="Pressure in → out" value={`${fmt(d.pIn, 'pressure', u)} → ${fmtU(d.pOut, 'pressure', u)}`} />
         {kind === 'valve' && <Row label="Status" value={d.status} tone={d.status === 'closed' ? 'bad' : d.status === 'active' ? 'warn' : 'good'} />}
         {d.K !== undefined && <Row label="Loss coefficient K" value={isFinite(d.K) ? fmtNum(d.K) : '∞'} />}
+        {d.kv !== undefined && <Row label="Flow coefficient" value={`Kv ${fmtNum(d.kv)} · Cv ${fmtNum(d.kv / 0.865)}`} />}
+        {d.ratedShare !== undefined && <Row label="Load" value={`${(d.ratedShare * 100).toFixed(0)} % of rated flow`} tone={d.ratedShare > 1.5 ? 'warn' : undefined} />}
         <Row label="Head loss" value={fmtU(-d.dH, 'head', u)} />
       </>
     )
@@ -742,7 +801,7 @@ export function Inspector() {
         </div>
         <div>
           <input className="insp-name" value={label} onChange={(e) => rename(id, e.target.value)} />
-          <span>{kind === 'pipe' ? 'Pipe' : KIND_META[kind].name}</span>
+          <span>{kind === 'pipe' ? 'Pipe' : kind === 'fitting' ? lossDevice(props.variant).name : KIND_META[kind].name}</span>
         </div>
         {node && ROTATABLE.includes(node.data.kind) && (
           <button className="icon-btn" title="Rotate 90° (R)" onClick={() => rotate(id)}>
@@ -781,6 +840,7 @@ export function Inspector() {
 
       <section>
         <h4>Properties</h4>
+        {kind === 'pipe' && <PipeSizePicker props={props} onChange={(patch) => updateEdge(id, patch)} />}
         {FIELDS[kind]
           .filter((f) => !f.show || f.show(props))
           .map((f) => (

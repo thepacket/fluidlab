@@ -109,3 +109,53 @@ for (const opening of [1, 0.5, 0.2, 0]) {
     console.log('timer t=' + t, timerState(nodes[3].data.props, t), 'pump L/min', (r.devices.PU.flow * 60000).toFixed(1), r.ok, r.excluded)
   }
 }
+
+// catalogue devices: a K fitting, a fouled rated strainer (GPV curve), and a relief valve on a dead-headed pump
+{
+  const mk = (fouling: number, open: number, set: number): Model => ({
+    fluid: FLUIDS[0],
+    nodes: [
+      node('R', 'reservoir', { head: 2 }),
+      node('ST', 'fitting', { variant: 'strainer', ratedDp: 8e3, ratedFlow: 0.001, exponent: 2, fouling }),
+      node('PU', 'pump'),
+      node('EL', 'fitting', { variant: 'elbow90', k: 0.75 }),
+      node('J', 'junction'),
+      node('RV', 'relief', { setPressure: set }),
+      node('V', 'valve', { opening: open }),
+      node('O', 'outlet'),
+    ],
+    edges: [
+      pipe('p1', 'R', 'ST', 'r', 'in'),
+      pipe('p2', 'ST', 'PU', 'out', 'in'),
+      pipe('p3', 'PU', 'EL', 'out', 'in'),
+      pipe('p4', 'EL', 'J', 'out', 'l'),
+      pipe('p5', 'J', 'RV', 't', 'l'),
+      pipe('p6', 'J', 'V', 'r', 'in'),
+      pipe('p7', 'V', 'O', 'out', 'l'),
+    ],
+  })
+  for (const [f, o, set] of [
+    [0, 1, 400e3],
+    [0.7, 1, 400e3],
+    [0, 0, 400e3],
+    [0, 0, 150e3],
+  ] as const) {
+    const r = engine.solve(mk(f, o, set))
+    const st = r.devices.ST
+    console.log(
+      `loss fouling ${f} valve ${o} set ${set / 1000}kPa →`,
+      r.ok,
+      r.error ?? '',
+      'Q',
+      (r.devices.PU.flow * 60000).toFixed(1),
+      'strainer dP kPa',
+      ((st.pIn - st.pOut) / 1000).toFixed(2),
+      'elbow dP',
+      ((r.devices.EL.pIn - r.devices.EL.pOut) / 1000).toFixed(2),
+      'P_J',
+      (r.nodes.J.pressure / 1000).toFixed(0),
+      'relief L/min',
+      (r.nodes.RV.outflow * 60000).toFixed(1),
+    )
+  }
+}

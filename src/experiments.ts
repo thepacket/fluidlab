@@ -13,6 +13,8 @@ export const NODE_SIZE: Record<Kind, [number, number]> = {
   meter: [104, 56],
   element: [120, 64],
   dpgauge: [96, 96],
+  fitting: [96, 64],
+  relief: [84, 64],
   timer: [96, 104],
   manual: [84, 84],
   switch: [92, 88],
@@ -33,6 +35,8 @@ export const PORT_Y: Record<Kind, number> = {
   meter: 0.5,
   element: 0.5,
   dpgauge: 0.8,
+  fitting: 0.5,
+  relief: 0.5,
   timer: 0.54,
   manual: 0.5,
   switch: 0.5,
@@ -94,6 +98,11 @@ class Rig {
       targetHandle: handles[1] ?? (isInline(t.data.kind) ? 'in' : 'l'),
       data: { label: label ?? `Pipe ${this.edges.length + 1}`, props: { ...defaultPipeProps(), ...props } },
     })
+    return this
+  }
+  /** turn a rotatable part (degrees, multiples of 90) */
+  turn(id: string, rot: number) {
+    this.nodes.find((n) => n.id === id)!.data.rot = rot
     return this
   }
   /** signal wire: `pv` → `cin` for a measurement, `sig` → `ctl` / `cin` for a command */
@@ -720,6 +729,122 @@ export const EXPERIMENTS: Experiment[] = [
         .pipe('v', 'out', { length: 10, diameter: 0.025 })
         .wire('ft', 'fic', ['pv', 'cin'])
         .wire('fic', 'v')
+        .done(),
+  },
+  {
+    id: 'fittings',
+    no: '20',
+    title: 'Fittings add up',
+    concept: 'Minor losses are not always minor',
+    formula: 'h_L = ΣK · v² / 2g',
+    brief:
+      'Eleven metres of pipe and four bends. Click the pipes, then the elbows: in a short, fast run the bends cost more than the pipe does. Each part comes from the catalogue, so you can swap it for a gentler one without touching the layout.',
+    steps: ['Select an elbow: compare its Δp with a whole pipe section.', 'Change its catalogue part from “mitred” to “long-radius”.', 'Do all four — the pipework has not changed, but the flow has.'],
+    goal: {
+      text: 'Without changing any pipe, get the flow meter above 47 L/min',
+      check: (r, nodes) => {
+        const q = Math.abs(r.devices['m']?.flow ?? 0) / LPM
+        const untouched = nodes.filter((n) => n.data.kind === 'fitting').length === 4
+        return { done: q >= 47 && untouched, readout: `${q.toFixed(1)} L/min` }
+      },
+    },
+    select: 'e1b',
+    build: () => {
+      const bend = { variant: 'elbow90mitre', k: 1.3, diameter: 0.02 }
+      const run = { length: 2, diameter: 0.02, material: 'copper' }
+      return new Rig()
+        .add('src', 'reservoir', 90, 480, { head: 5 }, 'Header tank')
+        .add('e1b', 'fitting', 330, 480, bend, 'EL1')
+        .add('e2b', 'fitting', 330, 250, bend, 'EL2')
+        .add('e3b', 'fitting', 640, 250, bend, 'EL3')
+        .add('e4b', 'fitting', 640, 480, bend, 'EL4')
+        .add('m', 'meter', 820, 480, { diameter: 0.02 })
+        .add('out', 'outlet', 1000, 480, { nozzleDiameter: 0.02 })
+        .turn('e2b', 90)
+        .turn('e3b', 90)
+        .pipe('src', 'e1b', { ...run, length: 3 })
+        .pipe('e1b', 'e2b', run, ['out', 'out'])
+        .pipe('e2b', 'e3b', run, ['in', 'in'])
+        .pipe('e3b', 'e4b', run, ['out', 'in'])
+        .pipe('e4b', 'm', run)
+        .pipe('m', 'out', { ...run, length: 0.5 })
+        .done()
+    },
+  },
+  {
+    id: 'strainer',
+    no: '21',
+    title: 'Clogging strainer',
+    concept: 'Suction-side losses and NPSH',
+    formula: 'Δp = Δp_rated · (Q/Q_r)² / (1 − fouling)²',
+    brief:
+      'A strainer protects the pump — and slowly starves it. Its datasheet gives one number, the pressure drop at a rated flow; dirt shrinks the open area and the loss climbs as 1/(1 − fouling)². On the suction side every kilopascal lost comes straight out of the pump’s NPSH margin.',
+    steps: [
+      'Select the strainer and drag its fouling slider. DP1 reads what the basket is costing.',
+      'Select the pump and watch NPSH available fall towards NPSH required.',
+      'Maintenance crews change baskets on Δp, not on the calendar — find the reading that should raise the alarm.',
+    ],
+    goal: {
+      text: 'Foul the strainer until NPSH available is within 0.3 m of NPSH required — note DP1, that is your alarm limit',
+      check: (r, nodes) => {
+        const d = r.devices['p']
+        const npshr = nodes.find((n) => n.id === 'p')?.data.props.npshr ?? 0
+        const dp = r.devices['dp']
+        const margin = (d?.npsha ?? 99) - npshr
+        return { done: Math.abs(margin) <= 0.3, readout: `margin ${margin.toFixed(1)} m · DP1 ${dp ? ((dp.pIn - dp.pOut) / 1000).toFixed(0) : '—'} kPa` }
+      },
+    },
+    select: 'st',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 90, 460, { head: 1 }, 'Sump')
+        .add('a', 'junction', 270, 460, {}, 'Tap A')
+        .add('st', 'fitting', 420, 460, { variant: 'strainer', ratedDp: 8e3, ratedFlow: 60 * LPM, exponent: 2, fouling: 0.1, diameter: 0.04 }, 'ST1')
+        .add('b', 'junction', 570, 460, {}, 'Tap B')
+        .add('dp', 'dpgauge', 420, 260, {}, 'DP1')
+        .add('p', 'pump', 730, 460, { designFlow: 70 * LPM, designHead: 22, npshr: 3.5 })
+        .add('out', 'outlet', 990, 460, { nozzleDiameter: 0.013 })
+        .pipe('src', 'a', { length: 2, diameter: 0.04 })
+        .pipe('a', 'st', { length: 0.5, diameter: 0.04 })
+        .pipe('st', 'b', { length: 0.5, diameter: 0.04 })
+        .pipe('b', 'p', { length: 1, diameter: 0.04 })
+        .pipe('p', 'out', { length: 10, diameter: 0.04 })
+        .pipe('a', 'dp', { length: 1, diameter: 0.006 }, ['t', 'in'], 'Sense HI')
+        .pipe('b', 'dp', { length: 1, diameter: 0.006 }, ['t', 'out'], 'Sense LO')
+        .done(),
+  },
+  {
+    id: 'relief',
+    no: '22',
+    title: 'Relief valve',
+    concept: 'Protecting a dead-headed pump',
+    formula: 'lifts when p > p_set',
+    brief:
+      'Shut the discharge valve on a running pump and the header climbs to the pump’s shut-off pressure. A relief valve is the last line of defence: below its set pressure it is a closed dead end, above it it opens just far enough to hold the line. This one was set far too high to ever lift.',
+    steps: ['Close the discharge valve and watch PG1 climb.', 'Select RV1 and lower its set pressure until it lifts.', 'Note where the vented water goes — in a real plant, back to the tank.'],
+    goal: {
+      text: 'Fully close the discharge valve while keeping the header at or below 300 kPa',
+      check: (r, nodes) => {
+        const shut = (nodes.find((n) => n.id === 'v')?.data.props.opening ?? 1) <= 0.001
+        const p = (r.nodes['g']?.pressure ?? 0) / 1000
+        return { done: shut && p <= 305 && (r.nodes['rv']?.outflow ?? 0) > 1e-7, readout: `${p.toFixed(0)} kPa${shut ? '' : ' · valve open'}` }
+      },
+    },
+    select: 'v',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 90, 470, { head: 2 }, 'Tank')
+        .add('p', 'pump', 290, 470, { designFlow: 80 * LPM, designHead: 30 })
+        .add('g', 'gauge', 480, 470, {}, 'PG1')
+        .add('rv', 'relief', 480, 250, { setPressure: 900e3, diameter: 0.025 }, 'RV1')
+        .add('v', 'valve', 680, 470, { diameter: 0.04, body: 'globe', kOpen: 6, trim: 'linear' }, 'Discharge')
+        .add('out', 'outlet', 900, 470, { nozzleDiameter: 0.016 })
+        .turn('rv', 270)
+        .pipe('src', 'p', { length: 3, diameter: 0.05 })
+        .pipe('p', 'g', { length: 3, diameter: 0.04 })
+        .pipe('g', 'rv', { length: 1, diameter: 0.025 }, ['t', 'l'])
+        .pipe('g', 'v', { length: 3, diameter: 0.04 })
+        .pipe('v', 'out', { length: 6, diameter: 0.04 })
         .done(),
   },
 ]

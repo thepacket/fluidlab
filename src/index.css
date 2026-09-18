@@ -356,6 +356,52 @@ input:focus {
   color: var(--text);
   border-color: var(--accent);
 }
+.search {
+  width: 100%;
+  margin: 2px 0 4px;
+  padding: 8px 11px;
+  border-radius: 9px;
+  background: #080e19;
+  border: 1px solid var(--line-2);
+  outline: none;
+}
+.search:focus {
+  box-shadow: 0 0 0 3px rgba(53, 224, 255, 0.12);
+}
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 12px 0 8px;
+  padding: 2px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.group-head::before {
+  content: '›';
+  font-size: 14px;
+  line-height: 1;
+  transition: transform 0.15s;
+}
+.group-head.open::before {
+  transform: rotate(90deg);
+}
+.group-head:hover {
+  color: var(--text);
+}
+.group-head i {
+  margin-left: auto;
+  font: 500 10px var(--mono);
+  font-style: normal;
+  letter-spacing: 0;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--panel-3);
+}
 .palette-item {
   display: flex;
   gap: 10px;

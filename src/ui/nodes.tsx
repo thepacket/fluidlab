@@ -1,8 +1,9 @@
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
 import { memo, useEffect, type ReactNode } from 'react'
 import { NODE_SIZE, PORT_Y, type LabNode } from '../experiments'
+import { lossDevice, type Glyph } from '../model/catalog'
 import { PV_CONSUMERS, PV_SOURCES, fmtClock, timerState } from '../model/control'
-import { beta, valveK } from '../model/physics'
+import { beta, fittingK, valveK } from '../model/physics'
 import { CONTROLLABLE, ROTATABLE, isControl, type Kind } from '../model/types'
 import { fmt, fmtU, toSI, unitLabel } from '../model/units'
 import { useLab } from '../store'
@@ -50,7 +51,7 @@ function Ports({ kind, rot }: { kind: Kind; rot: number }) {
     )
   if (kind === 'dpgauge' || ROTATABLE.includes(kind)) {
     const y = kind === 'dpgauge' ? { top: `${PORT_Y[kind] * 100}%` } : undefined
-    if (kind === 'outlet') return <Handle id="l" type="source" position={side(Position.Left, rot)} className="port" />
+    if (kind === 'outlet' || kind === 'relief') return <Handle id="l" type="source" position={side(Position.Left, rot)} className="port" />
     return (
       <>
         <Handle id="in" type="source" position={side(Position.Left, rot)} className="port port-in" style={y} />
@@ -404,7 +405,7 @@ export const ValveNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const position = p.opening * (cmd ?? 1) // where the plug actually is: its own setting, scaled by any command
   const held = cmd !== undefined && (type === 'throttle' ? position <= 0.001 : cmd < 0.5)
   const open = held ? 0 : type === 'throttle' ? position : d?.status === 'closed' ? 0 : 1
-  const K = valveK(position, p.kOpen)
+  const K = valveK(position, p.kOpen, p.trim)
   let sub: string
   if (held) sub = 'SHUT · held'
   else if (type === 'throttle') sub = position <= 0.001 ? 'CLOSED' : `${Math.round(position * 100)} %${cmd !== undefined ? ' auto' : ''} · K ${K > 999 ? K.toExponential(1) : K.toFixed(1)}`
@@ -668,6 +669,177 @@ export const TimerNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   )
 })
 
+// ---- catalogue loss devices -----------------------------------------------------------
+
+/** P&ID-style symbols, drawn in a 96×64 box around the pipe axis y = 32. `c` is the fluid colour. */
+function glyph(g: Glyph, c: string, fouling: number): ReactNode {
+  const steel = '#5a7099'
+  const body = { fill: '#0c1424', stroke: steel, strokeWidth: 2.5, strokeLinejoin: 'round' as const }
+  switch (g) {
+    case 'elbow':
+      return <path d="M30,32 H52 Q66,32 66,18 V8" fill="none" stroke={c} strokeWidth="12" strokeLinecap="butt" />
+    case 'elbow45':
+      return <path d="M30,32 H50 L66,16" fill="none" stroke={c} strokeWidth="12" strokeLinejoin="round" />
+    case 'tee':
+      return <path d="M30,32 H66 M48,32 V8" fill="none" stroke={c} strokeWidth="12" />
+    case 'reducer':
+      return <path d="M28,16 L68,25 V39 L28,48 Z" {...body} fill={c} />
+    case 'expander':
+      return <path d="M28,25 L68,16 V48 L28,39 Z" {...body} fill={c} />
+    case 'entrance':
+      return (
+        <>
+          <path d="M26,6 V58" stroke={steel} strokeWidth="4" strokeLinecap="round" />
+          <path d="M14,18 Q30,22 40,30 M14,46 Q30,42 40,34 M10,32 H38" fill="none" stroke="#fff" strokeWidth="1.5" opacity=".5" />
+        </>
+      )
+    case 'exit':
+      return (
+        <>
+          <path d="M70,6 V58" stroke={steel} strokeWidth="4" strokeLinecap="round" />
+          <path d="M58,30 Q70,22 84,16 M58,34 Q70,42 84,48 M58,32 H88" fill="none" stroke="#fff" strokeWidth="1.5" opacity=".5" />
+        </>
+      )
+    case 'strainer':
+      return (
+        <>
+          <path d="M26,20 H70 V44 H58 L40,62 L30,52 L44,44 H26 Z" {...body} />
+          <path d="M44,44 L58,44 M47,47 L41,53 M52,47 L44,55" stroke={steel} strokeWidth="1.5" strokeDasharray="2 2" />
+          <path d="M34,50 L42,58" stroke="#c98500" strokeWidth={1 + fouling * 7} strokeLinecap="round" opacity={fouling > 0.02 ? 0.9 : 0} />
+        </>
+      )
+    case 'filter':
+      return (
+        <>
+          <rect x="30" y="8" width="36" height="50" rx="6" {...body} />
+          <path d="M38,16 V50 M44,16 V50 M50,16 V50 M56,16 V50" stroke={steel} strokeWidth="1.5" />
+          <rect x="31.500" y={57 - fouling * 46} width="33" height={fouling * 46} fill="#c98500" opacity=".55" />
+        </>
+      )
+    case 'plate':
+      return (
+        <>
+          <rect x="28" y="8" width="40" height="48" rx="3" {...body} />
+          <path d="M34,8 V56 M40,8 V56 M46,8 V56 M52,8 V56 M58,8 V56 M62,8 V56" stroke={c} strokeWidth="1.5" opacity=".8" />
+        </>
+      )
+    case 'shell':
+      return (
+        <>
+          <rect x="22" y="14" width="52" height="36" rx="18" {...body} />
+          <path d="M30,24 H66 M28,32 H68 M30,40 H66" stroke={c} strokeWidth="2" />
+        </>
+      )
+    case 'coil':
+      return <path d="M24,32 H30 V12 H38 V52 H46 V12 H54 V52 H62 V12 H68 V32 H72" fill="none" stroke={c} strokeWidth="4" strokeLinejoin="round" />
+    case 'mixer':
+      return (
+        <>
+          <rect x="24" y="20" width="48" height="24" rx="4" {...body} />
+          <path d="M28,40 L38,24 L48,40 L58,24 L68,40" fill="none" stroke={c} strokeWidth="2" />
+        </>
+      )
+    case 'membrane':
+      return (
+        <>
+          <rect x="22" y="16" width="52" height="32" rx="4" {...body} />
+          <path d="M26,44 L70,20" stroke={c} strokeWidth="2" strokeDasharray="3 2.500" />
+          <rect x="23.500" y="17.500" width="49" height="29" rx="3" fill="#c98500" opacity={fouling * 0.5} />
+        </>
+      )
+    case 'uv':
+      return (
+        <>
+          <rect x="22" y="18" width="52" height="28" rx="14" {...body} />
+          <path d="M30,32 H66" stroke="#b7a9ff" strokeWidth="4" strokeLinecap="round" style={{ filter: 'drop-shadow(0 0 5px #9085e9)' }} />
+        </>
+      )
+    default:
+      return (
+        <>
+          <rect x="26" y="14" width="44" height="36" rx="6" {...body} />
+          <path d="M34,40 Q48,14 62,40" fill="none" stroke={c} strokeWidth="2" />
+        </>
+      )
+  }
+}
+
+export const FittingNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const d = useLab((s) => s.results.devices[id])
+  const p = data.props
+  const spec = lossDevice(p.variant)
+  const rot = rotOf(data)
+  const cIn = usePressureColor(d?.pIn)
+  const cOut = usePressureColor(d?.pOut)
+  const dp = d ? Math.abs(d.pIn - d.pOut) : undefined
+  const sub =
+    spec.model === 'k'
+      ? `K ${fittingK(p, spec.byDiameters).K.toFixed(2)}${dp !== undefined ? ` · ${fmtU(dp, 'pressure', units)}` : ''}`
+      : `${dp !== undefined ? `Δp ${fmtU(dp, 'pressure', units)}` : spec.name}${p.fouling > 0.02 ? ` · ${Math.round(p.fouling * 100)} % fouled` : ''}`
+  // a bend or tee leaves through the top of its box; everything else runs straight through
+  const bent = spec.glyph === 'elbow' || spec.glyph === 'elbow45' || spec.glyph === 'tee'
+  return (
+    <Shell id={id} kind="fitting" rot={rot} selected={selected} label={data.label} sub={sub}>
+      <svg width="96" height="64" viewBox="0 0 96 64">
+        <rect x="0" y="22" width="32" height="20" fill="#04070d" />
+        <rect x="0" y="25" width="32" height="14" fill={cIn} />
+        <rect x="64" y="22" width="32" height="20" fill="#04070d" />
+        <rect x="64" y="25" width="32" height="14" fill={cOut} />
+        {bent && <path d="M30,32 H66" stroke={cIn} strokeWidth="12" />}
+        {glyph(spec.glyph, cIn, p.fouling ?? 0)}
+        <rect x="6" y="18" width="5" height="28" rx="1.5" fill="#5a7099" />
+        <rect x="85" y="18" width="5" height="28" rx="1.5" fill="#5a7099" />
+      </svg>
+    </Shell>
+  )
+})
+
+export const ReliefNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const r = useLab((s) => s.results.nodes[id])
+  const paused = useLab((s) => !s.running)
+  const c = usePressureColor(r?.pressure)
+  const lifting = (r?.outflow ?? 0) > 1e-8
+  const rot = rotOf(data)
+  return (
+    <Shell
+      id={id}
+      kind="relief"
+      rot={rot}
+      selected={selected}
+      label={data.label}
+      sub={lifting ? `venting ${fmtU(r!.outflow, 'flow', units)}` : `set ${fmtU(data.props.setPressure, 'pressure', units)}`}
+    >
+      <svg width="84" height="64" viewBox="0 0 84 64" style={{ overflow: 'visible' }}>
+        <rect x="0" y="22" width="22" height="20" fill="#04070d" />
+        <rect x="0" y="25" width="22" height="14" fill={c} />
+        <path d="M18,14 V50 L40,32 Z" fill={lifting ? '#fab219' : '#101a2c'} stroke="#5a7099" strokeWidth="2.5" strokeLinejoin="round" />
+        <path d="M40,32 L58,18 V46 Z" fill="#101a2c" stroke="#5a7099" strokeWidth="2.5" strokeLinejoin="round" />
+        {/* spring housing */}
+        <path
+          d={`M58,32 l4,-7 l4,14 l4,-14 l4,14 l4,-7`}
+          fill="none"
+          stroke={lifting ? '#fab219' : '#8aa0c6'}
+          strokeWidth="2"
+          strokeLinejoin="round"
+          transform={lifting ? 'translate(58 0) scale(.8 1) translate(-58 0) translate(6 0)' : undefined}
+        />
+        <path d="M80,20 V44" stroke="#5a7099" strokeWidth="3" strokeLinecap="round" />
+        {lifting &&
+          [-1, 0, 1].map((k) => (
+            <path
+              key={k}
+              className="spray"
+              d={`M40,24 Q${40 + k * 8},8 ${40 + k * 16},-10`}
+              style={{ animationDuration: '.5s', animationDelay: `${-k * 0.15}s`, animationPlayState: paused ? 'paused' : 'running' }}
+            />
+          ))}
+      </svg>
+    </Shell>
+  )
+})
+
 // ---- control blocks ---------------------------------------------------------------
 
 /** Which instrument feeds this controller, and how to show its reading. */
@@ -844,6 +1016,8 @@ export const nodeTypes = {
   meter: MeterNode,
   element: ElementNode,
   dpgauge: DpGaugeNode,
+  fitting: FittingNode,
+  relief: ReliefNode,
   timer: TimerNode,
   manual: ManualNode,
   switch: SwitchNode,

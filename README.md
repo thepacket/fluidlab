@@ -13,7 +13,7 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 
 ## What's in it
 
-- **Network editor** (React Flow): 16 components, loose port-to-port pipes, snap grid, minimap, 90° rotation (`R`),
+- **Network editor** (React Flow): 18 components plus the catalogue, loose port-to-port pipes, snap grid, minimap, 90° rotation (`R`),
   undo/redo (`⌘Z` / `⇧⌘Z`, 100 steps, slider drags and typing coalesce into one step).
 - **Runs off the main thread**: EPANET lives in a Web Worker behind a latest-wins client (no backlog while dragging a
   slider); falls back to the main thread if workers are unavailable.
@@ -39,8 +39,19 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
     with auto/manual, anti-windup and bumpless transfer, AND/OR/NOT gate, alarm lamp.
   - Feedback blocks only act on the lab clock, never between ticks, so a pressure switch and its pump can't chase
     each other in zero time.
-- **19 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
-  constant-pressure PID booster, flow loop with a motorised valve). `scripts/control-sim.ts` runs the loops closed
+- **Data-driven component library** (`src/model/catalog.ts`): ~20 fittings and pieces of equipment share one
+  `fitting` component. A catalogue entry picks a loss model — `k` (minor-loss K; reducers/expanders derive it from
+  their two bores) or `rated` (datasheet Δp @ Q with exponent n and a fouling slider, sent to EPANET as a GPV
+  head-loss curve) — plus a P&ID glyph and defaults. Adding a part is a catalogue line, not a new component type.
+  Also from the catalogue: valve bodies (gate, globe, ball, butterfly…) with equal-%/linear/quick-opening trims and
+  a Kv/Cv readout, and nominal pipe sizes (steel Sch 40, copper L, PVC Sch 40, PEX) that set bore, material and
+  roughness together.
+- **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
+  lifting just far enough.
+- **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
+- **22 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+  constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
+  valve). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli

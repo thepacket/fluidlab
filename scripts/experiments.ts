@@ -52,5 +52,28 @@ for (const ex of EXPERIMENTS) {
         rr.warnings.map((w) => w.text),
       )
     }
+  const again = (label: string) => {
+    const rr = engine.solve({ nodes, edges, fluid: FLUIDS[0] } as any)
+    console.log('  ' + label, ex.goal!.check(rr, nodes, {}, []), 'Q', ((rr.devices.p ?? rr.devices.m)?.flow * 60000).toFixed(0), 'vent', ((rr.nodes.rv?.outflow ?? 0) * 60000).toFixed(0))
+  }
+  const prop = (id: string) => nodes.find((n) => n.id === id)!.data.props
+  if (ex.id === 'fittings') {
+    for (const n of nodes) if (n.data.kind === 'fitting') Object.assign(n.data.props, { variant: 'elbow90lr', k: 0.45 })
+    again('long-radius')
+  }
+  if (ex.id === 'strainer')
+    for (const f of [0.3, 0.5, 0.55, 0.6, 0.65, 0.7]) {
+      prop('st').fouling = f
+      again('fouling ' + f)
+    }
+  if (ex.id === 'relief')
+    for (const [o, set] of [
+      [0, 900e3],
+      [0, 300e3],
+    ]) {
+      prop('v').opening = o
+      prop('rv').setPressure = set
+      again(`open ${o} set ${set / 1000}`)
+    }
   if (ex.id === 'prv') console.log('  p2', r.nodes.g2.pressure, r.devices.v.status)
 }

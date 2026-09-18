@@ -1,7 +1,8 @@
 // EPANET adapter, part 2: run the WebAssembly solver and lift raw results
 // back into FluidLab's vocabulary (SI, element ids, educational extras).
 import { LinkProperty, NodeProperty, Project, Workspace } from 'epanet-js'
-import { G, P_ATM, area, elementInferredFlow, elementTapDp, frictionFactor, pumpEfficiency, pumpMaxFlow, regimeOf, reynolds, valveK } from '../model/physics'
+import { lossDevice } from '../model/catalog'
+import { G, P_ATM, area, fittingK, kvOf, ratedDp, elementInferredFlow, elementTapDp, frictionFactor, pumpEfficiency, pumpMaxFlow, regimeOf, reynolds, valveK } from '../model/physics'
 import { EMPTY_RESULTS, isControl, type Model, type Results, type Warning } from '../model/types'
 import { command, commandedOff, compile, type Overrides } from './inp'
 
@@ -69,7 +70,10 @@ class EpanetEngine implements HydraulicEngine {
           const elevation = kind === 'reservoir' ? p.head : p.elevation
           const demand = project.getNodeValue(idx, NodeProperty.Demand) / 1000
           const pressure = kind === 'reservoir' ? 0 : (h - elevation) * rhoG
-          res.nodes[nd.id] = { head: h, pressure, elevation, outflow: demand }
+          const vented = kind === 'relief' ? flowOf(`${eid}v`) : 0
+          res.nodes[nd.id] = { head: h, pressure, elevation, outflow: kind === 'relief' ? vented : demand }
+          if (vented > 1e-8)
+            warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: lifting — venting ${(vented * 60000).toFixed(0)} L/min to hold ${(p.setPressure / 1000).toFixed(0)} kPa` })
           if (kind !== 'reservoir' && kind !== 'tank' && pressure + P_ATM < fluid.vaporPressure)
             warnings.push({ id: nd.id, level: 'error', text: `${nd.data.label}: pressure below vapour pressure — the liquid would boil` })
           else if (kind !== 'reservoir' && kind !== 'tank' && pressure < -1000) warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: sub-atmospheric pressure` })
@@ -96,6 +100,19 @@ class EpanetEngine implements HydraulicEngine {
             } else dev.dH = 0
           } else if (kind === 'dpgauge') {
             dev.flow = 0
+          } else if (kind === 'fitting') {
+            const spec = lossDevice(p.variant)
+            if (spec.model === 'k') {
+              const { bore, K } = fittingK(p, spec.byDiameters)
+              dev.K = K
+              dev.velocity = Math.abs(q) / area(bore)
+            } else {
+              dev.velocity = Math.abs(q) / area(p.diameter)
+              dev.ratedShare = Math.abs(q) / Math.max(1e-9, p.ratedFlow)
+              if (dev.ratedShare > 4) warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: far beyond its rated flow — the Δp curve is being extrapolated` })
+              else if ((p.fouling ?? 0) >= 0.6 && Math.abs(q) > 1e-8)
+                warnings.push({ id: nd.id, level: 'info', text: `${nd.data.label}: heavily fouled (Δp ${(ratedDp(q, p) / 1000).toFixed(0)} kPa) — due for cleaning` })
+            }
           } else {
             dev.velocity = Math.abs(q) / area(p.diameter)
             if (kind === 'element') {
@@ -109,7 +126,8 @@ class EpanetEngine implements HydraulicEngine {
             if (kind === 'valve' && p.valveType !== 'throttle' && commandedOff(model, nd.id)) dev.status = 'closed'
             else if (kind === 'valve') {
               if (p.valveType === 'throttle') {
-                dev.K = valveK(p.opening * command(model, nd.id), p.kOpen)
+                dev.K = valveK(p.opening * command(model, nd.id), p.kOpen, p.trim)
+                dev.kv = kvOf(dev.K, p.diameter)
                 dev.status = isFinite(dev.K) ? 'open' : 'closed'
               } else if (p.valveType === 'check') dev.status = q > 1e-9 ? 'open' : 'closed'
               else {

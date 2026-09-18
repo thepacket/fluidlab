@@ -1,6 +1,7 @@
 // EPANET adapter, part 1: translate a FluidLab model into an EPANET .inp file.
 // Units: LPS / SI  →  flow L/s, length m, diameter mm, roughness mm (D-W), pressure m.
-import { G, area, elementK, valveK } from '../model/physics'
+import { lossDevice } from '../model/catalog'
+import { G, area, elementK, fittingK, ratedDp, valveK } from '../model/physics'
 import { isControl, isInline, type Model, type Warning } from '../model/types'
 
 export interface Compiled {
@@ -116,6 +117,14 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
       const max = Math.max(min + 0.01, p.maxLevel)
       const lvl = Math.min(max, Math.max(min, model.levels?.[nd.id] ?? p.initLevel))
       T.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n(lvl)} ${n(min)} ${n(max)} ${n(Math.max(0.05, p.diameter))} 0`)
+    } else if (k === 'relief') {
+      // A PSV holds its upstream side at the set pressure by venting — exactly a modulating relief valve.
+      // EPANET won't join a valve straight to a reservoir, hence the stub pipe to "atmosphere".
+      const id = nodeIds[nd.id]
+      J.push(`${id} ${n(p.elevation)} 0`, `${id}m ${n(p.elevation)} 0`)
+      R.push(`${id}atm ${n(p.elevation)}`)
+      V.push(`${id}v ${id} ${id}m ${n(p.diameter * 1000)} PSV ${n(p.setPressure / rhoG)} 0`)
+      P.push(`${id}s ${id}m ${id}atm 0.05 ${n(Math.max(p.diameter, 0.05) * 1000)} 0.0015 0 CV`)
     } else if (k === 'junction' || k === 'gauge') {
       J.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n((p.demand ?? 0) * 1000)}`)
     } else if (k === 'outlet') {
@@ -138,6 +147,19 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
         P.push(`${d.link} ${d.a} ${d.b} 0.05 ${n(p.diameter * 1000)} 0.0015 0 OPEN`)
       } else if (k === 'element') {
         P.push(`${d.link} ${d.a} ${d.b} 0.05 ${n(p.diameter * 1000)} 0.0015 ${n(elementK(p))} OPEN`)
+      } else if (k === 'fitting') {
+        const dev = lossDevice(p.variant)
+        if (dev.model === 'k') {
+          const { bore, K } = fittingK(p, dev.byDiameters)
+          P.push(`${d.link} ${d.a} ${d.b} 0.05 ${n(bore * 1000)} 0.0015 ${n(K)} OPEN`)
+        } else {
+          // head-loss curve out to 4× the rated flow; the solver interpolates between the points
+          for (let i = 0; i <= 16; i++) {
+            const q = (p.ratedFlow * 4 * i) / 16
+            CU.push(`C${d.link} ${n(q * 1000)} ${n(ratedDp(q, p) / rhoG)}`)
+          }
+          V.push(`${d.link} ${d.a} ${d.b} ${n(p.diameter * 1000)} GPV C${d.link} 0`)
+        }
       } else if (k === 'dpgauge') {
         P.push(`${d.link} ${d.a} ${d.b} 0.05 10 0.0015 0 CLOSED`)
       } else {
@@ -158,7 +180,7 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
             V.push(`${d.link} ${d.a} ${d.b} ${dia} FCV ${n(p.flowSetting * 1000)} ${n(p.kOpen)}`)
             break
           default: {
-            const K = valveK(p.opening * command(model, nd.id), p.kOpen)
+            const K = valveK(p.opening * command(model, nd.id), p.kOpen, p.trim)
             V.push(`${d.link} ${d.a} ${d.b} ${dia} TCV ${n(isFinite(K) ? K : 1e9)} 0`)
             if (!isFinite(K)) ST.push(`${d.link} CLOSED`)
           }
