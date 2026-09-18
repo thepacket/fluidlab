@@ -123,7 +123,22 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   engine it is a plain junction.
 - **Thermal layer** (`src/engine/thermal.ts`): once flows are known, water temperature is carried round the loop —
   mixed at junctions, reset by a boiler, given up by emitters (NTU model against a constant room temperature).
-  Shows as a "Thermal" pipe-colour overlay with temperatures and heat duty per part. Steady-state, no pipe heat loss.
+  Shows as a "Thermal" pipe-colour overlay with temperatures and heat duty per part. It switches on for a boiler, a
+  heated or pre-warmed tank, or a reservoir that is not at 15 °C. Pipes lose heat only once they are told what they are
+  wrapped in (bare … 100 mm wool; the default leaves loss out), and a boiler can be given a maximum output.
+- **Transient heat transfer** (`src/engine/heat.ts`): the "live heat" switch in the top bar marches those temperatures
+  through lab time instead of showing where they settle. Hydraulics stay quasi-steady; heat rides on the flows. Every
+  pipe is a row of cells (≈1.5 m) advected upwind and implicitly — stable at any step, sub-stepped to a Courant number
+  near one — carrying the water _and_ the pipe wall it has to warm, and leaking to the room through its lagging.
+  Junctions mix; dead water remembers its temperature; a tank is one stirred volume with an optional immersion heater
+  on a thermostat and a standing loss; boilers and emitters have thermal mass, so they answer with a lag. The pipe
+  overlay gets one colour stop per cell, so a hot front can be seen travelling; the inspector draws temperature along
+  the pipe and its trend; a **thermometer** (`pv` output in °C) gives switches and PIDs a temperature to act on; the
+  overview shows where the heat is going right now (in, to the rooms, lost, soaking into water and metal). Run long
+  enough it lands exactly on the steady layer (`scripts/heat-check.ts` checks that, the plug-flow delay of a dead
+  leg including its copper, and a cylinder warming at P/ρcV). Limits: tanks are fully mixed (no stratification),
+  first-order upwind smears sharp fronts, rooms are at fixed temperature, water properties do not change with
+  temperature, and liquids only.
 - **Sources**: a reservoir is an open surface, a **mains connection** quoted in pressure, or a **well** whose pumping
   level is drawn down in proportion to yield (a head-loss curve between the aquifer and the pumping node). Tanks can
   **overflow** at the rim (spill reported) instead of shutting their inlet; the float valve has an **altitude-valve**
@@ -132,10 +147,10 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **46 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **49 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
   valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
-  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap). `scripts/control-sim.ts` runs the loops closed
+  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap → waiting for hot water, warming up a heating loop, lagging a hot-water main). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli
@@ -159,7 +174,7 @@ fly deploy                             # build remotely and ship
 ```
 src/model/     types + defaults, units, physics, openchannel, steam (pure, SI)
 src/engine/    inp.ts (compile) · epanet.ts (steady engine) · gas.ts (gas engine) · steam.ts (steam layer) · channel.ts (open-channel engine)
-               transient.ts (water-hammer engine) · thermal.ts (heat layer)
+               transient.ts (water-hammer engine) · thermal.ts (steady heat layer) · heat.ts (transient heat)
                worker.ts + client.ts (threading)
                analysis.ts (curves, grade line)
 src/experiments.ts   rig builder + the experiment catalogue
@@ -167,4 +182,4 @@ src/store.ts   zustand store, solve scheduling, tank time-stepping, persistence
 src/ui/        nodes, animated pipe edge, inspector, charts, top bar, sidebar
 ```
 
-`HydraulicEngine` is the seam solvers plug into: EPANET, the gas engine and the open-channel engine all sit behind it today, with steam as a layer on the gas engine; transient heat transfer is still to come.
+`HydraulicEngine` is the seam solvers plug into: EPANET, the gas engine and the open-channel engine all sit behind it today, with steam as a layer on the gas engine and heat (steady or marched through time) as a layer on the liquid one.

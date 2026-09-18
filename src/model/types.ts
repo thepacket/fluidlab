@@ -31,6 +31,7 @@ export type Kind =
   | 'weir'
   | 'gate'
   | 'outfall'
+  | 'thermo'
   | 'steamload'
   | 'trap'
 
@@ -176,6 +177,7 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
   inflow: { name: 'Channel inflow', prefix: 'IN', blurb: 'A steady discharge entering an open channel' },
   weir: { name: 'Weir', prefix: 'WR', blurb: 'Backs water up; its head tells you the flow' },
   gate: { name: 'Sluice gate', prefix: 'SG', blurb: 'Underflow gate — shoots a fast, shallow jet' },
+  thermo: { name: 'Thermometer', prefix: 'TT', blurb: 'Reads water temperature at a point' },
   steamload: { name: 'Steam load', prefix: 'HX', blurb: 'Condenses steam to deliver a heat duty' },
   trap: { name: 'Steam trap', prefix: 'ST', blurb: 'Lets condensate out and keeps steam in' },
   outfall: { name: 'Outfall', prefix: 'OF', blurb: 'Where a channel ends: free drop, fixed level or normal depth' },
@@ -184,12 +186,25 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
 export function defaultProps(kind: Kind): Props {
   switch (kind) {
     case 'reservoir':
-      return { feedTemp: 80, boilerEfficiency: 0.82, steamCost: 35, head: 10, sourceType: 'surface', pressure: 400e3, elevation: 0, staticLevel: -8, ratedDrawdown: 6, ratedYield: 60 / 60000 }
+      return {
+        temp: 15,
+        feedTemp: 80,
+        boilerEfficiency: 0.82,
+        steamCost: 35,
+        head: 10,
+        sourceType: 'surface',
+        pressure: 400e3,
+        elevation: 0,
+        staticLevel: -8,
+        ratedDrawdown: 6,
+        ratedYield: 60 / 60000,
+      }
     case 'tank':
-      return { overflow: false, elevation: 0, shape: 'cylinder', diameter: 1.2, length: 2, initLevel: 0.5, minLevel: 0, maxLevel: 2.5 }
+      return { initTemp: 15, heaterPower: 0, heaterSetpoint: 60, heatLoss: 0, overflow: false, elevation: 0, shape: 'cylinder', diameter: 1.2, length: 2, initLevel: 0.5, minLevel: 0, maxLevel: 2.5 }
     case 'junction':
       return { elevation: 0, demand: 0, pattern: 'constant' }
     case 'gauge':
+    case 'thermo':
       return { elevation: 0 }
     case 'outlet':
       return { elevation: 0, mode: 'nozzle', nozzleDiameter: 0.012, cd: 0.9, demand: 0.0005, pattern: 'constant', variant: 'nozzle', kFactor: 80 / 60000 / Math.sqrt(1e5), fused: true }

@@ -10,7 +10,7 @@ import { beta, fittingK, tankHeight, valveK, vesselPressure, vesselWater } from 
 import { CONTROLLABLE, ROTATABLE, isControl, type Kind } from '../model/types'
 import { fmt, fmtU, toSI, unitLabel } from '../model/units'
 import { useLab } from '../store'
-import { DRY, PLAIN, SIGNAL_OFF, SIGNAL_ON, niceCeil, pressureColor } from './colors'
+import { DRY, PLAIN, SIGNAL_OFF, SIGNAL_ON, niceCeil, pressureColor, thermalColor } from './colors'
 
 // ---- shared shell -----------------------------------------------------------
 
@@ -227,9 +227,16 @@ export const TankNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const net = r?.outflow ?? 0
   const trend = Math.abs(net) < 1e-7 ? '' : net > 0 ? '▲' : '▼'
   const spilling = !!p.overflow && frac >= 0.999 && net > 1e-7
+  const waterTemp = useLab((s) => (s.results.steam ? undefined : s.results.thermal?.nodes[id]))
   const paused = useLab((s) => !s.running)
   return (
-    <Shell id={id} kind="tank" selected={selected} label={data.label} sub={spilling ? `overflowing ${fmtU(net, 'flow', units)}` : `${trend} ${fmtU(level, 'length', units)}`}>
+    <Shell
+      id={id}
+      kind="tank"
+      selected={selected}
+      label={data.label}
+      sub={spilling ? `overflowing ${fmtU(net, 'flow', units)}` : `${trend} ${fmtU(level, 'length', units)}${waterTemp !== undefined ? ` · ${waterTemp.toFixed(0)} °C` : ''}`}
+    >
       <svg width="112" height="136" viewBox="0 0 112 136">
         <defs>
           <linearGradient id={`tw-${id}`} x1="0" y1="0" x2="0" y2="1">
@@ -1662,7 +1669,32 @@ export const TrapNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   )
 })
 
+// ---- thermometer -------------------------------------------------------------------------------
+
+export const ThermoNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const t = useLab((s) => s.results.thermal?.nodes[id])
+  const range = useLab(useShallow((s) => [s.results.thermal?.tMin ?? 0, s.results.thermal?.tMax ?? 100]))
+  const frac = t === undefined ? 0 : Math.min(1, Math.max(0.04, (t - Math.min(range[0], 10)) / Math.max(1, Math.max(range[1], 80) - Math.min(range[0], 10))))
+  const c = t === undefined ? DRY : thermalColor(t, range[0], range[1])
+  return (
+    <Shell id={id} kind="thermo" selected={selected} label={data.label} sub={t === undefined ? 'no heat source' : undefined}>
+      <svg width="72" height="88" viewBox="0 0 72 88" style={{ overflow: 'visible' }}>
+        <rect x="4" y="4" width="64" height="52" rx="10" fill="#0a1526" stroke="#5a7099" strokeWidth="2.5" />
+        <text x="36" y="34" className="svg-readout">
+          {t === undefined ? '—' : t.toFixed(1)}
+          <tspan className="svg-unit"> °C</tspan>
+        </text>
+        <rect x="12" y="42" width="48" height="6" rx="3" fill="#04070d" />
+        <rect x="12" y="42" width={48 * frac} height="6" rx="3" fill={c} style={{ transition: 'width .3s' }} />
+        <path d="M36,56 V69" stroke="#5a7099" strokeWidth="4" />
+        <circle cx="36" cy="69" r="5" fill={c} stroke="#5a7099" strokeWidth="2" />
+      </svg>
+    </Shell>
+  )
+})
+
 export const nodeTypes = {
+  thermo: ThermoNode,
   steamload: SteamLoadNode,
   trap: TrapNode,
   inflow: InflowNode,

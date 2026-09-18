@@ -31,7 +31,7 @@ const GROUPS: { name: string; items: PaletteItem[] }[] = [
     name: 'Nodes',
     items: [...(['junction', 'tee', 'outlet', 'leak'] as Kind[]).map(item), { key: 'leak:burst', kind: 'leak' as Kind, name: 'Burst main', blurb: 'Intact until it ruptures — a 40 mm hole' }],
   },
-  { name: 'Instruments', items: (['gauge', 'dpgauge', 'meter', 'element'] as Kind[]).map(item) },
+  { name: 'Instruments', items: (['gauge', 'thermo', 'dpgauge', 'meter', 'element'] as Kind[]).map(item) },
   {
     name: 'Control',
     items: [

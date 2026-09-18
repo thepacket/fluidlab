@@ -253,7 +253,7 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
       R.push(`${id}atm ${n(p.elevation)}`)
       V.push(`${id}v ${id} ${id}m ${n(p.diameter * 1000)} PSV ${n(p.setPressure / rhoG)} 0`)
       P.push(`${id}s ${id}m ${id}atm 0.05 ${n(Math.max(p.diameter, 0.05) * 1000)} 0.0015 0 CV`)
-    } else if (k === 'junction' || k === 'gauge') {
+    } else if (k === 'junction' || k === 'gauge' || k === 'thermo') {
       J.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n((p.demand ?? 0) * demandFactor(p.pattern, model.time ?? 0) * 1000)}`)
     } else if (k === 'outlet') {
       // a sprinkler head is a plugged hole until its bulb breaks

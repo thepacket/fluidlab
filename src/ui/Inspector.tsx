@@ -28,7 +28,7 @@ import { fmt, fmtNum, fmtU, toDisplay, toSI, unitLabel, type Quantity } from '..
 import { model, selectedId, useLab } from '../store'
 import { waterProfile } from '../engine/channel'
 import * as oc from '../model/openchannel'
-import { INSULATION, STEAM_LOADS, TRAP_STATES, TRAP_TYPES } from '../model/steam'
+import { INSULATION, STEAM_LOADS, TRAP_STATES, TRAP_TYPES, WATER_INSULATION } from '../model/steam'
 import { Chart, SERIES, type Marker, type Series } from './Chart'
 import { KindIcon } from './icons'
 
@@ -41,7 +41,7 @@ interface Field {
   options?: { id: string; name: string }[]
   max?: number
   /** `gas` = the working fluid is a gas, which changes what several parts mean */
-  show?: (p: Props, gas: boolean, steam: boolean) => boolean
+  show?: (p: Props, gas: boolean, steam: boolean, thermal: boolean) => boolean
   hint?: string
 }
 
@@ -55,6 +55,7 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'staticLevel', label: 'Static water level', q: 'head', show: (p) => p.sourceType === 'well' },
     { key: 'ratedDrawdown', label: 'Drawdown', q: 'head', show: (p) => p.sourceType === 'well' },
     { key: 'ratedYield', label: '… when yielding', q: 'flow', show: (p) => p.sourceType === 'well' },
+    { key: 'temp', label: 'Water temperature (°C)', q: 'none', show: (_p, gas) => !gas },
     { key: 'feedTemp', label: 'Feedwater temperature (°C)', q: 'none', show: (_p, _g, steam) => steam },
     { key: 'boilerEfficiency', label: 'Boiler efficiency', q: 'percent', show: (_p, _g, steam) => steam },
     { key: 'steamCost', label: 'Cost of steam (per tonne)', q: 'none', show: (_p, _g, steam) => steam },
@@ -62,6 +63,10 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
   tank: [
     { key: 'shape', label: 'Shape', q: 'none', type: 'select', options: TANK_SHAPES },
     { key: 'overflow', label: 'Overflow at the rim', q: 'none', type: 'toggle' },
+    { key: 'initTemp', label: 'Water temperature at the start (°C)', q: 'none' },
+    { key: 'heaterPower', label: 'Immersion heater', q: 'power', hint: 'Zero = no heater. Switch “live heat” on in the top bar to watch it work' },
+    { key: 'heaterSetpoint', label: 'Heater thermostat (°C)', q: 'none', show: (p) => p.heaterPower > 0 },
+    { key: 'heatLoss', label: 'Standing loss (W per K)', q: 'none', show: (p) => p.heaterPower > 0 || (p.initTemp ?? 15) !== 15 },
     { key: 'diameter', label: 'Diameter', q: 'length' },
     { key: 'length', label: 'Drum length', q: 'length', show: (p) => p.shape === 'drum' },
     { key: 'initLevel', label: 'Initial level', q: 'length' },
@@ -219,8 +224,9 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'ratedFlow', label: '… at a flow of', q: 'flow', show: (p) => lossDevice(p.variant).model === 'rated' },
     { key: 'exponent', label: 'Exponent n (2 = turbulent)', q: 'none', show: (p) => lossDevice(p.variant).model === 'rated' },
     { key: 'supplyTemp', label: 'Flow temperature (°C)', q: 'none', show: (p) => p.variant === 'boiler' },
-    { key: 'ratedHeat', label: 'Rated output (at 50 K excess)', q: 'power', show: (p) => p.ratedHeat !== undefined },
-    { key: 'roomTemp', label: 'Room temperature (°C)', q: 'none', show: (p) => p.ratedHeat !== undefined },
+    { key: 'ratedHeat', label: 'Rated output (at 50 K excess)', q: 'power', show: (p) => p.ratedHeat !== undefined && p.variant !== 'boiler' },
+    { key: 'ratedHeat', label: 'Maximum output (0 = unlimited)', q: 'power', show: (p) => p.variant === 'boiler' },
+    { key: 'roomTemp', label: 'Room temperature (°C)', q: 'none', show: (p) => p.ratedHeat !== undefined && p.variant !== 'boiler' },
     { key: 'fouling', label: 'Fouling', q: 'percent', type: 'slider', max: 0.95, show: (p) => !!lossDevice(p.variant).fouls },
     elevation,
   ],
@@ -317,6 +323,7 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
       ],
     },
   ],
+  thermo: [elevation],
   steamload: [
     { key: 'variant', label: 'Type', q: 'none', type: 'select', options: Object.entries(STEAM_LOADS).map(([id, d]) => ({ id, name: d.name })) },
     { key: 'duty', label: 'Heat duty', q: 'power' },
@@ -379,6 +386,7 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'roughness', label: 'Absolute roughness', q: 'roughness', show: (p) => p.conduit !== 'channel' },
     { key: 'minorK', label: 'Minor-loss K (fittings)', q: 'none', show: (p) => p.conduit !== 'channel' },
     { key: 'insulation', label: 'Insulation', q: 'none', type: 'select', options: INSULATION, show: (_p, _g, steam) => steam },
+    { key: 'insulation', label: 'Heat loss to the room', q: 'none', type: 'select', options: WATER_INSULATION, show: (p, _g, steam, thermal) => thermal && !steam && p.conduit !== 'channel' },
     { key: 'shape', label: 'Cross-section', q: 'none', type: 'select', options: oc.CHANNEL_SHAPES, show: (p) => p.conduit === 'channel' },
     { key: 'width', label: 'Bed width', q: 'length', show: (p) => p.conduit === 'channel' && (p.shape === 'rect' || p.shape === 'trap') },
     { key: 'sideSlope', label: 'Side slope (horizontal : 1 vertical)', q: 'none', show: (p) => p.conduit === 'channel' && (p.shape === 'trap' || p.shape === 'tri') },
@@ -655,9 +663,49 @@ function RatingChart({ id }: { id: string }) {
   )
 }
 
+/** Water temperature at this part: along the pipe right now (live heat), and its history. */
+function TemperatureCharts({ id }: { id: string }) {
+  const s = useLab()
+  const cells = s.results.thermal?.links[id]?.cells
+  const length = s.edges.find((e) => e.id === id)?.data?.props.length ?? 0
+  const trend = s.history.filter((h) => h.v[`${id}:T`] !== undefined).map((h) => ({ x: h.t / 60, y: h.v[`${id}:T`] }))
+  return (
+    <>
+      {cells && (
+        <Chart
+          series={[{ name: 'Along the pipe, now', color: SERIES.orange, points: cells.map((t, i) => ({ x: toDisplay(((i + 0.5) / cells.length) * length, 'length', s.units), y: t })), area: true }]}
+          yMinZero={false}
+          height={150}
+          xLabel={`Distance from the pipe's start (${unitLabel('length', s.units)})`}
+          yLabel="Water (°C)"
+        />
+      )}
+      <Chart
+        series={[{ name: 'Temperature', color: SERIES.orange, points: trend, area: true }]}
+        yMinZero={false}
+        height={cells ? 150 : 190}
+        xLabel="Lab time (min)"
+        yLabel="Water (°C)"
+        empty="Press play to record a trend"
+      />
+    </>
+  )
+}
+
+/** One line of temperature for anything the thermal layer knows about. */
+function TemperatureRow({ id }: { id: string }) {
+  const th = useLab((s) => (s.results.steam ? undefined : s.results.thermal))
+  const flow = useLab((s) => s.results.links[id]?.flow ?? 0)
+  if (!th) return null
+  const l = th.links[id]
+  if (l) return <Row label="Water temperature, in → out" value={`${(flow >= 0 ? l.tStart : l.tEnd).toFixed(1)} → ${(flow >= 0 ? l.tEnd : l.tStart).toFixed(1)} °C`} />
+  return th.nodes[id] === undefined ? null : <Row label="Water temperature" value={`${th.nodes[id].toFixed(1)} °C`} />
+}
+
 function trendQuantity(kind: Kind | 'pipe'): [Quantity, string] {
   if (kind !== 'pipe' && isControl(kind)) return ['none', 'Output']
   if (kind === 'tank') return ['length', 'Level']
+  if (kind === 'thermo') return ['temperature', 'Temperature']
   if (kind === 'junction' || kind === 'gauge' || kind === 'vessel' || kind === 'trap') return ['pressure', 'Pressure']
   if (kind === 'dpgauge' || kind === 'element') return ['pressure', 'Differential']
   return ['flow', 'Flow']
@@ -1571,6 +1619,7 @@ export function Inspector() {
                         ? [['main', 'Daily pattern']]
                         : []),
               ['trend', 'Trend'],
+              ...(results.thermal && !steamMode && !channelPart ? [['temp', 'Temperature']] : []),
               ...(channelPart ? [] : [['grade', 'Grade line']]),
             ]
   const active = tabs.find((t) => t[0] === tab) ? tab : tabs[0][0]
@@ -1612,6 +1661,7 @@ export function Inspector() {
       <section>
         <h4>Live readings</h4>
         {kind === 'timer' ? <TimerResults id={id} /> : kind !== 'pipe' && isControl(kind) ? <ControlResults id={id} kind={kind} /> : <Results id={id} kind={kind} />}
+        {kind !== 'pipe' && isControl(kind) ? null : <TemperatureRow id={id} />}
       </section>
 
       <section>
@@ -1630,6 +1680,7 @@ export function Inspector() {
         )}
         {active === 'main' && kind === 'pipe' && <PipeChart id={id} />}
         {active === 'profile' && <ProfileChart id={id} />}
+        {active === 'temp' && <TemperatureCharts id={id} />}
         {active === 'main' && kind === 'weir' && <RatingChart id={id} />}
         {active === 'trend' && (
           <>
@@ -1658,12 +1709,12 @@ export function Inspector() {
         {kind === 'valve' && props.valveType === 'throttle' && <KvField props={props} onChange={(patch) => updateNode(id, patch)} />}
         {kind === 'pipe' && !channelPart && <PipeSizePicker props={props} onChange={(patch) => updateEdge(id, patch)} />}
         {FIELDS[kind]
-          .filter((f) => !f.show || f.show(props, gasMode, steamMode))
+          .filter((f) => !f.show || f.show(props, gasMode, steamMode, !!results.thermal))
           .map((f) => (
             <FieldRow
               key={f.key}
               f={f}
-              props={{ conduit: 'pipe', ...props, insulation: String(props.insulation ?? 0) }}
+              props={{ conduit: 'pipe', ...props, insulation: String(props.insulation ?? (steamMode ? 0 : 'none')) }}
               pvq={pvq}
               onChange={(patch) => (node ? updateNode(id, reshape(kind, patch)) : updateEdge(id, reconduit(props, patch)))}
             />
@@ -1715,6 +1766,15 @@ function Overview() {
         <h4>Hydraulic grade line</h4>
         <GradeChart />
       </section>
+      {s.results.thermal?.balance && (
+        <section>
+          <h4>Heat, right now</h4>
+          <Row label="Going in (boilers, heaters)" value={fmtU(s.results.thermal.balance.input, 'power', s.units)} />
+          <Row label="Given to the rooms" value={fmtU(s.results.thermal.balance.emitted, 'power', s.units)} />
+          <Row label="Lost from pipes and tanks" value={fmtU(s.results.thermal.balance.pipeLoss + s.results.thermal.balance.tankLoss, 'power', s.units)} />
+          <Row label="Warming the water and metal" value={fmtU(s.results.thermal.balance.stored, 'power', s.units)} tone={Math.abs(s.results.thermal.balance.stored) > 50 ? 'warn' : 'good'} />
+        </section>
+      )}
       <section>
         <h4>Fluid</h4>
         <div className="field">

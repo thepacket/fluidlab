@@ -68,7 +68,7 @@ export const AMBIENT = 20
 /** Heat lost per metre of steam pipe, W/m: conduction through the lagging, then convection + radiation to the room. */
 export function pipeHeatLoss(p: Props, tSteam: number, ambient = AMBIENT): number {
   const dOut = p.diameter * 1.12 // wall
-  const t = Math.max(0, p.insulation ?? 0)
+  const t = Math.max(0, Number(p.insulation) || 0)
   const dIns = dOut + 2 * t
   const hOut = t > 0 ? 9 : 14 // a bare hot pipe also radiates hard
   const rIns = t > 0 ? Math.log(dIns / dOut) / (2 * Math.PI * K_INSULATION) : 0
@@ -82,6 +82,9 @@ export const INSULATION = [
   { id: '0.08', name: '80 mm mineral wool' },
   { id: '0.1', name: '100 mm mineral wool' },
 ]
+
+/** for water pipes the default is to leave heat loss out of the sums altogether */
+export const WATER_INSULATION = [{ id: 'none', name: 'Not counted (ideal pipe)' }, ...INSULATION]
 
 export const TRAP_TYPES = [
   { id: 'float', name: 'Float & thermostatic' },

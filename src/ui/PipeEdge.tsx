@@ -50,8 +50,15 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
     <>
       <defs>
         <linearGradient id={gid} gradientUnits="userSpaceOnUse" x1={sourceX} y1={sourceY} x2={flat ? sourceX + 1 : targetX} y2={targetY}>
-          <stop offset="0" stopColor={c1} />
-          <stop offset="1" stopColor={c2} />
+          {/* live heat: one stop per cell, so a hot front can be seen travelling down the pipe */}
+          {live && overlay === 'thermal' && heat?.t.cells ? (
+            heat.t.cells.map((t, i, all) => <stop key={i} offset={(i + 0.5) / all.length} stopColor={thermalColor(t, heat.tMin, heat.tMax)} />)
+          ) : (
+            <>
+              <stop offset="0" stopColor={c1} />
+              <stop offset="1" stopColor={c2} />
+            </>
+          )}
         </linearGradient>
       </defs>
       {selected && <path d={path} fill="none" stroke="var(--accent)" strokeWidth={w + 12} strokeLinecap="round" opacity={0.28} />}

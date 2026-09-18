@@ -171,6 +171,13 @@ export function KindIcon({ kind }: { kind: Kind | 'pipe' | 'network' }) {
           <path d="M14 9V3M11 5l3-2 3 2" stroke="var(--accent)" />
         </>
       )}
+      {kind === 'thermo' && (
+        <>
+          <path d="M13 5a3 3 0 0 1 6 0v12.5a6 6 0 1 1-6 0z" />
+          <path d="M16 11v9" stroke="var(--accent)" strokeWidth="2.400" />
+          <circle cx="16" cy="23" r="2.500" fill="var(--accent)" stroke="none" />
+        </>
+      )}
       {kind === 'steamload' && (
         <>
           <rect x="3" y="9" width="26" height="14" rx="7" />

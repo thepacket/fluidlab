@@ -31,6 +31,7 @@ export const NODE_SIZE: Record<Kind, [number, number]> = {
   pid: [116, 104],
   logic: [76, 64],
   lamp: [60, 68],
+  thermo: [72, 88],
   steamload: [124, 84],
   trap: [64, 72],
   inflow: [104, 84],
@@ -67,6 +68,7 @@ export const PORT_Y: Record<Kind, number> = {
   pid: 0.5,
   logic: 0.5,
   lamp: 0.5,
+  thermo: 0.78,
   steamload: 0.5,
   trap: 0.5,
   inflow: 0.72,
@@ -93,6 +95,8 @@ export interface Experiment {
   goal?: { text: string; check: (r: Results, nodes: LabNode[], levels: Record<string, number>, history: { t: number; v: Record<string, number> }[], surge?: TransientResult | null) => GoalState }
   fluidId?: string
   timeScale?: number
+  /** 'live' marches water temperatures through lab time instead of showing where they settle */
+  heatMode?: 'steady' | 'live'
   autoRun?: boolean
   select?: string
   build: () => { nodes: LabNode[]; edges: LabEdge[] }
@@ -1827,6 +1831,112 @@ export const EXPERIMENTS: Experiment[] = [
         .pipe('j', 'prv', { length: 3, diameter: 0.0409, material: 'steel', roughness: 0.045e-3, insulation: 0.05 })
         .pipe('prv', 'g', { length: 3, diameter: 0.0525, material: 'steel', roughness: 0.045e-3, insulation: 0.05 })
         .pipe('g', 'ac', { length: 12, diameter: 0.0525, material: 'steel', roughness: 0.045e-3, insulation: 0.05 })
+        .done(),
+  },
+  {
+    id: 'dead-leg',
+    no: '47',
+    title: 'Waiting for hot water',
+    concept: 'Plug flow in a dead leg',
+    formula: 't ≈ (V_water + wall) / Q',
+    brief:
+      'Open a hot tap and cold water comes first: everything sitting in the pipe between the cylinder and the tap has to be pushed out, and the cold copper takes its share of heat before the far end runs hot. The wait is the pipe’s volume divided by the flow — so it grows with the square of the diameter. This rig runs in “live heat” mode: temperatures are marched through time rather than shown settled.',
+    steps: [
+      'Press play and watch the hot front travel down the pipe. Select the pipe and open “Temperature” to see it as a curve.',
+      'Note when the tap passes 50 °C — nearly a minute and a half.',
+      'Change the pipe, then press reset (⟲) to start again from cold. A smaller bore holds far less water.',
+    ],
+    goal: {
+      text: 'From a cold start, get 50 °C at the tap within 50 seconds — without shortening the run',
+      check: (r, _n, _l, history) => {
+        const hot = history.find((h) => (h.v['tap:T'] ?? 0) >= 50)
+        const now = r.thermal?.nodes.tap
+        return { done: !!hot && hot.t <= 50 && (history[0]?.v['tap:T'] ?? 99) < 30, readout: hot ? `hot after ${hot.t.toFixed(0)} s` : `${now?.toFixed(0) ?? '—'} °C at the tap` }
+      },
+    },
+    timeScale: 1,
+    heatMode: 'live',
+    select: 'e1',
+    build: () =>
+      new Rig()
+        .add('cyl', 'tank', 180, 260, { elevation: 6, initTemp: 60, heaterPower: 3000, heaterSetpoint: 60, diameter: 0.5, initLevel: 1.2, maxLevel: 1.5 }, 'Cylinder')
+        .add('tt', 'thermo', 760, 330, { elevation: 0 }, 'At the tap')
+        .add('tap', 'outlet', 960, 330, { mode: 'demand', demand: 6 * LPM }, 'Hot tap')
+        .pipe('cyl', 'tt', { length: 18, diameter: 0.0199, material: 'copper', roughness: 0.0015e-3, std: 'copperL', size: '¾″' }, [], 'Hot run')
+        .pipe('tt', 'tap', { length: 0.3, diameter: 0.0138, material: 'copper', roughness: 0.0015e-3 })
+        .done(),
+  },
+  {
+    id: 'warm-up',
+    no: '48',
+    title: 'Warming up a heating loop',
+    concept: 'Thermal mass and boiler output',
+    formula: 'C · dT/dt = Q̇_boiler − Q̇_emitted',
+    brief:
+      'A cold heating system is a lot of water and steel. The boiler’s output goes first into warming all of that, and only what is left over reaches the room; as the radiator warms it emits more, until output and emission meet. A boiler that is too small for its radiator never gets the loop up to temperature at all — it settles early, lukewarm.',
+    steps: [
+      'Press play: the supply warms first, the return lags by the time the water takes to get round.',
+      'Select the return thermometer and watch its trend flatten out — well short of 60 °C.',
+      'Give the boiler more output, press reset (⟲) and compare the curve.',
+    ],
+    goal: {
+      text: 'From a cold start, get the return up to 55 °C within 30 minutes',
+      check: (r, _n, _l, history) => {
+        const hot = history.find((h) => (h.v.tt ?? 0) >= 55)
+        return { done: !!hot && hot.t <= 1800 && (history[0]?.v.tt ?? 99) < 30, readout: hot ? `55 °C after ${(hot.t / 60).toFixed(0)} min` : `return at ${r.thermal?.nodes.tt?.toFixed(1) ?? '—'} °C` }
+      },
+    },
+    timeScale: 60,
+    heatMode: 'live',
+    select: 'tt',
+    build: () => {
+      const cu = { diameter: 0.0199, std: 'copperL', size: '¾″', material: 'copper', roughness: 0.0015e-3 }
+      return new Rig()
+        .add('ev', 'vessel', 140, 200, { volume: 0.018, precharge: 100e3, initPressure: 150e3 }, 'Expansion')
+        .add('j', 'junction', 140, 420)
+        .add('p', 'pump', 300, 420, { pumpType: 'circulator', shutoffRatio: 1.15, runoutRatio: 2.5, designFlow: 12 * LPM, designHead: 4, npshr: 1 }, 'Circulator')
+        .add('b', 'fitting', 480, 420, { variant: 'boiler', ratedDp: 10e3, ratedFlow: 30 * LPM, exponent: 2, fouling: 0, diameter: 0.02, supplyTemp: 75, ratedHeat: 5000 }, 'Boiler')
+        .add('ts', 'thermo', 680, 420, {}, 'Supply')
+        .add('r', 'fitting', 900, 420, { variant: 'radiator', ratedDp: 6e3, ratedFlow: 8 * LPM, exponent: 1.9, fouling: 0, diameter: 0.02, ratedHeat: 8000, roomTemp: 20 }, 'Radiators')
+        .add('tt', 'thermo', 900, 140, {}, 'Return')
+        .pipe('ev', 'j', { length: 1, ...cu }, ['b', 't'])
+        .pipe('j', 'p', { length: 1, ...cu })
+        .pipe('p', 'b', { length: 2, ...cu })
+        .pipe('b', 'ts', { length: 2, ...cu })
+        .pipe('ts', 'r', { length: 20, ...cu }, [], 'Supply')
+        .pipe('r', 'tt', { length: 2, ...cu }, ['out', 'r'])
+        .pipe('tt', 'j', { length: 20, ...cu }, ['l', 'l'], 'Return')
+        .done()
+    },
+  },
+  {
+    id: 'heat-main',
+    no: '49',
+    title: 'Lagging a hot-water main',
+    concept: 'Heat loss along a pipe',
+    formula: 'T_out = T_room + (T_in − T_room) · e^(−U·L / ṁc)',
+    brief:
+      'Hot water sent down a long pipe arrives cooler: every metre leaks heat to its surroundings in proportion to how much hotter it is. The temperature decays exponentially with distance, faster when the flow is small (each litre spends longer in the pipe) and much faster when the pipe is bare.',
+    steps: [
+      'Select the main and open “Temperature”. Switch “live heat” on in the top bar to watch the hot front arrive.',
+      'Halve the demand at the far end: the water arrives colder still.',
+      'Lag the main and compare.',
+    ],
+    goal: {
+      text: 'Deliver at least 78 °C at the far end',
+      check: (r) => {
+        const t = r.thermal?.nodes.tt
+        return { done: (t ?? 0) >= 78, readout: `${t?.toFixed(1) ?? '—'} °C delivered` }
+      },
+    },
+    select: 'e1',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 160, 300, { head: 30, temp: 85 }, 'Heat plant')
+        .add('tt', 'thermo', 760, 300, {}, 'Far end')
+        .add('use', 'outlet', 960, 300, { mode: 'demand', demand: 30 * LPM }, 'Substation')
+        .pipe('src', 'tt', { length: 400, diameter: 0.0525, material: 'steel', roughness: 0.045e-3, insulation: 0 }, [], 'Buried main')
+        .pipe('tt', 'use', { length: 2, diameter: 0.0525, material: 'steel', roughness: 0.045e-3 })
         .done(),
   },
 ]

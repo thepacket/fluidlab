@@ -21,6 +21,7 @@ const UNIT_NAMES: Record<keyof UnitPrefs, string> = {
   roughness: 'Roughness',
   velocity: 'Velocity',
   power: 'Power',
+  temperature: 'Temperature',
   time: 'Time',
   volume: 'Volume',
   kfactor: 'K-factor',
@@ -100,6 +101,15 @@ export function TopBar() {
         </button>
       </div>
 
+      {s.results.thermal && !steam && (
+        <div className="seg" title="Water temperatures: where they settle, or marched through lab time (warm-up, cool-down, dead legs)">
+          {(['steady', 'live'] as const).map((m) => (
+            <button key={m} className={s.heatMode === m ? 'on' : ''} onClick={() => s.set({ heatMode: m, heat: null, ...(m === 'live' ? { overlay: 'thermal' as Overlay } : {}) })}>
+              {m === 'steady' ? 'settled' : 'live heat'}
+            </button>
+          ))}
+        </div>
+      )}
       {s.results.gas && (
         <div className="gas-badge" title={steam ? 'Saturated steam: flows are mass flows' : 'Flows are standard volumes at 15 °C and 1 atm'}>
           {steam ? 'STEAM · mass flow' : 'GAS · standard flow'}
@@ -130,20 +140,22 @@ export function TopBar() {
                 US customary
               </button>
             </div>
-            {(Object.keys(UNITS) as (keyof UnitPrefs)[]).map((q) => (
-              <div className="field" key={q}>
-                <span>{UNIT_NAMES[q]}</span>
-                <select value={s.units[q]} onChange={(e) => s.set({ units: { ...s.units, [q]: e.target.value } })}>
-                  {UNITS[q]
-                    .filter((u) => q !== 'flow' || MASS_FLOW_UNITS.includes(u.id) === steam)
-                    .map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.label}
-                      </option>
-                    ))}
-                </select>
-              </div>
-            ))}
+            {(Object.keys(UNITS) as (keyof UnitPrefs)[])
+              .filter((q) => UNITS[q].length > 1)
+              .map((q) => (
+                <div className="field" key={q}>
+                  <span>{UNIT_NAMES[q]}</span>
+                  <select value={s.units[q]} onChange={(e) => s.set({ units: { ...s.units, [q]: e.target.value } })}>
+                    {UNITS[q]
+                      .filter((u) => q !== 'flow' || MASS_FLOW_UNITS.includes(u.id) === steam)
+                      .map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.label}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              ))}
             <p className="muted">Stored in SI — units only change the display.</p>
           </div>
         )}
