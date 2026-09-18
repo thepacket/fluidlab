@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { gradeLine, pipeCurve, pumpCurve, type XY } from '../engine/analysis'
 import { solver } from '../engine/client'
 import { compressorRatio } from '../engine/gas'
 import { DEMAND_PATTERNS, demandFactor, dischargeDevice, LOSS_DEVICES, PUMP_TYPES, PIPE_STANDARDS, TRIMS, VALVE_BODIES, lossDevice } from '../model/catalog'
-import { PV_SOURCES, fmtClock, timerState } from '../model/control'
+import { PV_SOURCES, fmtClock, sequenceClock, sequenceValue, timerState, type SequenceStep } from '../model/control'
 import {
   jetN,
   jetR,
@@ -212,6 +213,11 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'rotateEvery', label: 'Rotate the lead every', q: 'time' },
     { key: 'trim', label: 'Running pumps share a trimmed speed', q: 'none', type: 'toggle' },
     { key: 'minSpeed', label: 'Slowest useful speed', q: 'percent', show: (p) => !!p.trim },
+  ],
+  sequence: [
+    { key: 'enabled', label: 'Enabled', q: 'none', type: 'toggle' },
+    { key: 'repeat', label: 'Repeat', q: 'none', type: 'toggle' },
+    { key: 'period', label: 'Repeat every (s)', q: 'none', show: (p) => p.repeat },
   ],
   schedule: [
     { key: 'enabled', label: 'Enabled', q: 'none', type: 'toggle' },
@@ -476,7 +482,7 @@ function FieldRow({ f, props, pvq, onChange }: { f: Field; props: Props; pvq: Qu
               patch.points = [0, 0.5, 1, 1.5, 1.9].map((r) => ({ q: props.designFlow * r, h: Math.max(0, pumpHead(props.designFlow * r, { ...props, pumpType: 'standard' }, 1)) }))
             if (f.key === 'pumpType') Object.assign(patch, (({ shutoffRatio, runoutRatio }) => ({ shutoffRatio, runoutRatio }))(PUMP_TYPES.find((t) => t.id === raw)!))
             if (f.key === 'body') Object.assign(patch, (({ kOpen, trim }) => ({ kOpen, trim }))(VALVE_BODIES.find((b) => b.id === raw)!))
-            if (f.key === 'variant') Object.assign(patch, lossDevice(raw).defaults) // a different part brings its own datasheet numbers
+            if (f.key === 'variant' && LOSS_DEVICES.some((d) => d.id === raw)) Object.assign(patch, lossDevice(raw).defaults) // a different part brings its own datasheet numbers
             if (f.key === 'elementType') patch.cd = e.target.value === 'orifice' ? 0.61 : 0.98
             if (f.key === 'material' && e.target.value !== 'custom') patch.roughness = MATERIALS.find((m) => m.id === e.target.value)!.roughness
             onChange(patch)
@@ -1080,6 +1086,75 @@ function EfficiencyChart({ id }: { id: string }) {
 }
 
 /** A catalogue curve, typed in point by point. */
+/** The step list of an event sequence. Targets are whatever the block is wired to. */
+function SequenceSteps({ id, props, onChange }: { id: string; props: Props; onChange: (patch: Props) => void }) {
+  const targets = useLab(useShallow((s) => s.edges.filter((e) => e.type === 'signal' && e.source === id).map((e) => e.target)))
+  const labels = useLab(useShallow((s) => Object.fromEntries(s.nodes.map((n) => [n.id, n.data.label]))))
+  const steps: SequenceStep[] = props.steps ?? []
+  const set = (i: number, patch: Partial<SequenceStep>) => onChange({ steps: steps.map((x, k) => (k === i ? { ...x, ...patch } : x)) })
+  const last = steps.reduce((m, s) => Math.max(m, s.at), 0)
+  return (
+    <>
+      <p className="muted">
+        {targets.length
+          ? 'Each step takes one device to a command — 0 % stops or shuts it, 100 % runs it as configured — at a lab time, optionally ramping there. Until its first step a device is left alone.'
+          : 'Wire this block’s output to the pumps, valves, gates or taps it should operate; they then appear here as targets.'}
+      </p>
+      {steps.map((st, i) => (
+        <div className="seq-step" key={i}>
+          <div className="field pair">
+            <span>at s</span>
+            <NumberField value={st.at} q="none" onCommit={(at) => set(i, { at: Math.max(0, at) })} />
+            <select value={st.target} onChange={(e) => set(i, { target: e.target.value })}>
+              <option value="all">everything wired</option>
+              {[...new Set([...targets, ...(st.target !== 'all' ? [st.target] : [])])].map((t) => (
+                <option key={t} value={t}>
+                  {labels[t] ?? 'unwired'}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field pair">
+            <span>to %</span>
+            <NumberField value={st.value} q="percent" onCommit={(value) => set(i, { value: Math.min(1, Math.max(0, value)) })} />
+            <span>over s</span>
+            <NumberField value={st.ramp} q="none" onCommit={(ramp) => set(i, { ramp: Math.max(0, ramp) })} />
+            <button className="icon-btn danger" title="Remove this step" onClick={() => onChange({ steps: steps.filter((_, k) => k !== i) })}>
+              ✕
+            </button>
+          </div>
+        </div>
+      ))}
+      <button className="link" onClick={() => onChange({ steps: [...steps, { at: steps.length ? last + 10 : 0, target: targets[0] ?? 'all', value: steps.length ? 1 : 0, ramp: 0 }] })}>
+        + Add a step
+      </button>
+    </>
+  )
+}
+
+/** What the sequence tells each wired device over time, with the clock's position. */
+function SequenceChart({ id }: { id: string }) {
+  const s = useLab()
+  const p = s.nodes.find((n) => n.id === id)!.data.props
+  const targets = s.edges.filter((e) => e.type === 'signal' && e.source === id).map((e) => e.target)
+  const steps: SequenceStep[] = p.steps ?? []
+  const span = Math.max(p.repeat ? p.period : 0, ...steps.map((x) => x.at + x.ramp), 10) * (p.repeat ? 1 : 1.15)
+  const now = sequenceClock(p, s.simTime)
+  const colors = [SERIES.blue, SERIES.orange, SERIES.aqua]
+  const series: Series[] = targets.slice(0, 3).map((t, i) => ({
+    name: s.nodes.find((n) => n.id === t)?.data.label ?? t,
+    color: colors[i],
+    points: Array.from({ length: 121 }, (_, k) => ({ x: (span * k) / 120, y: sequenceValue({ ...p, repeat: false }, t, (span * k) / 120) * 100 })),
+  }))
+  const markers: Marker[] = targets.slice(0, 3).map((t, i) => ({ x: Math.min(now, span), y: sequenceValue(p, t, s.simTime) * 100, label: i === 0 ? fmtClock(now) : '', color: '#ffffff' }))
+  return (
+    <>
+      <Chart series={series} markers={markers} xLabel="Lab time (s)" yLabel="Command (%)" empty="Wire the block to a device and add a step" />
+      {targets.length > 3 && <p className="muted">Showing the first three of {targets.length} wired devices.</p>}
+    </>
+  )
+}
+
 function CurvePoints({ props, onChange }: { props: Props; onChange: (patch: Props) => void }) {
   const pts: { q: number; h: number }[] = props.points ?? []
   const set = (i: number, patch: Partial<{ q: number; h: number }>) => onChange({ points: pts.map((x, k) => (k === i ? { ...x, ...patch } : x)) })
@@ -1684,24 +1759,29 @@ export function Inspector() {
         ]
       : kind === 'switch' || kind === 'pid'
         ? [['main', 'Loop']]
-        : kind !== 'pipe' && isControl(kind)
-          ? [['trend', 'Trend']]
-          : [
-              ...(kind === 'pump'
-                ? [['main', 'Pump curve']]
-                : channelPart
-                  ? [['profile', 'Water surface'], ...(kind === 'weir' ? [['main', 'Rating']] : [])]
-                  : kind === 'pipe' && props.conduit !== 'condensate'
-                    ? [['main', 'ΔP (Q)']]
-                    : kind === 'jetpump'
-                      ? [['main', 'Characteristic']]
-                      : props.pattern && props.pattern !== 'constant'
-                        ? [['main', 'Daily pattern']]
-                        : []),
+        : kind === 'sequence'
+          ? [
+              ['main', 'Sequence'],
               ['trend', 'Trend'],
-              ...(results.thermal && !steamMode && !channelPart ? [['temp', 'Temperature']] : []),
-              ...(channelPart ? [] : [['grade', 'Grade line']]),
             ]
+          : kind !== 'pipe' && isControl(kind)
+            ? [['trend', 'Trend']]
+            : [
+                ...(kind === 'pump'
+                  ? [['main', 'Pump curve']]
+                  : channelPart
+                    ? [['profile', 'Water surface'], ...(kind === 'weir' ? [['main', 'Rating']] : [])]
+                    : kind === 'pipe' && props.conduit !== 'condensate'
+                      ? [['main', 'ΔP (Q)']]
+                      : kind === 'jetpump'
+                        ? [['main', 'Characteristic']]
+                        : props.pattern && props.pattern !== 'constant'
+                          ? [['main', 'Daily pattern']]
+                          : []),
+                ['trend', 'Trend'],
+                ...(results.thermal && !steamMode && !channelPart ? [['temp', 'Temperature']] : []),
+                ...(channelPart ? [] : [['grade', 'Grade line']]),
+              ]
   const active = tabs.find((t) => t[0] === tab) ? tab : tabs[0][0]
 
   return (
@@ -1772,6 +1852,7 @@ export function Inspector() {
         )}
         {active === 'main' && kind === 'jetpump' && <JetChart id={id} />}
         {active === 'main' && kind === 'timer' && <ScheduleChart id={id} />}
+        {active === 'main' && kind === 'sequence' && <SequenceChart id={id} />}
         {active === 'main' && (kind === 'junction' || kind === 'outlet') && <PatternChart pattern={props.pattern} base={props.demand} />}
         {active === 'main' && (kind === 'switch' || kind === 'pid') && <LoopCharts id={id} kind={kind} />}
         {active === 'grade' && <GradeChart id={id} />}
@@ -1785,6 +1866,7 @@ export function Inspector() {
       )}
       <section>
         <h4>Properties</h4>
+        {kind === 'sequence' && <SequenceSteps id={id} props={props} onChange={(patch) => updateNode(id, patch)} />}
         {kind === 'pump' && props.pumpType === 'custom' && <CurvePoints props={props} onChange={(patch) => updateNode(id, patch)} />}
         {kind === 'valve' && props.valveType === 'throttle' && <KvField props={props} onChange={(patch) => updateNode(id, patch)} />}
         {kind === 'pipe' && !channelPart && <PipeSizePicker props={props} onChange={(patch) => updateEdge(id, patch)} />}

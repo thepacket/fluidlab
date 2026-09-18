@@ -35,7 +35,7 @@ const GROUPS: { name: string; items: PaletteItem[] }[] = [
   {
     name: 'Control',
     items: [
-      ...(['manual', 'timer', 'schedule', 'switch', 'pid', 'stager', 'logic', 'lamp'] as Kind[]).map(item),
+      ...(['manual', 'timer', 'sequence', 'schedule', 'switch', 'pid', 'stager', 'logic', 'lamp'] as Kind[]).map(item),
       { key: 'manual:estop', kind: 'manual' as Kind, name: 'Emergency stop', blurb: 'Healthy until hit — wire it through an AND gate' },
     ],
   },

@@ -31,6 +31,7 @@ export const NODE_SIZE: Record<Kind, [number, number]> = {
   pid: [116, 104],
   logic: [76, 64],
   lamp: [60, 68],
+  sequence: [132, 92],
   thermo: [72, 88],
   steamload: [124, 84],
   trap: [64, 72],
@@ -68,6 +69,7 @@ export const PORT_Y: Record<Kind, number> = {
   pid: 0.5,
   logic: 0.5,
   lamp: 0.5,
+  sequence: 0.5,
   thermo: 0.78,
   steamload: 0.5,
   trap: 0.5,
@@ -2126,6 +2128,59 @@ export const EXPERIMENTS: Experiment[] = [
         .pipe('t', 'rj', { length: 12, diameter: 0.0158, ...back }, ['b', 'l'], 'Trap return')
         .pipe('rj', 'rx', { length: 50, diameter: 0.0209, ...back }, ['b', 'r'], 'Common return')
         .done()
+    },
+  },
+  {
+    id: 'start-up',
+    no: '55',
+    title: 'Starting a pump station',
+    concept: 'Event sequences',
+    formula: 'pump on → valve opens slowly → full flow',
+    brief:
+      'Operators do not throw every switch at once. A centrifugal pump is started against a closed discharge valve, where it draws least power, and the valve is then opened slowly so the main fills and accelerates gently instead of being hit with full flow. The event sequence block does this on the lab clock: each step takes one wired device to a command at a set time, optionally ramping there.',
+    steps: [
+      'Press play. The sequence starts the pump at 5 s and snaps the valve open at 10 s — the flow jumps.',
+      'Select the sequence block. Give the valve step a ramp (“over s”), press reset (⟲) and watch the flow build instead. Most of the rise still comes in the first part of the stroke — a valve has little authority once it is half open — so a two-stage opening does even better.',
+      'Add a step of your own: stop the pump again at 150 s.',
+    ],
+    goal: {
+      text: 'Reach 400 L/min within two minutes, with the flow never rising by more than 200 L/min in any 5 seconds',
+      check: (_r, _n, _l, history) => {
+        let worst = 0
+        let j = 0
+        for (let i = 0; i < history.length; i++) {
+          while (j < history.length - 1 && history[j].t < history[i].t + 5) j++
+          if (history[j].t - history[i].t <= 6) worst = Math.max(worst, ((history[j].v.p ?? 0) - (history[i].v.p ?? 0)) / LPM)
+        }
+        const reached = history.find((h) => (h.v.p ?? 0) >= 400 * LPM)
+        return {
+          done: !!reached && reached.t <= 120 && worst <= 200,
+          readout: `${reached ? `400 L/min at ${reached.t.toFixed(0)} s` : 'not at 400 L/min yet'} · steepest rise ${worst.toFixed(0)} L/min in 5 s`,
+        }
+      },
+    },
+    timeScale: 5,
+    select: 'seq',
+    build: () => {
+      const rig = new Rig()
+        .add('src', 'reservoir', 140, 420, { head: 2 }, 'Wet well')
+        .add('p', 'pump', 340, 390, { designFlow: 450 * LPM, designHead: 22, npshr: 2 }, 'Duty pump')
+        .add('v', 'valve', 560, 390, { diameter: 0.08, body: 'butterfly', kOpen: 0.6, trim: 'equal' }, 'Discharge valve')
+        .add('tank', 'tank', 1000, 170, { elevation: 12, diameter: 6, initLevel: 1, maxLevel: 4 }, 'Service tank')
+        .add('seq', 'sequence', 450, 160, { steps: [] }, 'Start-up')
+        .pipe('src', 'p', { length: 4, diameter: 0.1, material: 'steel', roughness: 0.045e-3 })
+        .pipe('p', 'v', { length: 3, diameter: 0.08, material: 'steel', roughness: 0.045e-3 })
+        .pipe('v', 'tank', { length: 300, diameter: 0.08, material: 'pvc' }, ['out', 'l'], 'Rising main')
+        .wire('seq', 'p')
+        .wire('seq', 'v')
+        .done()
+      rig.nodes.find((n) => n.id === 'seq')!.data.props.steps = [
+        { at: 0, target: 'p', value: 0, ramp: 0 },
+        { at: 0, target: 'v', value: 0, ramp: 0 },
+        { at: 5, target: 'p', value: 1, ramp: 0 },
+        { at: 10, target: 'v', value: 1, ramp: 0 },
+      ]
+      return rig
     },
   },
 ]

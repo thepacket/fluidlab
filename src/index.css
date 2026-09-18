@@ -685,6 +685,20 @@ input[type='range']::-webkit-slider-thumb {
   flex: 1;
   width: auto;
 }
+.seq-step {
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  margin-top: 6px;
+}
+.seq-step .field.pair span {
+  flex: none;
+  font-size: 11px;
+  opacity: 0.7;
+}
+.seq-step select {
+  flex: 2;
+  min-width: 0;
+}
 .surge-actions {
   display: flex;
   gap: 8px;

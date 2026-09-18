@@ -26,13 +26,39 @@ export const PV_CONSUMERS: Kind[] = ['switch', 'pid']
 /** control blocks that read other controllers' outputs */
 export const SIGNAL_CONSUMERS: Kind[] = ['logic', 'lamp', 'stager']
 /** control blocks with an output */
-export const SIGNAL_SOURCES: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'stager', 'schedule']
+export const SIGNAL_SOURCES: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'stager', 'schedule', 'sequence']
 
 /** Day/night value of a setpoint scheduler at lab time t. */
 export function scheduleValue(p: Props, t: number): number {
   const h = (((t / 3600) % 24) + 24) % 24
   const day = p.dayStart <= p.dayEnd ? h >= p.dayStart && h < p.dayEnd : h >= p.dayStart || h < p.dayEnd
   return Math.min(1, Math.max(0, day ? p.dayValue : p.nightValue))
+}
+
+// ---- event sequence --------------------------------------------------------------
+
+/** One line of an event sequence: at `at` seconds, take `target` (a wired device's id, or 'all') to `value`, over `ramp` seconds. */
+export interface SequenceStep {
+  at: number
+  target: string
+  value: number
+  ramp: number
+}
+/** Lab time as the sequence sees it: it may loop. */
+export const sequenceClock = (p: Props, t: number) => (p.repeat && p.period > 0 ? ((t % p.period) + p.period) % p.period : t)
+/**
+ * Command a sequence is giving one device at lab time t. Before its first step a device is left exactly as it is
+ * configured (100 %); each step starts from wherever the previous ones had brought it, so ramps can be interrupted.
+ */
+export function sequenceValue(p: Props, target: string, t: number): number {
+  const steps = ((p.steps ?? []) as SequenceStep[]).filter((s) => s.target === target || s.target === 'all').sort((a, b) => a.at - b.at)
+  let cur = (_tt: number): number => 1
+  for (const s of steps) {
+    const before = cur
+    const from = before(s.at)
+    cur = (tt) => (tt < s.at ? before(tt) : s.ramp > 0 ? from + (clamp01(s.value) - from) * Math.min(1, (tt - s.at) / s.ramp) : clamp01(s.value))
+  }
+  return cur(sequenceClock(p, t))
 }
 
 // ---- timer -----------------------------------------------------------------------
@@ -124,6 +150,12 @@ export function stepControl({ nodes, edges, t, dt, results, levels, prev = EMPTY
     if (n.data.kind === 'timer') next.out[n.id] = timerState(p, t).on ? 1 : 0
     else if (n.data.kind === 'manual') next.out[n.id] = p.on ? 1 : 0
     else if (n.data.kind === 'schedule') next.out[n.id] = scheduleValue(p, t)
+    else if (n.data.kind === 'sequence') {
+      // every wired device gets its own command; the block's own output is their average, for the trend
+      const mine = wires.filter((w) => w.source === n.id)
+      for (const w of mine) next.wire[w.id] = live(n) ? sequenceValue(p, w.target, t) : 1
+      next.out[n.id] = mine.length ? mine.reduce((s, w) => s + next.wire[w.id], 0) / mine.length : 0
+    }
   }
   for (const n of nodes) {
     const p = n.data.props

@@ -172,11 +172,18 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   main** is a dormant 40 mm leak that can be ruptured as a water-hammer event.
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
+- **Event sequences**: a control block holding a list of timed steps — at _t_ seconds take _this_ wired device to
+  _that_ command, optionally ramping there over so many seconds ("start the pump at 5 s, open the valve over 60 s,
+  stop everything at 10 min"). It is wired like any controller; each wire gets its own command, a device is left as
+  configured until its first step, a new step starts from wherever the last ramp had got to, and the list can repeat.
+  The command is a pure function of lab time, so the scan stays idempotent. It works with everything on the lab clock —
+  tanks, live heat, live flow — but not inside a water-hammer run, which still operates one device.
+  `scripts/sequence-check.ts` checks the step and ramp arithmetic and the per-wire commands.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **54 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **55 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
   valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
-  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap → waiting for hot water, warming up a heating loop, lagging a hot-water main → pumping into a canal, a canal out of a lake → a flood wave down a river, a cylinder that stratifies, bringing the condensate home). `scripts/control-sim.ts` runs the loops closed
+  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap → waiting for hot water, warming up a heating loop, lagging a hot-water main → pumping into a canal, a canal out of a lake → a flood wave down a river, a cylinder that stratifies, bringing the condensate home → starting a pump station). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli

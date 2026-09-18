@@ -3,7 +3,7 @@ import { memo, useEffect, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { NODE_SIZE, PORT_Y, type LabNode } from '../experiments'
 import { dischargeDevice, lossDevice, type Glyph } from '../model/catalog'
-import { PV_CONSUMERS, PV_SOURCES, fmtClock, timerState } from '../model/control'
+import { PV_CONSUMERS, PV_SOURCES, fmtClock, sequenceClock, timerState, type SequenceStep } from '../model/control'
 import { weirType } from '../model/openchannel'
 import { STEAM_LOADS } from '../model/steam'
 import { beta, fittingK, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
@@ -48,7 +48,7 @@ function Ports({ kind, rot }: { kind: Kind; rot: number }) {
   if (isControl(kind))
     return (
       <>
-        {kind !== 'timer' && kind !== 'manual' && kind !== 'schedule' && (
+        {kind !== 'timer' && kind !== 'manual' && kind !== 'schedule' && kind !== 'sequence' && (
           <Handle id="cin" type="source" position={Position.Left} className={`port port-signal ${PV_CONSUMERS.includes(kind) ? 'port-pv' : ''}`} />
         )}
         {kind !== 'lamp' && <Handle id="sig" type="source" position={Position.Right} className="port port-signal" />}
@@ -1708,7 +1708,59 @@ export const ThermoNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   )
 })
 
+// ---- event sequence -----------------------------------------------------------------------------
+
+export const SequenceNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const t = useLab((s) => s.simTime)
+  const labels = useLab(useShallow((s) => Object.fromEntries(s.nodes.map((n) => [n.id, n.data.label]))))
+  const p = data.props
+  const steps = [...((p.steps ?? []) as SequenceStep[])].sort((a, b) => a.at - b.at)
+  const now = sequenceClock(p, t)
+  const span = Math.max(p.repeat ? p.period : 0, ...steps.map((s) => s.at + s.ramp), 10) * (p.repeat ? 1 : 1.1)
+  const x = (tt: number) => 12 + Math.min(1, tt / span) * 108
+  const next = steps.find((s) => s.at > now)
+  const on = p.enabled !== false
+  return (
+    <Shell
+      id={id}
+      kind="sequence"
+      selected={selected}
+      label={data.label}
+      sub={
+        !on
+          ? 'disabled'
+          : next
+            ? `in ${fmtClock(next.at - now)}: ${next.target === 'all' ? 'all' : (labels[next.target] ?? '?')} → ${Math.round(next.value * 100)} %`
+            : steps.length
+              ? 'sequence complete'
+              : 'no steps yet'
+      }
+    >
+      <svg width="132" height="92" viewBox="0 0 132 92">
+        <rect x="4" y="4" width="124" height="84" rx="12" fill="#0c1424" stroke="#5a7099" strokeWidth="2.500" />
+        <text x="16" y="22" className="svg-tag big" style={{ textAnchor: 'start' }}>
+          {fmtClock(now)}
+        </text>
+        <path d="M12,58 H120" stroke="#33415f" strokeWidth="2" />
+        {steps.map((s, i) => (
+          <g key={i} opacity={s.at <= now ? 1 : 0.55}>
+            {s.ramp > 0 && <rect x={x(s.at)} y="55" width={Math.max(1, x(s.at + s.ramp) - x(s.at))} height="6" fill={on ? SIGNAL_ON : SIGNAL_OFF} opacity=".35" />}
+            <path d={`M${x(s.at)},${58 - 6 - 16 * s.value} V64`} stroke={on && s.at <= now ? SIGNAL_ON : SIGNAL_OFF} strokeWidth="2.500" strokeLinecap="round" />
+            <circle cx={x(s.at)} cy={58 - 6 - 16 * s.value} r="3" fill={on && s.at <= now ? SIGNAL_ON : SIGNAL_OFF} />
+          </g>
+        ))}
+        <line x1={x(now)} x2={x(now)} y1="30" y2="72" stroke="#fff" strokeWidth="1.500" />
+        <text x="66" y="82" className="svg-tick">
+          {steps.length} step{steps.length === 1 ? '' : 's'}
+          {p.repeat ? ` · every ${fmtClock(p.period)}` : ''}
+        </text>
+      </svg>
+    </Shell>
+  )
+})
+
 export const nodeTypes = {
+  sequence: SequenceNode,
   thermo: ThermoNode,
   steamload: SteamLoadNode,
   trap: TrapNode,

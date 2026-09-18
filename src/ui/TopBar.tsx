@@ -81,7 +81,7 @@ export function TopBar() {
           <span>{hasTanks ? 'lab time' : 'steady state'}</span>
         </div>
         <select value={s.timeScale} onChange={(e) => s.set({ timeScale: Number(e.target.value) })} title="Time acceleration">
-          {[1, 10, 20, 60, 300, 1200].map((x) => (
+          {[1, 5, 10, 20, 30, 60, 300, 1200].map((x) => (
             <option key={x} value={x}>
               {x}×
             </option>

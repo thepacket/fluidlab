@@ -27,6 +27,7 @@ export type Kind =
   | 'pid'
   | 'logic'
   | 'lamp'
+  | 'sequence'
   | 'inflow'
   | 'weir'
   | 'gate'
@@ -38,7 +39,7 @@ export type Kind =
 /** two-port components: compiled to a link between two hidden junctions */
 export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter', 'element', 'dpgauge', 'fitting']
 /** controllers: no fluid passes through them, they switch other components over signal wires */
-export const CONTROL_KINDS: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'lamp', 'stager', 'schedule']
+export const CONTROL_KINDS: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'lamp', 'stager', 'schedule', 'sequence']
 export const isControl = (k: Kind) => CONTROL_KINDS.includes(k)
 /** components a controller can switch */
 export const CONTROLLABLE: Kind[] = ['pump', 'valve', 'outlet', 'threeway', 'inflow', 'gate']
@@ -173,6 +174,7 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
   switch: { name: 'Limit switch', prefix: 'SW', blurb: 'Level · pressure · flow, with hysteresis' },
   pid: { name: 'PID controller', prefix: 'IC', blurb: 'Holds a setpoint by trimming a valve or pump' },
   logic: { name: 'Logic gate', prefix: 'LG', blurb: 'AND · OR · NOT for combining signals' },
+  sequence: { name: 'Event sequence', prefix: 'EV', blurb: 'Timed steps: start, stop, open, close, ramp' },
   lamp: { name: 'Alarm lamp', prefix: 'AL', blurb: 'Lights when its input is on' },
   inflow: { name: 'Channel inflow', prefix: 'IN', blurb: 'A steady discharge entering an open channel' },
   weir: { name: 'Weir', prefix: 'WR', blurb: 'Backs water up; its head tells you the flow' },
@@ -293,6 +295,8 @@ export function defaultProps(kind: Kind): Props {
       return { op: 'and' }
     case 'lamp':
       return { color: 'red' }
+    case 'sequence':
+      return { enabled: true, repeat: false, period: 120, steps: [] }
     case 'inflow':
       return { elevation: 1, flow: 0.1 }
     case 'weir':
