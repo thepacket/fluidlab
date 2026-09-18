@@ -43,6 +43,11 @@ export const UNITS: Record<Exclude<Quantity, 'none' | 'percent'>, UnitDef[]> = {
     { id: 'm3/h', label: 'm³/h', factor: 1 / 3600 },
     { id: 'm3/s', label: 'm³/s', factor: 1 },
     { id: 'GPM', label: 'GPM', factor: 6.30902e-5 },
+    // steam is metered by mass; the steam engine reports kg/s in the flow slot
+    { id: 'kg/h', label: 'kg/h', factor: 1 / 3600 },
+    { id: 'kg/s', label: 'kg/s', factor: 1 },
+    { id: 't/h', label: 't/h', factor: 1 / 3.6 },
+    { id: 'lb/h', label: 'lb/h', factor: 0.45359237 / 3600 },
   ],
   velocity: [
     { id: 'm/s', label: 'm/s', factor: 1 },
@@ -67,6 +72,14 @@ export const UNITS: Record<Exclude<Quantity, 'none' | 'percent'>, UnitDef[]> = {
     { id: 'kW', label: 'kW', factor: 1e3 },
     { id: 'hp', label: 'hp', factor: 745.6999 },
   ],
+}
+
+export const MASS_FLOW_UNITS = ['kg/h', 'kg/s', 't/h', 'lb/h']
+/** Flow units follow the fluid: mass for steam, volume for everything else. */
+export function flowUnitFor(steam: boolean, current: string): string {
+  const mass = MASS_FLOW_UNITS.includes(current)
+  if (steam === mass) return current
+  return steam ? (current === 'GPM' ? 'lb/h' : 'kg/h') : current === 'lb/h' ? 'GPM' : 'L/min'
 }
 
 export type UnitPrefs = Record<keyof typeof UNITS, string>

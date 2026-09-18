@@ -28,6 +28,7 @@ import { fmt, fmtNum, fmtU, toDisplay, toSI, unitLabel, type Quantity } from '..
 import { model, selectedId, useLab } from '../store'
 import { waterProfile } from '../engine/channel'
 import * as oc from '../model/openchannel'
+import { INSULATION, STEAM_LOADS, TRAP_STATES, TRAP_TYPES } from '../model/steam'
 import { Chart, SERIES, type Marker, type Series } from './Chart'
 import { KindIcon } from './icons'
 
@@ -40,7 +41,7 @@ interface Field {
   options?: { id: string; name: string }[]
   max?: number
   /** `gas` = the working fluid is a gas, which changes what several parts mean */
-  show?: (p: Props, gas: boolean) => boolean
+  show?: (p: Props, gas: boolean, steam: boolean) => boolean
   hint?: string
 }
 
@@ -54,6 +55,9 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'staticLevel', label: 'Static water level', q: 'head', show: (p) => p.sourceType === 'well' },
     { key: 'ratedDrawdown', label: 'Drawdown', q: 'head', show: (p) => p.sourceType === 'well' },
     { key: 'ratedYield', label: '… when yielding', q: 'flow', show: (p) => p.sourceType === 'well' },
+    { key: 'feedTemp', label: 'Feedwater temperature (°C)', q: 'none', show: (_p, _g, steam) => steam },
+    { key: 'boilerEfficiency', label: 'Boiler efficiency', q: 'percent', show: (_p, _g, steam) => steam },
+    { key: 'steamCost', label: 'Cost of steam (per tonne)', q: 'none', show: (_p, _g, steam) => steam },
   ],
   tank: [
     { key: 'shape', label: 'Shape', q: 'none', type: 'select', options: TANK_SHAPES },
@@ -313,6 +317,18 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
       ],
     },
   ],
+  steamload: [
+    { key: 'variant', label: 'Type', q: 'none', type: 'select', options: Object.entries(STEAM_LOADS).map(([id, d]) => ({ id, name: d.name })) },
+    { key: 'duty', label: 'Heat duty', q: 'power' },
+    { key: 'processTemp', label: 'Process temperature (°C)', q: 'none', hint: 'The steam must be at least 5 °C hotter than this' },
+    { key: 'backPressure', label: 'Condensate return pressure', q: 'pressure' },
+  ],
+  trap: [
+    { key: 'trapType', label: 'Type', q: 'none', type: 'select', options: TRAP_TYPES },
+    { key: 'orifice', label: 'Orifice', q: 'diameter' },
+    { key: 'state', label: 'Condition', q: 'none', type: 'select', options: TRAP_STATES },
+    { key: 'backPressure', label: 'Condensate return pressure', q: 'pressure' },
+  ],
   inflow: [
     { key: 'flow', label: 'Discharge', q: 'flow' },
     { ...elevation, label: 'Bed elevation' },
@@ -362,6 +378,7 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'material', label: 'Material', q: 'none', type: 'select', options: MATERIALS, show: (p) => p.conduit !== 'channel' },
     { key: 'roughness', label: 'Absolute roughness', q: 'roughness', show: (p) => p.conduit !== 'channel' },
     { key: 'minorK', label: 'Minor-loss K (fittings)', q: 'none', show: (p) => p.conduit !== 'channel' },
+    { key: 'insulation', label: 'Insulation', q: 'none', type: 'select', options: INSULATION, show: (_p, _g, steam) => steam },
     { key: 'shape', label: 'Cross-section', q: 'none', type: 'select', options: oc.CHANNEL_SHAPES, show: (p) => p.conduit === 'channel' },
     { key: 'width', label: 'Bed width', q: 'length', show: (p) => p.conduit === 'channel' && (p.shape === 'rect' || p.shape === 'trap') },
     { key: 'sideSlope', label: 'Side slope (horizontal : 1 vertical)', q: 'none', show: (p) => p.conduit === 'channel' && (p.shape === 'trap' || p.shape === 'tri') },
@@ -641,7 +658,7 @@ function RatingChart({ id }: { id: string }) {
 function trendQuantity(kind: Kind | 'pipe'): [Quantity, string] {
   if (kind !== 'pipe' && isControl(kind)) return ['none', 'Output']
   if (kind === 'tank') return ['length', 'Level']
-  if (kind === 'junction' || kind === 'gauge' || kind === 'vessel') return ['pressure', 'Pressure']
+  if (kind === 'junction' || kind === 'gauge' || kind === 'vessel' || kind === 'trap') return ['pressure', 'Pressure']
   if (kind === 'dpgauge' || kind === 'element') return ['pressure', 'Differential']
   return ['flow', 'Flow']
 }
@@ -1074,6 +1091,96 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
   const l = s.results.links[id]
   const node = s.nodes.find((x) => x.id === id)
   if (!s.results.ok || (!n && !d && !l)) return <p className="muted">No results — this part is not connected to a solved network.</p>
+  const st = s.results.steam
+  const kgh = (v: number) => fmtU(v, 'flow', u)
+  if (st && n && kind === 'steamload' && st.loads[id]) {
+    const x = st.loads[id]
+    return (
+      <>
+        <div className="hero">
+          <div>
+            <b>{fmt(x.steam, 'flow', u)}</b>
+            <span>steam {unitLabel('flow', u)}</span>
+          </div>
+          <div>
+            <b>{x.tSat.toFixed(0)}</b>
+            <span>steam °C</span>
+          </div>
+          <div>
+            <b>{fmt(n.pressure, 'pressure', u)}</b>
+            <span>{unitLabel('pressure', u)}</span>
+          </div>
+        </div>
+        <Row label="Heat delivered" value={fmtU(x.duty, 'power', u)} />
+        <Row label="Margin over the process" value={`${(x.tSat - node!.data.props.processTemp).toFixed(0)} K`} tone={x.short ? 'bad' : 'good'} />
+        <Row label="Condensate to drain" value={kgh(x.steam + x.carryover)} />
+        <Row label="… of which arrived from the pipework" value={kgh(x.carryover)} tone={x.carryover > 0.03 * x.steam ? 'warn' : undefined} />
+        <Row label="Flash steam at the return" value={`${(x.flash * 100).toFixed(1)} %  ·  ${kgh(x.flash * x.steam)}`} />
+      </>
+    )
+  }
+  if (st && n && kind === 'trap' && st.traps[id]) {
+    const x = st.traps[id]
+    const state = node!.data.props.state
+    return (
+      <>
+        <div className="hero">
+          <div>
+            <b>{fmt(x.load, 'flow', u)}</b>
+            <span>condensate {unitLabel('flow', u)}</span>
+          </div>
+          <div>
+            <b>{fmt(x.capacity, 'flow', u)}</b>
+            <span>capacity {unitLabel('flow', u)}</span>
+          </div>
+          <div>
+            <b>{fmt(n.pressure, 'pressure', u)}</b>
+            <span>{unitLabel('pressure', u)}</span>
+          </div>
+        </div>
+        <Row
+          label="Condition"
+          value={state === 'ok' ? (x.load > x.capacity ? 'undersized — backing up' : 'draining') : state === 'open' ? 'failed open' : 'blocked'}
+          tone={state === 'ok' && x.load <= x.capacity ? 'good' : 'bad'}
+        />
+        <Row label="Loading" value={x.capacity > 0 ? `${((x.load / x.capacity) * 100).toFixed(0)} % of capacity` : '—'} />
+        <Row label="Flash steam at the outlet" value={`${(x.flash * 100).toFixed(1)} %`} />
+        {x.steamLoss > 0 && (
+          <>
+            <Row label="Live steam lost" value={kgh(x.steamLoss)} tone="bad" />
+            <Row label="Heat thrown away" value={fmtU(x.lossPower, 'power', u)} tone="bad" />
+            <Row label="Cost over a plant year (8000 h)" value={Math.round(x.costPerYear).toLocaleString('en-US')} tone="bad" />
+          </>
+        )}
+      </>
+    )
+  }
+  if (st && n && kind === 'reservoir' && st.boilers[id]) {
+    const x = st.boilers[id]
+    return (
+      <>
+        <div className="hero">
+          <div>
+            <b>{fmt(x.steam, 'flow', u)}</b>
+            <span>steam {unitLabel('flow', u)}</span>
+          </div>
+          <div>
+            <b>{fmt(n.pressure, 'pressure', u)}</b>
+            <span>{unitLabel('pressure', u)}</span>
+          </div>
+          <div>
+            <b>{s.results.thermal?.nodes[id]?.toFixed(0) ?? '—'}</b>
+            <span>steam °C</span>
+          </div>
+        </div>
+        <Row label="Heat into the steam" value={fmtU(x.heat, 'power', u)} />
+        <Row label="Fuel input" value={fmtU(x.fuel, 'power', u)} />
+        <Row label="Delivered to the loads" value={st.totals.heat > 0 ? `${((st.totals.useful / st.totals.heat) * 100).toFixed(1)} % of the heat` : '—'} />
+        <Row label="Lost from the pipework" value={fmtU(st.totals.mainsLoss, 'power', u)} tone={st.totals.mainsLoss > 0.08 * st.totals.heat ? 'warn' : undefined} />
+        {st.totals.trapLoss > 0 && <Row label="Blown through failed traps" value={fmtU(st.totals.trapLoss, 'power', u)} tone="bad" />}
+      </>
+    )
+  }
   const reach = s.results.channel?.reaches[id]
   if (l && reach) {
     const ep = s.edges.find((x) => x.id === id)!.data!.props
@@ -1172,6 +1279,13 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
         <Row label="Friction factor f" value={l.f.toFixed(4)} />
         <Row label="Head loss" value={fmtU(l.headloss, 'head', u)} />
         <Row label="Pressure in → out" value={`${fmt(l.flow >= 0 ? l.pStart : l.pEnd, 'pressure', u)} → ${fmtU(l.flow >= 0 ? l.pEnd : l.pStart, 'pressure', u)}`} />
+        {st?.links[id] && (
+          <>
+            <Row label="Steam temperature" value={`${st.links[id].tSat.toFixed(0)} °C`} />
+            <Row label="Heat lost to the room" value={fmtU(st.links[id].heatLoss, 'power', u)} />
+            <Row label="Condensate formed" value={kgh(st.links[id].condensate)} />
+          </>
+        )}
       </>
     )
   if (d && kind === 'pump') {
@@ -1295,6 +1409,7 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
           </div>
         </div>
         <Row label="Pressure in → out" value={`${fmt(d.pIn, 'pressure', u)} → ${fmtU(d.pOut, 'pressure', u)}`} />
+        {kind === 'valve' && st?.throttled[id] && <Row label="Steam temperature after throttling" value={`${st.throttled[id].toFixed(0)} °C (superheated)`} />}
         {kind === 'valve' && <Row label="Status" value={d.status} tone={d.status === 'closed' ? 'bad' : d.status === 'active' ? 'warn' : 'good'} />}
         {d.K !== undefined && <Row label="Loss coefficient K" value={isFinite(d.K) ? fmtNum(d.K) : '∞'} />}
         {d.kv !== undefined && <Row label="Flow coefficient" value={`Kv ${fmtNum(d.kv)} · Cv ${fmtNum(d.kv / 0.865)}`} />}
@@ -1396,6 +1511,7 @@ export function Inspector() {
   const rotate = useLab((s) => s.rotate)
   const [tab, setTab] = useState('main')
   const gasMode = useLab((s) => !!FLUIDS.find((f) => f.id === s.fluidId)?.gas)
+  const steamMode = useLab((s) => !!FLUIDS.find((f) => f.id === s.fluidId)?.steam)
   const results = useLab((s) => s.results)
 
   if (!id || (!node && !edge)) return <Overview />
@@ -1542,9 +1658,15 @@ export function Inspector() {
         {kind === 'valve' && props.valveType === 'throttle' && <KvField props={props} onChange={(patch) => updateNode(id, patch)} />}
         {kind === 'pipe' && !channelPart && <PipeSizePicker props={props} onChange={(patch) => updateEdge(id, patch)} />}
         {FIELDS[kind]
-          .filter((f) => !f.show || f.show(props, gasMode))
+          .filter((f) => !f.show || f.show(props, gasMode, steamMode))
           .map((f) => (
-            <FieldRow key={f.key} f={f} props={{ conduit: 'pipe', ...props }} pvq={pvq} onChange={(patch) => (node ? updateNode(id, reshape(kind, patch)) : updateEdge(id, reconduit(props, patch)))} />
+            <FieldRow
+              key={f.key}
+              f={f}
+              props={{ conduit: 'pipe', ...props, insulation: String(props.insulation ?? 0) }}
+              pvq={pvq}
+              onChange={(patch) => (node ? updateNode(id, reshape(kind, patch)) : updateEdge(id, reconduit(props, patch)))}
+            />
           ))}
       </section>
     </aside>
@@ -1611,7 +1733,18 @@ function Overview() {
           <>
             <Row label="Molar mass" value={`${(fluid.gas.molarMass * 1000).toPrecision(4)} g/mol`} />
             <Row label="Heat-capacity ratio γ" value={String(fluid.gas.gamma)} />
+            {s.results.steam && (
+              <>
+                <Row label="Steam generated" value={fmtU(s.results.steam.totals.generated, 'flow', s.units)} />
+                <Row label="Heat reaching the loads" value={fmtU(s.results.steam.totals.useful, 'power', s.units)} />
+                <Row label="Lost from the pipework" value={fmtU(s.results.steam.totals.mainsLoss, 'power', s.units)} />
+                <Row label="Blown through failed traps" value={fmtU(s.results.steam.totals.trapLoss, 'power', s.units)} tone={s.results.steam.totals.trapLoss > 0 ? 'bad' : undefined} />
+              </>
+            )}
             <p className="muted">
+              {fluid.steam
+                ? 'Steam mode: the gas solver with steam-table density, flows in mass units. Reservoirs are boilers; steam loads condense duty ÷ h_fg; pipes lose heat and make condensate, which is followed to the nearest trap. Saturated steam throughout — superheat is only reported after a throttling valve. '
+                : ''}
               Gas mode: a separate solver (isothermal, p₁² − p₂² ∝ ṁ²). Flows are standard volumes (15 °C, 1 atm); reservoirs are pressure sources, pumps are compressors, pressure vessels are
               receivers, PRVs are regulators.
             </p>

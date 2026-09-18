@@ -6,6 +6,7 @@
 //   rated  Δp = Δp_rated · (Q/Q_rated)ⁿ / (1 − fouling)² — equipment sized from a datasheet point. n = 2 is
 //          turbulent; packed beds and membranes sit nearer 1. Goes to the solver as a head-loss curve (GPV).
 import { weirType } from './openchannel'
+import { STEAM_LOADS } from './steam'
 import type { Props } from './types'
 
 export type Glyph = 'elbow' | 'elbow45' | 'tee' | 'reducer' | 'expander' | 'entrance' | 'exit' | 'strainer' | 'filter' | 'plate' | 'shell' | 'coil' | 'mixer' | 'membrane' | 'uv' | 'generic'
@@ -386,6 +387,7 @@ export function catalogueSpec(kind: string, variant?: string): { prefix: string;
     const d = lossDevice(variant)
     return { prefix: d.prefix, defaults: { variant: d.id, ...d.defaults } }
   }
+  if (kind === 'steamload' && STEAM_LOADS[variant]) return { prefix: STEAM_LOADS[variant].prefix, defaults: { variant, ...STEAM_LOADS[variant].defaults } }
   if (kind === 'weir') {
     const w = weirType(variant)
     return { prefix: w.prefix, defaults: { variant: w.id, ...w.defaults } }

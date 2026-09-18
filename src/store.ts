@@ -10,7 +10,7 @@ import { receiverRate } from './engine/gas'
 import { P_ATM, VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from './model/physics'
 import { defaultChannelProps, isChannel, isChannelKind } from './model/openchannel'
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
-import { METRIC, type UnitPrefs } from './model/units'
+import { flowUnitFor, METRIC, type UnitPrefs } from './model/units'
 
 export type Overlay = 'pressure' | 'velocity' | 'thermal' | 'plain'
 /** Everything undo/redo restores: the rig itself, not the simulation state around it. */
@@ -453,7 +453,8 @@ export const useLab = create<State>((set, get) => ({
       else if (ctrl.out[n.id] !== undefined) {
         v[n.id] = ctrl.out[n.id]
         if (ctrl.pv[n.id] !== undefined) v[`${n.id}:pv`] = ctrl.pv[n.id]
-      } else if (n.data.kind === 'outlet' || n.data.kind === 'reservoir') v[n.id] = Math.abs(nr?.outflow ?? 0)
+      } else if (['outlet', 'reservoir', 'steamload', 'inflow', 'outfall'].includes(n.data.kind)) v[n.id] = Math.abs(nr?.outflow ?? 0)
+      else if (n.data.kind === 'weir' || n.data.kind === 'gate') v[n.id] = nr?.extra?.flow ?? 0
       else if (nr) v[n.id] = nr.pressure
       else if (dr) v[n.id] = n.data.kind === 'dpgauge' ? dr.pIn - dr.pOut : n.data.kind === 'element' ? (dr.tapDp ?? 0) : dr.flow
     }
@@ -539,6 +540,11 @@ export function bootLab() {
       }
       scheduleSolve()
     }
+  })
+  // steam is metered by mass, everything else by volume: keep the flow unit on the right side of that line
+  useLab.subscribe((s) => {
+    const unit = flowUnitFor(!!FLUIDS.find((f) => f.id === s.fluidId)?.steam, s.units.flow)
+    if (unit !== s.units.flow) useLab.setState({ units: { ...s.units, flow: unit } })
   })
   let saveTimer = 0
   useLab.subscribe((s, prev) => {

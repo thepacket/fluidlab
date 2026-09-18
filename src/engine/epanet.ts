@@ -25,6 +25,7 @@ import {
 import { EMPTY_RESULTS, isControl, type Model, type Results, type Warning } from '../model/types'
 import { solveGas } from './gas'
 import { solveChannel } from './channel'
+import { solveSteam } from './steam'
 import { stripChannels } from '../model/openchannel'
 import { solveThermal } from './thermal'
 import { command, commandedOff, compile, floatTank, valvePosition, type JetState, type Overrides } from './inp'
@@ -118,7 +119,12 @@ class EpanetEngine implements HydraulicEngine {
   }
 
   private solvePressurised(model: Model, overrides: Overrides = {}): Results {
-    if (model.fluid.gas) return solveGas(model, overrides) // a different physics altogether: see engine/gas.ts
+    if (model.fluid.gas) {
+      // a different physics altogether: see engine/gas.ts — and engine/steam.ts for what steam adds on top
+      const r = solveGas(model, overrides)
+      const s = solveSteam(model, r)
+      return s ? { ...r, steam: s.steam, thermal: s.thermal } : r
+    }
     const t0 = performance.now()
     if (!this.ws) return { ...EMPTY_RESULTS, error: 'Solver still loading' }
     if (model.nodes.some((nd) => nd.data.kind === 'jetpump')) overrides = { ...overrides, jets: this.convergeJets(model, overrides) }

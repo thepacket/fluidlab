@@ -85,6 +85,20 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   lab clock, nozzles and leaks choke at the critical ratio. Flows are standard volumes (15 °C, 1 atm). Controls,
   charts and goals work unchanged. `scripts/gas-check.ts` checks it against hand calculations. Elevation is ignored;
   tees, three-way valves and jet pumps are plain junctions; no water hammer or thermal layer for gases.
+- **Steam** (`src/engine/steam.ts`, properties in `src/model/steam.ts`): pick "Saturated steam" as the fluid. The gas
+  engine does the hydraulics with three changes — p/ρ comes from the steam table at each link's mean pressure instead
+  of one Z·R·T, **steam loads** take duty ÷ h_fg(p) (so their demand depends on the pressure they get), and every pipe
+  condenses what its surface loses (lagging thickness per pipe; conduction through mineral wool, then convection +
+  radiation). Flows are mass flows: the flow unit switches to kg/h (t/h, lb/h) with the fluid. The steam layer then
+  follows the **condensate**: each pipe's share travels downstream to the first working **steam trap** (or drip leg
+  next to the main); what reaches a load instead is reported as carry-over, what reaches nothing is flagged as a
+  water-hammer risk. Traps have an orifice capacity (derated for flashing) and a condition: a failed-open trap is a
+  choked orifice blowing live steam, priced per plant year; a blocked one drains nothing. Reservoirs are boilers
+  (feedwater temperature, efficiency, steam cost); throttling valves report the superheat they leave; loads warn when
+  saturation temperature is below the process temperature + 5 K; loads and traps report flash steam at their return
+  pressure. The thermal overlay shows steam temperature; the overview gives the heat balance. Saturated steam only:
+  no superheated mains, no condensate-return pipework, no warm-up loads, no control valve / stall on the loads.
+  `scripts/steam-check.ts` checks tables, mass balance, Darcy drop, choked trap and PRV against hand calculations.
 - **Open-channel engine** (`src/engine/channel.ts`, hydraulics in `src/model/openchannel.ts`): any conduit can be
   switched from "pipe, flowing full" to "open channel" (rectangular, trapezoidal, V or part-full circular; Manning n from
   a lining catalogue), and anything connected to a channel part is a reach from the start. Bed levels come from the node
@@ -118,10 +132,10 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **43 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **46 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
   valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
-  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute). `scripts/control-sim.ts` runs the loops closed
+  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli
@@ -143,8 +157,8 @@ fly deploy                             # build remotely and ship
 ## Layout
 
 ```
-src/model/     types + defaults, units, physics, openchannel (pure, SI)
-src/engine/    inp.ts (compile) · epanet.ts (steady engine) · gas.ts (gas engine) · channel.ts (open-channel engine)
+src/model/     types + defaults, units, physics, openchannel, steam (pure, SI)
+src/engine/    inp.ts (compile) · epanet.ts (steady engine) · gas.ts (gas engine) · steam.ts (steam layer) · channel.ts (open-channel engine)
                transient.ts (water-hammer engine) · thermal.ts (heat layer)
                worker.ts + client.ts (threading)
                analysis.ts (curves, grade line)
@@ -153,4 +167,4 @@ src/store.ts   zustand store, solve scheduling, tank time-stepping, persistence
 src/ui/        nodes, animated pipe edge, inspector, charts, top bar, sidebar
 ```
 
-`HydraulicEngine` is the seam solvers plug into: EPANET, the gas engine and the open-channel engine all sit behind it today; steam and transient heat transfer are still to come.
+`HydraulicEngine` is the seam solvers plug into: EPANET, the gas engine and the open-channel engine all sit behind it today, with steam as a layer on the gas engine; transient heat transfer is still to come.

@@ -31,6 +31,8 @@ export type Kind =
   | 'weir'
   | 'gate'
   | 'outfall'
+  | 'steamload'
+  | 'trap'
 
 /** two-port components: compiled to a link between two hidden junctions */
 export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter', 'element', 'dpgauge', 'fitting']
@@ -95,6 +97,8 @@ export interface Fluid {
   vaporPressure: number // Pa (absolute)
   /** present for gases: the fluid is then solved by the gas engine, and `density` is its standard density */
   gas?: { molarMass: number; gamma: number; z: number; temperature: number }
+  /** saturated steam: solved by the gas engine with steam-table density, flows are mass flows (kg/s) — see engine/steam.ts */
+  steam?: boolean
 }
 
 export const FLUIDS: Fluid[] = [
@@ -109,6 +113,7 @@ export const FLUIDS: Fluid[] = [
   { id: 'natgas', name: 'Natural gas', density: 0.7359, dynamicViscosity: 1.1e-5, vaporPressure: 0, gas: { molarMass: 0.0174, gamma: 1.31, z: 0.998, temperature: 288.15 } },
   { id: 'nitrogen', name: 'Nitrogen', density: 1.1847, dynamicViscosity: 1.76e-5, vaporPressure: 0, gas: { molarMass: 0.028013, gamma: 1.4, z: 1, temperature: 288.15 } },
   { id: 'hydrogen', name: 'Hydrogen', density: 0.0853, dynamicViscosity: 8.8e-6, vaporPressure: 0, gas: { molarMass: 0.002016, gamma: 1.41, z: 1.0006, temperature: 288.15 } },
+  { id: 'steam', name: 'Saturated steam', density: 1, dynamicViscosity: 1.5e-5, vaporPressure: 0, gas: { molarMass: 0.018015, gamma: 1.135, z: 0.95, temperature: 453.15 }, steam: true },
   { id: 'co2', name: 'Carbon dioxide', density: 1.8613, dynamicViscosity: 1.47e-5, vaporPressure: 0, gas: { molarMass: 0.04401, gamma: 1.29, z: 0.994, temperature: 288.15 } },
 ]
 
@@ -171,13 +176,15 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
   inflow: { name: 'Channel inflow', prefix: 'IN', blurb: 'A steady discharge entering an open channel' },
   weir: { name: 'Weir', prefix: 'WR', blurb: 'Backs water up; its head tells you the flow' },
   gate: { name: 'Sluice gate', prefix: 'SG', blurb: 'Underflow gate — shoots a fast, shallow jet' },
+  steamload: { name: 'Steam load', prefix: 'HX', blurb: 'Condenses steam to deliver a heat duty' },
+  trap: { name: 'Steam trap', prefix: 'ST', blurb: 'Lets condensate out and keeps steam in' },
   outfall: { name: 'Outfall', prefix: 'OF', blurb: 'Where a channel ends: free drop, fixed level or normal depth' },
 }
 
 export function defaultProps(kind: Kind): Props {
   switch (kind) {
     case 'reservoir':
-      return { head: 10, sourceType: 'surface', pressure: 400e3, elevation: 0, staticLevel: -8, ratedDrawdown: 6, ratedYield: 60 / 60000 }
+      return { feedTemp: 80, boilerEfficiency: 0.82, steamCost: 35, head: 10, sourceType: 'surface', pressure: 400e3, elevation: 0, staticLevel: -8, ratedDrawdown: 6, ratedYield: 60 / 60000 }
     case 'tank':
       return { overflow: false, elevation: 0, shape: 'cylinder', diameter: 1.2, length: 2, initLevel: 0.5, minLevel: 0, maxLevel: 2.5 }
     case 'junction':
@@ -262,6 +269,10 @@ export function defaultProps(kind: Kind): Props {
       return { elevation: 0, variant: 'sharp', crestHeight: 0.3, crestWidth: 0.5, notchAngle: 90, throat: '6in' }
     case 'gate':
       return { elevation: 0, opening: 0.1, width: 0.5 }
+    case 'steamload':
+      return { elevation: 0, variant: 'exchanger', duty: 200e3, processTemp: 120, backPressure: 0 }
+    case 'trap':
+      return { elevation: 0, trapType: 'float', orifice: 0.004, state: 'ok', backPressure: 0 }
     case 'outfall':
       return { elevation: 0, mode: 'free', level: 0.5 }
   }
@@ -336,6 +347,8 @@ export interface Results {
   thermal?: import('../engine/thermal').Thermal
   /** water-surface profiles of open-channel reaches (see engine/channel.ts) */
   channel?: import('../engine/channel').ChannelResults
+  /** condensate, heat and trap accounting of a steam system (see engine/steam.ts) */
+  steam?: import('../engine/steam').SteamResults
   ok: boolean
   error?: string
   warnings: Warning[]

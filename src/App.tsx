@@ -76,7 +76,7 @@ function Legend() {
   if (overlay === 'thermal')
     return r.thermal ? (
       <div className="legend">
-        <span>water temperature · °C</span>
+        <span>{r.steam ? 'steam' : 'water'} temperature · °C</span>
         <div className="legend-bar" style={{ background: thermalCss }} />
         <div className="legend-scale">
           <b>{r.thermal.tMin.toFixed(0)}</b>

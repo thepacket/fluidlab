@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { EXPERIMENTS } from '../experiments'
 import { DISCHARGE_DEVICES, LOSS_DEVICES, PUMP_PRESETS, VALVE_PRESETS } from '../model/catalog'
 import { WEIR_TYPES } from '../model/openchannel'
+import { STEAM_LOADS } from '../model/steam'
 import { KIND_META, type Kind } from '../model/types'
 import { useLab } from '../store'
 import { KindIcon } from './icons'
@@ -41,6 +42,10 @@ const GROUPS: { name: string; items: PaletteItem[] }[] = [
   {
     name: 'Open channel',
     items: [item('inflow'), ...WEIR_TYPES.map((w): PaletteItem => ({ key: `weir:${w.id}`, kind: 'weir', name: w.name, blurb: w.blurb })), item('gate'), item('outfall')],
+  },
+  {
+    name: 'Steam',
+    items: [...Object.entries(STEAM_LOADS).map(([id, d]): PaletteItem => ({ key: `steamload:${id}`, kind: 'steamload', name: d.name, blurb: d.blurb })), item('trap')],
   },
   { name: 'Fittings', items: catalogue('Fittings') },
   { name: 'Equipment', items: catalogue('Equipment') },

@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { solver } from '../engine/client'
-import { METRIC, UNITS, US, type UnitPrefs } from '../model/units'
+import { MASS_FLOW_UNITS, METRIC, UNITS, US, type UnitPrefs } from '../model/units'
+import { FLUIDS } from '../model/types'
 import { useLab, usesClock, type Overlay } from '../store'
 import { Icon } from './icons'
 
@@ -27,6 +28,7 @@ const UNIT_NAMES: Record<keyof UnitPrefs, string> = {
 
 export function TopBar() {
   const s = useLab()
+  const steam = !!FLUIDS.find((f) => f.id === s.fluidId)?.steam
   const [unitsOpen, setUnitsOpen] = useState(false)
   const file = useRef<HTMLInputElement>(null)
   const hasTanks = s.nodes.some(usesClock)
@@ -99,8 +101,8 @@ export function TopBar() {
       </div>
 
       {s.results.gas && (
-        <div className="gas-badge" title="Flows are standard volumes at 15 °C and 1 atm">
-          GAS · standard flow
+        <div className="gas-badge" title={steam ? 'Saturated steam: flows are mass flows' : 'Flows are standard volumes at 15 °C and 1 atm'}>
+          {steam ? 'STEAM · mass flow' : 'GAS · standard flow'}
         </div>
       )}
 
@@ -132,11 +134,13 @@ export function TopBar() {
               <div className="field" key={q}>
                 <span>{UNIT_NAMES[q]}</span>
                 <select value={s.units[q]} onChange={(e) => s.set({ units: { ...s.units, [q]: e.target.value } })}>
-                  {UNITS[q].map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.label}
-                    </option>
-                  ))}
+                  {UNITS[q]
+                    .filter((u) => q !== 'flow' || MASS_FLOW_UNITS.includes(u.id) === steam)
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.label}
+                      </option>
+                    ))}
                 </select>
               </div>
             ))}

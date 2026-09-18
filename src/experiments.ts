@@ -31,6 +31,8 @@ export const NODE_SIZE: Record<Kind, [number, number]> = {
   pid: [116, 104],
   logic: [76, 64],
   lamp: [60, 68],
+  steamload: [124, 84],
+  trap: [64, 72],
   inflow: [104, 84],
   weir: [112, 88],
   gate: [112, 96],
@@ -65,6 +67,8 @@ export const PORT_Y: Record<Kind, number> = {
   pid: 0.5,
   logic: 0.5,
   lamp: 0.5,
+  steamload: 0.5,
+  trap: 0.5,
   inflow: 0.72,
   weir: 0.72,
   gate: 0.72,
@@ -1710,6 +1714,119 @@ export const EXPERIMENTS: Experiment[] = [
         .channel('brink', 'toe', { length: 60, width: 2, bankHeight: 1.5 }, ['r', 'l'], 'Chute')
         .channel('toe', 'sill', { length: 100, width: 3, bankHeight: 1.5, lining: 'gravel' }, [], 'Tail channel')
         .channel('sill', 'out', { length: 20, width: 3, bankHeight: 1.5, lining: 'riprap' }, [], 'Apron')
+        .done(),
+  },
+  {
+    id: 'steam-main',
+    no: '44',
+    title: 'Sizing a steam main',
+    concept: 'Velocity, pressure drop and temperature',
+    formula: 'ṁ = Q̇ / h_fg    ·    v = ṁ / (ρ_g · A)',
+    brief:
+      'Steam carries heat as latent heat: each kilogram gives up about 2000 kJ when it condenses, so a load’s steam demand is its duty divided by h_fg. Steam is light, so mains run fast — 25 to 35 m/s is normal. Push more through a small pipe and the pressure drop climbs with the square of the velocity; and because saturated steam’s temperature is tied to its pressure, the far end arrives too cool to do its job.',
+    steps: [
+      'Select the main: 46 m/s, and nearly 3 bar lost along it.',
+      'Select the heat exchanger: its steam is below the temperature the process needs.',
+      'Give the main a bigger bore and watch velocity, pressure drop and steam temperature recover.',
+    ],
+    goal: {
+      text: 'Keep every pipe at or below 35 m/s and get the heat exchanger its temperature margin',
+      check: (r) => {
+        const v = Math.max(0, ...Object.values(r.links).map((l) => l.velocity))
+        const short = Object.values(r.steam?.loads ?? {}).some((l) => l.short)
+        return { done: !!r.steam && v <= 35 && !short, readout: `fastest pipe ${v.toFixed(0)} m/s · exchanger steam ${r.steam?.loads.hx?.tSat.toFixed(0) ?? '—'} °C` }
+      },
+    },
+    fluidId: 'steam',
+    select: 'e1',
+    build: () =>
+      new Rig()
+        .add('b', 'reservoir', 160, 300, { pressure: 800e3 }, 'Boiler')
+        .add('j', 'junction', 620, 300)
+        .add('hx', 'steamload', 900, 200, { variant: 'exchanger', duty: 500e3, processTemp: 160 }, 'Process exchanger')
+        .add('uh', 'steamload', 900, 420, { variant: 'heater', duty: 60e3, processTemp: 60 }, 'Unit heater')
+        .pipe('b', 'j', { length: 120, diameter: 0.0409, material: 'steel', roughness: 0.045e-3, insulation: 0.05 }, [], 'Steam main')
+        .pipe('j', 'hx', { length: 10, diameter: 0.0525, material: 'steel', roughness: 0.045e-3, insulation: 0.05 }, ['t', 'l'])
+        .pipe('j', 'uh', { length: 10, diameter: 0.0266, material: 'steel', roughness: 0.045e-3, insulation: 0.05 }, ['b', 'l'])
+        .done(),
+  },
+  {
+    id: 'steam-condensate',
+    no: '45',
+    title: 'Lagging and drip traps',
+    concept: 'Heat loss makes condensate',
+    formula: 'ṁ_cond = q · L / h_fg',
+    brief:
+      'A bare steam pipe is a radiator. Every watt it loses condenses steam inside it, and that water has to go somewhere: left in the main it is picked up by 30 m/s steam and thrown at the next bend — water hammer. So mains are lagged to make less of it, and drip traps are fitted to let it out. A trap that is too small, or blocked, is as bad as none.',
+    steps: [
+      'Select the main: kilowatts lost to the room, and the condensate that makes.',
+      'Select the drip trap: it is blocked, so everything the main condenses is carried on into the kettles.',
+      'Lag the main, put the trap back to work, and check it can pass what still arrives.',
+    ],
+    goal: {
+      text: 'Lose less than 10 kW from the pipework, with the drip trap inside its capacity and no condensate reaching the kettle',
+      check: (r) => {
+        const st = r.steam
+        const t = st?.traps.t
+        const ok = !!st && !!t && st.totals.mainsLoss < 10000 && t.load <= t.capacity && !!st.loads.k && st.loads.k.carryover * 3600 < 1.5 && st.totals.stranded === 0
+        return {
+          done: ok,
+          readout: st ? `pipework loses ${(st.totals.mainsLoss / 1000).toFixed(1)} kW · trap ${t && t.capacity > 0 ? `at ${((t.load / t.capacity) * 100).toFixed(0)} %` : 'blocked'}` : '—',
+        }
+      },
+    },
+    fluidId: 'steam',
+    select: 'e1',
+    build: () =>
+      new Rig()
+        .add('b', 'reservoir', 160, 260, { pressure: 600e3 }, 'Boiler')
+        .add('j', 'junction', 640, 260, {}, 'Drip pocket')
+        .add('t', 'trap', 640, 420, { orifice: 0.003, state: 'closed' }, 'Drip trap')
+        .add('k', 'steamload', 920, 260, { variant: 'kettle', duty: 120e3, processTemp: 110 }, 'Kettles')
+        .pipe('b', 'j', { length: 150, diameter: 0.0779, material: 'steel', roughness: 0.045e-3, insulation: 0 }, [], 'Steam main')
+        .pipe('j', 't', { length: 0.5, diameter: 0.0209, material: 'steel', roughness: 0.045e-3, insulation: 0 }, ['b', 't'], 'Drip leg')
+        .pipe('j', 'k', { length: 6, diameter: 0.0409, material: 'steel', roughness: 0.045e-3, insulation: 0.05 }, [], 'Branch')
+        .done(),
+  },
+  {
+    id: 'steam-prv',
+    no: '46',
+    title: 'Reducing station and a blowing trap',
+    concept: 'Pressure sets temperature',
+    formula: 't_sat = f(p)    ·    flash = (h_f1 − h_f2) / h_fg2',
+    brief:
+      'Steam is distributed at high pressure — small pipes — and reduced where it is used, because with saturated steam choosing the pressure is choosing the temperature. An autoclave sterilising at 134 °C needs steam at about 2.6 bar g; its chamber here is rated for 3.5. Meanwhile one trap on the main has failed open and is quietly venting live steam, all day, every day.',
+    steps: [
+      'Select the autoclave: the steam is too cool. Raise the reducing valve’s set pressure — but mind the chamber rating.',
+      'Select the reducing valve: the steam leaves it superheated, because throttling keeps its enthalpy.',
+      'Find the trap that is blowing, read what it costs in a year, and set it back to “working”.',
+    ],
+    goal: {
+      text: 'Give the autoclave its temperature without exceeding 350 kPa there, and stop the live-steam loss',
+      check: (r) => {
+        const st = r.steam
+        const p = r.nodes.ac?.pressure ?? 0
+        return {
+          done: !!st && !st.loads.ac?.short && p <= 350e3 && st.totals.trapLoss === 0,
+          readout: st ? `autoclave ${(p / 1000).toFixed(0)} kPa · ${st.loads.ac?.tSat.toFixed(0)} °C · traps blowing ${(st.totals.trapLoss / 1000).toFixed(1)} kW` : '—',
+        }
+      },
+    },
+    fluidId: 'steam',
+    select: 'ac',
+    build: () =>
+      new Rig()
+        .add('b', 'reservoir', 140, 260, { pressure: 1000e3 }, 'Boiler')
+        .add('j', 'junction', 420, 260, {}, 'Drip pocket')
+        .add('t', 'trap', 420, 420, { state: 'open', orifice: 0.005 }, 'Drip trap')
+        .add('prv', 'valve', 640, 260, { valveType: 'prv', pressureSetting: 150e3, diameter: 0.04, kOpen: 3 }, 'Reducing valve')
+        .add('g', 'gauge', 820, 260, {}, 'Reduced')
+        .add('ac', 'steamload', 1040, 260, { variant: 'autoclave', duty: 90e3, processTemp: 134 }, 'Autoclave')
+        .pipe('b', 'j', { length: 60, diameter: 0.0409, material: 'steel', roughness: 0.045e-3, insulation: 0.05 }, [], 'HP main')
+        .pipe('j', 't', { length: 0.5, diameter: 0.0209, material: 'steel', roughness: 0.045e-3, insulation: 0 }, ['b', 't'], 'Drip leg')
+        .pipe('j', 'prv', { length: 3, diameter: 0.0409, material: 'steel', roughness: 0.045e-3, insulation: 0.05 })
+        .pipe('prv', 'g', { length: 3, diameter: 0.0525, material: 'steel', roughness: 0.045e-3, insulation: 0.05 })
+        .pipe('g', 'ac', { length: 12, diameter: 0.0525, material: 'steel', roughness: 0.045e-3, insulation: 0.05 })
         .done(),
   },
 ]

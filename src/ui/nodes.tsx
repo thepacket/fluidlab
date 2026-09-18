@@ -5,6 +5,7 @@ import { NODE_SIZE, PORT_Y, type LabNode } from '../experiments'
 import { dischargeDevice, lossDevice, type Glyph } from '../model/catalog'
 import { PV_CONSUMERS, PV_SOURCES, fmtClock, timerState } from '../model/control'
 import { weirType } from '../model/openchannel'
+import { STEAM_LOADS } from '../model/steam'
 import { beta, fittingK, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
 import { CONTROLLABLE, ROTATABLE, isControl, type Kind } from '../model/types'
 import { fmt, fmtU, toSI, unitLabel } from '../model/units'
@@ -166,6 +167,7 @@ export const ReservoirNode = memo(({ id, data, selected }: NodeProps<LabNode>) =
   const r = useLab((s) => s.results.nodes[id])
   const q = Math.abs(r?.outflow ?? 0)
   const gas = useLab((st) => !!st.results.gas)
+  const steam = useLab((st) => !!st.results.steam)
   const type: string = gas ? 'mains' : (data.props.sourceType ?? 'surface')
   return (
     <Shell id={id} kind="reservoir" selected={selected} label={data.label} sub={q > 1e-8 ? `${r!.outflow < 0 ? '↑' : '↓'} ${fmtU(q, 'flow', units)}` : undefined}>
@@ -194,7 +196,7 @@ export const ReservoirNode = memo(({ id, data, selected }: NodeProps<LabNode>) =
           <tspan className="svg-unit"> {unitLabel(type === 'mains' ? 'pressure' : 'head', units)}</tspan>
         </text>
         <text x="66" y="76" className="svg-caption">
-          {gas ? 'GAS SUPPLY' : type === 'mains' ? 'MAINS' : type === 'well' ? 'PUMPING LEVEL' : 'HEAD'}
+          {steam ? 'BOILER' : gas ? 'GAS SUPPLY' : type === 'mains' ? 'MAINS' : type === 'well' ? 'PUMPING LEVEL' : 'HEAD'}
         </text>
         {type === 'mains' && <path d="M2,48 H130" stroke="#8aa0c6" strokeWidth="7" opacity=".35" />}
         {type === 'well' && <path d="M40,4 V92 M92,4 V92" stroke="#c98500" strokeWidth="2" strokeDasharray="3 4" opacity=".7" />}
@@ -1595,7 +1597,74 @@ export const OutfallNode = memo(({ id, data, selected }: NodeProps<LabNode>) => 
   )
 })
 
+// ---- steam: load and trap ----------------------------------------------------------------------
+
+export const SteamLoadNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const load = useLab((s) => s.results.steam?.loads[id])
+  const paused = useLab((s) => !s.running)
+  const live = !!load && load.steam > 0
+  const c = !load ? DRY : load.short ? '#fab219' : '#ff7a59'
+  return (
+    <Shell id={id} kind="steamload" selected={selected} label={data.label} sub={live ? `${fmtU(load.steam, 'flow', units)} · ${load.tSat.toFixed(0)} °C` : STEAM_LOADS[data.props.variant]?.name}>
+      <svg width="124" height="84" viewBox="0 0 124 84" style={{ overflow: 'visible' }}>
+        <rect x="8" y="22" width="108" height="40" rx="20" fill="#101a2c" stroke="#5a7099" strokeWidth="2.5" />
+        <path
+          d="M26,42 h10 l6,-11 l10,22 l10,-22 l10,22 l10,-22 l6,11 h10"
+          fill="none"
+          stroke={c}
+          strokeWidth="3"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          style={{ filter: live ? `drop-shadow(0 0 5px ${c})` : undefined }}
+        />
+        <path d="M28,22 V10 M96,62 V74" stroke="#5a7099" strokeWidth="4" strokeLinecap="round" />
+        {live && <circle className="bubble b1" cx="96" cy="80" r="2.4" style={{ animationPlayState: paused ? 'paused' : 'running' }} />}
+        <text x="62" y="16" className="svg-caption">
+          {fmtU(load?.duty ?? data.props.duty, 'power', units)}
+        </text>
+      </svg>
+    </Shell>
+  )
+})
+
+export const TrapNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const t = useLab((s) => s.results.steam?.traps[id])
+  const paused = useLab((s) => !s.running)
+  const state: string = data.props.state
+  const over = !!t && state === 'ok' && t.load > t.capacity
+  const c = state === 'open' ? '#ff5d7a' : state === 'closed' ? '#8aa0c6' : over ? '#fab219' : '#38c6ff'
+  return (
+    <Shell
+      id={id}
+      kind="trap"
+      selected={selected}
+      label={data.label}
+      sub={!t ? undefined : state === 'open' ? `blowing ${fmtU(t.steamLoss, 'flow', units)}` : state === 'closed' ? 'blocked' : `${fmtU(t.load, 'flow', units)}`}
+    >
+      <svg width="64" height="72" viewBox="0 0 64 72" style={{ overflow: 'visible' }}>
+        <circle cx="32" cy="34" r="24" fill="#101a2c" stroke="#5a7099" strokeWidth="2.5" />
+        <path d="M18,24 H46 M32,24 V46" stroke={c} strokeWidth="4" strokeLinecap="round" />
+        {state === 'closed' && <path d="M22,50 L42,38 M22,38 L42,50" stroke="#8aa0c6" strokeWidth="2.5" strokeLinecap="round" />}
+        {state === 'open' &&
+          [-1, 0, 1].map((k) => (
+            <path
+              key={k}
+              className="spray"
+              d={`M32,58 Q${32 + k * 8},72 ${32 + k * 16},90`}
+              style={{ animationDuration: '.5s', animationDelay: `${-k * 0.15}s`, animationPlayState: paused ? 'paused' : 'running' }}
+            />
+          ))}
+        {state === 'ok' && t && t.load > 0 && <circle className="bubble b2" cx="32" cy="66" r="2.2" style={{ animationPlayState: paused ? 'paused' : 'running' }} />}
+      </svg>
+    </Shell>
+  )
+})
+
 export const nodeTypes = {
+  steamload: SteamLoadNode,
+  trap: TrapNode,
   inflow: InflowNode,
   weir: WeirNode,
   gate: GateNode,

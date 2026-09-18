@@ -15,17 +15,21 @@
 import { dischargeDevice, lossDevice } from '../model/catalog'
 import { G, P_ATM, area, elementK, fittingK, frictionFactor, meterK, ratedDp, regimeOf, valveK } from '../model/physics'
 import { EMPTY_RESULTS, isControl, isInline, type Fluid, type Model, type ModelNode, type Props, type Results, type Warning } from '../model/types'
+import { hfg, pipeHeatLoss, rhoSteam, tSat } from '../model/steam'
 import { command, commandedOff, valvePosition, type Overrides } from './inp'
 
 const R_UNIVERSAL = 8.314462618
 export const T_STD = 288.15
 
 /** Z·R_specific·T for the gas at its working temperature — the group that turns pressure into density. */
-export const zrt = (f: Fluid) => ((f.gas!.z * R_UNIVERSAL) / f.gas!.molarMass) * f.gas!.temperature
+export const zrt = (f: Fluid, pAbs?: number) => (f.steam && pAbs ? pAbs / rhoSteam(pAbs) : ((f.gas!.z * R_UNIVERSAL) / f.gas!.molarMass) * f.gas!.temperature)
 /** Density at standard conditions: converts mass flow to standard volume flow. */
-export const rhoStd = (f: Fluid) => (P_ATM * f.gas!.molarMass) / (R_UNIVERSAL * T_STD)
+export const rhoStd = (f: Fluid) => (f.steam ? 1 : (P_ATM * f.gas!.molarMass) / (R_UNIVERSAL * T_STD)) // steam is metered by mass: 1 "m³" ≡ 1 kg
 /** Rate of pressure rise (Pa/s) in a receiver of this volume taking in `qStd` of standard flow. */
 export const receiverRate = (f: Fluid, volume: number, qStd: number) => (qStd * rhoStd(f) * zrt(f)) / Math.max(1e-6, volume)
+
+/** Steam condensing in a pipe (kg/s): the heat its surface loses, divided by what each kilogram gives up. */
+export const pipeCondensate = (p: Props, pAbs: number) => (pipeHeatLoss(p, tSat(pAbs)) * Math.max(0.01, p.length)) / hfg(pAbs)
 
 /** Compressor map, same shape as the pump's: pressure ratio falls from shut-off as flow rises. Returns standard flow. */
 export function compressorFlow(ratio: number, p: Props, speed: number): number {
@@ -41,8 +45,8 @@ export function orificeFlow(cdA: number, pUp: number, pDown: number, f: Fluid): 
   const g = f.gas!.gamma
   const r = pDown / pUp
   const rc = Math.pow(2 / (g + 1), g / (g - 1))
-  if (r <= rc) return { mdot: cdA * pUp * Math.sqrt(g / zrt(f)) * Math.pow(2 / (g + 1), (g + 1) / (2 * (g - 1))), choked: true }
-  return { mdot: cdA * pUp * Math.sqrt(((2 * g) / ((g - 1) * zrt(f))) * (Math.pow(r, 2 / g) - Math.pow(r, (g + 1) / g))), choked: false }
+  if (r <= rc) return { mdot: cdA * pUp * Math.sqrt(g / zrt(f, pUp)) * Math.pow(2 / (g + 1), (g + 1) / (2 * (g - 1))), choked: true }
+  return { mdot: cdA * pUp * Math.sqrt(((2 * g) / ((g - 1) * zrt(f, pUp))) * (Math.pow(r, 2 / g) - Math.pow(r, (g + 1) / g))), choked: false }
 }
 
 interface GNode {
@@ -51,6 +55,10 @@ interface GNode {
   p: number // absolute, Pa
   demand: number // kg/s leaving
   cdA: number // vent to atmosphere
+  /** steam load: heat duty (W), met by condensing duty / h_fg(p) of steam */
+  duty?: number
+  /** steam condensing in the pipes that end here, kg/s */
+  cond: number
   relief?: { set: number; cdA: number }
 }
 interface GLink {
@@ -80,7 +88,7 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
   const nodes: GNode[] = []
   const index = new Map<string, number>()
   const add = (key: string, p = NaN): GNode => {
-    const n: GNode = { key, fixed: false, p, demand: 0, cdA: 0 }
+    const n: GNode = { key, fixed: false, p, demand: 0, cdA: 0, cond: 0 }
     index.set(key, nodes.length)
     nodes.push(n)
     return n
@@ -143,7 +151,9 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
       else if (p.mode === 'demand') n.demand = p.demand * rs
       // a K-factor is a water rating: Q = K√p = Cd·A·√(2p/ρ_w) gives the equivalent orifice
       else n.cdA = p.mode === 'kfactor' ? p.kFactor * Math.sqrt(500) : p.cd * area(p.nozzleDiameter)
-    } else if (kind === 'leak') n.cdA = p.active === false ? 0 : p.cd * area(p.holeDiameter)
+    } else if (kind === 'steamload') n.duty = fluid.steam ? Math.max(0, p.duty) : 0
+    else if (kind === 'trap') n.cdA = p.state === 'open' ? 0.7 * area(p.orifice) : 0
+    else if (kind === 'leak') n.cdA = p.active === false ? 0 : p.cd * area(p.holeDiameter)
     else if (kind === 'relief') n.relief = { set: P_ATM + p.setPressure, cdA: 0.7 * area(p.diameter) }
     else if (kind === 'tee' || kind === 'threeway' || kind === 'jetpump') simplified = true
   }
@@ -224,14 +234,16 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
   }
   for (const n of nodes) if (!isFinite(n.p)) n.p = start
 
-  const sqrtLaw = (dPi: number, res: number) => (res > 0 ? dPi / Math.sqrt(res * ZRT * (Math.abs(dPi) + EPS)) : dPi * 1e-3) // tiny res: near-rigid coupling
+  // steam is not an ideal gas at one temperature: its p/ρ comes from the steam table at the link's mean pressure
+  const zrtAt = (pa: number, pb: number) => (fluid.steam ? zrt(fluid, (pa + pb) / 2) : ZRT)
+  const sqrtLaw = (dPi: number, res: number, k: number) => (res > 0 ? dPi / Math.sqrt(res * k * (Math.abs(dPi) + EPS)) : dPi * 1e-3) // tiny res: near-rigid coupling
   const flow = (l: GLink, pa: number, pb: number): number => {
     if (l.kind === 'closed') return 0
     const dPi = pa * pa - pb * pb
     let m: number
     if (l.kind === 'compressor') m = rs * compressorFlow(pb / Math.max(1, pa), l.props, l.speed)
     else {
-      m = sqrtLaw(dPi, Math.max(l.res, 1e-3))
+      m = sqrtLaw(dPi, Math.max(l.res, 1e-3), zrtAt(pa, pb))
       // regulators throttle an otherwise open valve, with a little droop — just like the real spring-loaded kind
       const droop = Math.max(50, 0.02 * l.props.pressureSetting) // 2 % of the set pressure, never less than 50 Pa
       if (l.kind === 'prv') m *= Math.min(1, Math.max(0, (P_ATM + l.props.pressureSetting - pb) / droop))
@@ -240,7 +252,7 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
     }
     return l.noReverse || l.kind === 'prv' || l.kind === 'psv' || l.kind === 'fcv' ? Math.max(0, m) : m
   }
-  const vent = (n: GNode, p: number) => orificeFlow(n.cdA, p, P_ATM, fluid).mdot + (n.relief && p > n.relief.set ? orificeFlow(n.relief.cdA, p, P_ATM, fluid).mdot : 0)
+  const vent = (n: GNode, p: number) => (n.duty ? n.duty / hfg(p) : 0) + orificeFlow(n.cdA, p, P_ATM, fluid).mdot + (n.relief && p > n.relief.set ? orificeFlow(n.relief.cdA, p, P_ATM, fluid).mdot : 0)
 
   const free = nodes.map((n, i) => (!n.fixed && reached.has(i) ? i : -1)).filter((i) => i >= 0)
   const residual = (P: Float64Array): Float64Array => {
@@ -250,7 +262,7 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
       r[l.a] -= m
       r[l.b] += m
     }
-    for (const i of free) r[i] -= nodes[i].demand + vent(nodes[i], P[i])
+    for (const i of free) r[i] -= nodes[i].demand + nodes[i].cond + vent(nodes[i], P[i])
     return r
   }
   const norm = (r: Float64Array) => free.reduce((s, i) => Math.max(s, Math.abs(r[i])), 0)
@@ -266,6 +278,16 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
         const f = frictionFactor(Math.max(re, 3000), roughness / diameter)
         l.res = ((f * length) / diameter + minorK) / area(diameter) ** 2
       }
+    if (fluid.steam) {
+      // steam condensing on the pipe walls leaves the flow: book it at the pipe's free end(s)
+      for (const n of nodes) n.cond = 0
+      for (const l of live)
+        if (l.pipe) {
+          const c = pipeCondensate(l.props, (P[l.a] + P[l.b]) / 2)
+          const ends = [l.a, l.b].filter((i) => !nodes[i].fixed)
+          ends.forEach((i) => (nodes[i].cond += c / ends.length))
+        }
+    }
     for (let it = 0; it < 60 && free.length; it++) {
       const r0 = residual(P)
       const n0 = norm(r0)
@@ -351,7 +373,7 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
     const q = l.mdot / rs
     if (l.pipe) {
       const A = area(l.pipe.diameter)
-      const v = Math.abs(l.mdot) / (((pa + pb) / 2 / ZRT) * A)
+      const v = Math.abs(l.mdot) / (((pa + pb) / 2 / zrtAt(pa, pb)) * A)
       const re = (4 * Math.abs(l.mdot)) / (Math.PI * l.pipe.diameter * fluid.dynamicViscosity)
       const sign = l.mdot >= 0 ? 1 : -1
       res.links[l.id] = {
@@ -366,15 +388,19 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
         pEnd: pb - P_ATM,
       }
       vMax = Math.max(vMax, v)
-      const mach = v / Math.sqrt(fluid.gas!.gamma * ZRT)
+      const mach = v / Math.sqrt(fluid.gas!.gamma * zrtAt(pa, pb))
       if (mach > 0.3)
         warnings.push({
           id: l.id,
           level: 'warn',
           text: `${model.edges.find((e) => e.id === l.id)?.data?.label ?? 'Pipe'}: Mach ${mach.toFixed(2)} — too fast for the isothermal pipe model to be trusted`,
         })
-      else if (v > 25)
-        warnings.push({ id: l.id, level: 'info', text: `${model.edges.find((e) => e.id === l.id)?.data?.label ?? 'Pipe'}: ${v.toFixed(0)} m/s — above the usual 20 m/s limit for gas lines` })
+      else if (fluid.steam ? v > 40 : v > 25)
+        warnings.push({
+          id: l.id,
+          level: fluid.steam ? 'warn' : 'info',
+          text: `${model.edges.find((e) => e.id === l.id)?.data?.label ?? 'Pipe'}: ${v.toFixed(0)} m/s — ${fluid.steam ? 'steam mains are sized for 25–35 m/s; this fast it erodes fittings and roars' : 'above the usual 20 m/s limit for gas lines'}`,
+        })
     } else {
       const nd = byId.get(l.id)!
       const dev: Results['devices'][string] = {
@@ -395,7 +421,7 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
         dev.ratio = ratio
         if (q < 1e-9) warnings.push({ id: l.id, level: 'warn', text: `${nd.data.label}: no flow — the system pressure is above what it can reach at this speed` })
       } else if (nd.data.kind !== 'dpgauge') {
-        dev.velocity = Math.abs(l.mdot) / (((pa + pb) / 2 / ZRT) * area(nd.data.props.diameter ?? 0.04))
+        dev.velocity = Math.abs(l.mdot) / (((pa + pb) / 2 / zrtAt(pa, pb)) * area(nd.data.props.diameter ?? 0.04))
         if (l.kind === 'prv' || l.kind === 'psv' || l.kind === 'fcv') dev.status = Math.abs(q) < 1e-9 ? 'closed' : 'active'
         if (nd.data.kind === 'valve' && (nd.data.props.valveType === 'throttle' || nd.data.props.valveType === 'float')) {
           dev.position = valvePosition(model, nd.id)
