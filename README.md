@@ -179,6 +179,12 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   The command is a pure function of lab time, so the scan stays idempotent. It works with everything on the lab clock —
   tanks, live heat, live flow — but not inside a water-hammer run, which still operates one device.
   `scripts/sequence-check.ts` checks the step and ramp arithmetic and the per-wire commands.
+- **Shareable links** (`src/share.ts`): "Share" copies a URL that _is_ the rig — the project JSON, deflated
+  (`CompressionStream`, plain base64 where that is missing) and base64url-encoded into the fragment, `#rig=…`. A
+  fragment is never sent to a server, so nothing is uploaded and nothing can expire. Opening one loads the rig (with its
+  fluid, units, clock speed and live-heat / live-flow modes) and then drops the fragment, so a reload keeps your edits
+  rather than the link's copy. Every built-in rig fits in under 2,000 characters; `scripts/share-check.ts` round-trips
+  them all. If the clipboard is not available the link is shown instead.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
 - **55 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief

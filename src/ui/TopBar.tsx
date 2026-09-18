@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { solver } from '../engine/client'
 import { MASS_FLOW_UNITS, METRIC, UNITS, US, type UnitPrefs } from '../model/units'
 import { FLUIDS } from '../model/types'
+import { shareUrl } from '../share'
 import { useLab, usesClock, type Overlay } from '../store'
 import { Icon } from './icons'
 
@@ -34,6 +35,19 @@ export function TopBar() {
   const file = useRef<HTMLInputElement>(null)
   const hasTanks = s.nodes.some(usesClock)
 
+  const [shared, setShared] = useState<'idle' | 'copied' | 'shown'>('idle')
+  const [link, setLink] = useState('')
+  const share = async () => {
+    const url = await shareUrl(s.exportProject(), location.origin + location.pathname)
+    setLink(url)
+    try {
+      await navigator.clipboard.writeText(url)
+      setShared('copied')
+      setTimeout(() => setShared('idle'), 2500)
+    } catch {
+      setShared('shown') // no clipboard permission: show the link so it can be copied by hand
+    }
+  }
   const save = () => {
     const blob = new Blob([s.exportProject()], { type: 'application/json' })
     const a = document.createElement('a')
@@ -182,6 +196,17 @@ export function TopBar() {
       <button className="btn primary" onClick={save}>
         Save
       </button>
+      <div className="pop-wrap">
+        <button className="btn" onClick={share} title="Copy a link that opens this rig — the rig travels inside the link itself">
+          {shared === 'copied' ? 'Link copied' : 'Share'}
+        </button>
+        {shared === 'shown' && (
+          <div className="popover" onMouseLeave={() => setShared('idle')}>
+            <p className="muted">Copy this link — the whole rig is inside it:</p>
+            <input className="share-link" readOnly value={link} onFocus={(e) => e.target.select()} autoFocus />
+          </div>
+        )}
+      </div>
       <input
         ref={file}
         type="file"

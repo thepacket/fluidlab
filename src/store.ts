@@ -9,6 +9,7 @@ import { catalogueSpec } from './model/catalog'
 import { receiverRate } from './engine/gas'
 import { heatView, stepHeat, type HeatState } from './engine/heat'
 import { stepWave, waveView, type WaveState } from './engine/wave'
+import { decodeRig, rigInHash } from './share'
 import { P_ATM, VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from './model/physics'
 import { defaultChannelProps, isChannel, isChannelKind } from './model/openchannel'
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
@@ -379,6 +380,11 @@ export const useLab = create<State>((set, get) => ({
       levels: p.levels ?? {},
       simTime: 0,
       history: [],
+      heatMode: p.heatMode === 'live' ? 'live' : 'steady',
+      flowMode: p.flowMode === 'live' ? 'live' : 'steady',
+      heat: null,
+      wave: null,
+      ...(typeof p.timeScale === 'number' ? { timeScale: p.timeScale } : {}),
     })
   },
   exportProject: () => {
@@ -392,6 +398,9 @@ export const useLab = create<State>((set, get) => ({
         units: s.units,
         experimentId: s.experimentId,
         levels: s.levels,
+        timeScale: s.timeScale,
+        heatMode: s.heatMode,
+        flowMode: s.flowMode,
         nodes: s.nodes.map(({ id, type, position, data }) => ({ id, type, position, data })),
         edges: s.edges.map(({ id, type, source, target, sourceHandle, targetHandle, data }) => ({ id, type, source, target, sourceHandle, targetHandle, data })),
       },
@@ -575,6 +584,18 @@ export function bootLab() {
     }
   }
   if (!restored) useLab.getState().loadExperiment('pump')
+
+  // a rig shared as a link arrives in the URL fragment; once loaded the fragment is dropped, so a reload keeps your edits
+  const openShared = () => {
+    const code = rigInHash(location.hash)
+    if (!code) return
+    decodeRig(code)
+      .then((json) => useLab.getState().loadProject(json))
+      .catch(() => window.alert('This FluidLab link could not be read — it may have been cut short when it was copied.'))
+      .finally(() => history.replaceState(null, '', location.pathname + location.search))
+  }
+  openShared()
+  window.addEventListener('hashchange', openShared)
 
   useLab.subscribe((s) => {
     // controllers first: if a timer just switched something, that lands in the signature below
