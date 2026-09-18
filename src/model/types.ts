@@ -1,11 +1,11 @@
 // FluidLab model layer. Everything here is stored in SI (m, m³/s, Pa, kg, s).
 
-export type Kind = 'reservoir' | 'tank' | 'junction' | 'outlet' | 'gauge' | 'pump' | 'valve' | 'meter' | 'element' | 'dpgauge' | 'timer'
+export type Kind = 'reservoir' | 'tank' | 'junction' | 'outlet' | 'gauge' | 'pump' | 'valve' | 'meter' | 'element' | 'dpgauge' | 'timer' | 'manual' | 'switch' | 'pid' | 'logic' | 'lamp'
 
 /** two-port components: compiled to a link between two hidden junctions */
 export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter', 'element', 'dpgauge']
 /** controllers: no fluid passes through them, they switch other components over signal wires */
-export const CONTROL_KINDS: Kind[] = ['timer']
+export const CONTROL_KINDS: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'lamp']
 export const isControl = (k: Kind) => CONTROL_KINDS.includes(k)
 /** components a controller can switch */
 export const CONTROLLABLE: Kind[] = ['pump', 'valve', 'outlet']
@@ -51,8 +51,8 @@ export interface Model {
   fluid: Fluid
   /** live tank levels (m), keyed by node id; falls back to initLevel */
   levels?: Record<string, number>
-  /** on/off commands from controllers, keyed by device id; absent = uncontrolled */
-  controls?: Record<string, boolean>
+  /** 0‥1 commands from controllers, keyed by device id; absent = uncontrolled. A command scales the device's own setting. */
+  controls?: Record<string, number>
 }
 
 export interface Fluid {
@@ -108,6 +108,11 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
   element: { name: 'Venturi / orifice', prefix: 'FE', blurb: 'Differential-pressure flow element' },
   dpgauge: { name: 'Differential gauge', prefix: 'DP', blurb: 'ΔP between two tapping points' },
   timer: { name: 'Timer', prefix: 'TM', blurb: 'Switches pumps, valves and taps on a schedule' },
+  manual: { name: 'Manual switch', prefix: 'HS', blurb: 'Click it on the bench to start / stop' },
+  switch: { name: 'Limit switch', prefix: 'SW', blurb: 'Level · pressure · flow, with hysteresis' },
+  pid: { name: 'PID controller', prefix: 'IC', blurb: 'Holds a setpoint by trimming a valve or pump' },
+  logic: { name: 'Logic gate', prefix: 'LG', blurb: 'AND · OR · NOT for combining signals' },
+  lamp: { name: 'Alarm lamp', prefix: 'AL', blurb: 'Lights when its input is on' },
 }
 
 export function defaultProps(kind: Kind): Props {
@@ -125,7 +130,7 @@ export function defaultProps(kind: Kind): Props {
     case 'pump':
       return { elevation: 0, on: true, speed: 1, designFlow: 0.001, designHead: 20, bepEfficiency: 0.68, npshr: 2.5 }
     case 'valve':
-      return { elevation: 0, valveType: 'throttle', diameter: 0.04, opening: 1, kOpen: 2.5, pressureSetting: 150000, flowSetting: 0.0005 }
+      return { elevation: 0, valveType: 'throttle', diameter: 0.04, opening: 1, kOpen: 2.5, pressureSetting: 150000, flowSetting: 0.0005, strokeTime: 0 }
     case 'meter':
       return { elevation: 0, diameter: 0.04 }
     case 'element':
@@ -134,6 +139,16 @@ export function defaultProps(kind: Kind): Props {
       return { elevation: 0 }
     case 'timer':
       return { enabled: true, mode: 'cycle', onTime: 300, offTime: 300, startOn: true, delay: 600, action: 'on' }
+    case 'manual':
+      return { on: false }
+    case 'switch':
+      return { enabled: true, action: 'fill', low: 0.5, high: 2, pvKind: '' }
+    case 'pid':
+      return { enabled: true, auto: true, setpoint: 1, span: 2, kp: 0.5, ti: 30, td: 0, reverse: false, manualOut: 0.5, pvKind: '' }
+    case 'logic':
+      return { op: 'and' }
+    case 'lamp':
+      return { color: 'red' }
   }
 }
 

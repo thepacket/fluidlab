@@ -3,7 +3,7 @@
 import { LinkProperty, NodeProperty, Project, Workspace } from 'epanet-js'
 import { G, P_ATM, area, elementInferredFlow, elementTapDp, frictionFactor, pumpEfficiency, pumpMaxFlow, regimeOf, reynolds, valveK } from '../model/physics'
 import { EMPTY_RESULTS, isControl, type Model, type Results, type Warning } from '../model/types'
-import { commandedOff, compile, type Overrides } from './inp'
+import { command, commandedOff, compile, type Overrides } from './inp'
 
 /** Any solver FluidLab can plug in (EPANET today; water-hammer / gas later). */
 export interface HydraulicEngine {
@@ -82,15 +82,16 @@ class EpanetEngine implements HydraulicEngine {
           const pOut = (hOut - p.elevation) * rhoG
           const dev: Results['devices'][string] = { flow: q, headIn: hIn, headOut: hOut, pIn, pOut, dH: hOut - hIn, status: 'open' }
           if (kind === 'pump') {
-            const running = p.on && p.speed >= 0.01 && !commandedOff(model, nd.id)
+            const speed = p.speed * command(model, nd.id) // a controller trims the drive's own speed setting
+            const running = p.on && speed >= 0.01
             dev.status = running ? 'open' : 'closed'
             if (running) {
-              dev.efficiency = pumpEfficiency(q, p)
+              dev.efficiency = pumpEfficiency(q, p, speed)
               dev.hydraulicPower = rhoG * q * Math.max(0, dev.dH)
               dev.shaftPower = dev.hydraulicPower / dev.efficiency
               dev.npsha = (pIn + P_ATM - fluid.vaporPressure) / rhoG
               if (q > 1e-7 && dev.npsha < p.npshr) warnings.push({ id: nd.id, level: 'error', text: `${nd.data.label}: cavitation risk — NPSHa ${dev.npsha.toFixed(1)} m < NPSHr ${p.npshr} m` })
-              if (q >= pumpMaxFlow(p) * 0.98) warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: running off the end of its curve` })
+              if (q >= pumpMaxFlow(p, speed) * 0.98) warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: running off the end of its curve` })
               else if (q < 1e-7) warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: dead-headed — no flow` })
             } else dev.dH = 0
           } else if (kind === 'dpgauge') {
@@ -105,10 +106,10 @@ class EpanetEngine implements HydraulicEngine {
               const pThroat = Math.min(pIn, pOut) + dev.permanentLoss - dev.tapDp
               if (pThroat + P_ATM < fluid.vaporPressure) warnings.push({ id: nd.id, level: 'error', text: `${nd.data.label}: throat pressure below vapour pressure — it would cavitate` })
             }
-            if (kind === 'valve' && commandedOff(model, nd.id)) dev.status = 'closed'
+            if (kind === 'valve' && p.valveType !== 'throttle' && commandedOff(model, nd.id)) dev.status = 'closed'
             else if (kind === 'valve') {
               if (p.valveType === 'throttle') {
-                dev.K = valveK(p.opening, p.kOpen)
+                dev.K = valveK(p.opening * command(model, nd.id), p.kOpen)
                 dev.status = isFinite(dev.K) ? 'open' : 'closed'
               } else if (p.valveType === 'check') dev.status = q > 1e-9 ? 'open' : 'closed'
               else {

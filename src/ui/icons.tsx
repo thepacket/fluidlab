@@ -78,6 +78,39 @@ export function KindIcon({ kind }: { kind: Kind | 'pipe' | 'network' }) {
           <path d="M16 18l4.500 2.500" stroke="var(--accent)" strokeWidth="2.200" />
         </>
       )}
+      {kind === 'manual' && (
+        <>
+          <rect x="4" y="4" width="24" height="24" rx="6" />
+          <path d="M16 10v6M11.500 12.500a6.500 6.500 0 1 0 9 0" stroke="var(--accent)" strokeWidth="2.200" />
+        </>
+      )}
+      {kind === 'switch' && (
+        <>
+          <path d="M3 22h8l10-8M23 22h6" />
+          <circle cx="11" cy="22" r="2" fill="currentColor" />
+          <circle cx="23" cy="22" r="2" fill="currentColor" />
+          <path d="M6 9h20M6 5h20" stroke="var(--accent)" strokeDasharray="2 3" />
+        </>
+      )}
+      {kind === 'pid' && (
+        <>
+          <rect x="4" y="4" width="24" height="24" rx="5" />
+          <path d="M8 22c4 0 4-12 8-12s4 7 8 5" stroke="var(--accent)" strokeWidth="2.200" />
+          <path d="M8 13h16" strokeDasharray="2 3" opacity=".6" />
+        </>
+      )}
+      {kind === 'logic' && (
+        <>
+          <path d="M9 7h7a9 9 0 0 1 0 18H9z" />
+          <path d="M3 12h6M3 20h6M25 16h5" stroke="var(--accent)" />
+        </>
+      )}
+      {kind === 'lamp' && (
+        <>
+          <path d="M9 23V14a7 7 0 0 1 14 0v9zM7 27h18" />
+          <path d="M16 2v2M5.500 6l1.500 1.500M26.500 6L25 7.500" stroke="var(--accent)" />
+        </>
+      )}
       {kind === 'pipe' && (
         <>
           <path d="M3 12h26M3 20h26" />

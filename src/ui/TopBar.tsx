@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { solver } from '../engine/client'
+import { isControl } from '../model/types'
 import { METRIC, UNITS, US, type UnitPrefs } from '../model/units'
 import { useLab, type Overlay } from '../store'
 import { Icon } from './icons'
@@ -27,7 +28,7 @@ export function TopBar() {
   const s = useLab()
   const [unitsOpen, setUnitsOpen] = useState(false)
   const file = useRef<HTMLInputElement>(null)
-  const hasTanks = s.nodes.some((n) => n.data.kind === 'tank' || n.data.kind === 'timer')
+  const hasTanks = s.nodes.some((n) => n.data.kind === 'tank' || isControl(n.data.kind))
 
   const save = () => {
     const blob = new Blob([s.exportProject()], { type: 'application/json' })

@@ -21,8 +21,10 @@ export interface Overrides {
 
 const n = (v: number) => (Math.abs(v) < 1e-12 ? '0' : Number(v.toPrecision(8)).toString())
 
-/** A controller's command for this device: false = held off/shut, anything else = run on its own settings. */
-export const commandedOff = (model: Model, id: string) => model.controls?.[id] === false
+/** A controller's 0‥1 command for this device; 1 when nothing is wired to it. It scales the device's own setting. */
+export const command = (model: Model, id: string) => model.controls?.[id] ?? 1
+/** Held off / shut by its controller. */
+export const commandedOff = (model: Model, id: string) => command(model, id) < 0.5
 
 export function compile(full: Model, overrides: Overrides = {}): Compiled {
   // controllers and their signal wires are not part of the hydraulic network
@@ -128,10 +130,10 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
       const d = deviceIds[nd.id]
       J.push(`${d.a} ${n(p.elevation)} 0`, `${d.b} ${n(p.elevation)} 0`)
       if (k === 'pump') {
-        const speed = overrides.pumpSpeed?.[nd.id] ?? p.speed
+        const speed = overrides.pumpSpeed?.[nd.id] ?? p.speed * command(model, nd.id)
         CU.push(`C${d.link} ${n(p.designFlow * 1000)} ${n(p.designHead)}`)
         PU.push(`${d.link} ${d.a} ${d.b} HEAD C${d.link} SPEED ${n(Math.max(speed, 0.01))}`)
-        if (!p.on || speed < 0.01 || off(nd.id)) ST.push(`${d.link} CLOSED`)
+        if (!p.on || speed < 0.01) ST.push(`${d.link} CLOSED`)
       } else if (k === 'meter') {
         P.push(`${d.link} ${d.a} ${d.b} 0.05 ${n(p.diameter * 1000)} 0.0015 0 OPEN`)
       } else if (k === 'element') {
@@ -156,9 +158,9 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
             V.push(`${d.link} ${d.a} ${d.b} ${dia} FCV ${n(p.flowSetting * 1000)} ${n(p.kOpen)}`)
             break
           default: {
-            const K = valveK(p.opening, p.kOpen)
+            const K = valveK(p.opening * command(model, nd.id), p.kOpen)
             V.push(`${d.link} ${d.a} ${d.b} ${dia} TCV ${n(isFinite(K) ? K : 1e9)} 0`)
-            if (!isFinite(K) || shut) ST.push(`${d.link} CLOSED`)
+            if (!isFinite(K)) ST.push(`${d.link} CLOSED`)
           }
         }
       }

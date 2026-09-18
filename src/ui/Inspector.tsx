@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { gradeLine, pipeCurve, pumpCurve, type XY } from '../engine/analysis'
 import { solver } from '../engine/client'
-import { fmtClock, timerState } from '../model/control'
+import { PV_SOURCES, fmtClock, timerState } from '../model/control'
 import { beta, elementLossFraction } from '../model/physics'
-import { ELEMENT_TYPES, FLUIDS, KIND_META, MATERIALS, ROTATABLE, VALVE_TYPES, type Kind, type Props } from '../model/types'
+import { ELEMENT_TYPES, FLUIDS, KIND_META, MATERIALS, ROTATABLE, VALVE_TYPES, isControl, type Kind, type Props } from '../model/types'
 import { fmt, fmtNum, fmtU, toDisplay, toSI, unitLabel, type Quantity } from '../model/units'
 import { model, selectedId, useLab } from '../store'
 import { Chart, SERIES, type Marker, type Series } from './Chart'
@@ -12,7 +12,8 @@ import { KindIcon } from './icons'
 interface Field {
   key: string
   label: string
-  q: Quantity
+  /** 'pv' = whatever the wired instrument measures (level, pressure, flow…) */
+  q: Quantity | 'pv'
   type?: 'number' | 'slider' | 'toggle' | 'select'
   options?: { id: string; name: string }[]
   max?: number
@@ -64,6 +65,7 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'flowSetting', label: 'Flow setpoint', q: 'flow', show: (p) => p.valveType === 'fcv' },
     { key: 'diameter', label: 'Bore', q: 'diameter' },
     { key: 'kOpen', label: 'K when fully open', q: 'none' },
+    { key: 'strokeTime', label: 'Actuator stroke time (s)', q: 'none', show: (p) => p.valveType === 'throttle' },
     elevation,
   ],
   meter: [{ key: 'diameter', label: 'Bore', q: 'diameter' }, elevation],
@@ -100,6 +102,69 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
       options: [
         { id: 'on', name: 'ON  (off until then)' },
         { id: 'off', name: 'OFF  (on until then)' },
+      ],
+    },
+  ],
+  manual: [{ key: 'on', label: 'Switch', q: 'none', type: 'toggle' }],
+  switch: [
+    { key: 'enabled', label: 'Enabled', q: 'none', type: 'toggle' },
+    {
+      key: 'action',
+      label: 'Contact closes',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 'fill', name: 'when low — opens when high' },
+        { id: 'drain', name: 'when high — opens when low' },
+      ],
+    },
+    { key: 'low', label: 'Low threshold', q: 'pv' },
+    { key: 'high', label: 'High threshold', q: 'pv' },
+  ],
+  pid: [
+    { key: 'enabled', label: 'Enabled', q: 'none', type: 'toggle' },
+    { key: 'auto', label: 'Automatic', q: 'none', type: 'toggle' },
+    { key: 'manualOut', label: 'Manual output', q: 'percent', type: 'slider', max: 1, show: (p) => !p.auto },
+    { key: 'setpoint', label: 'Setpoint', q: 'pv' },
+    { key: 'kp', label: 'Gain Kp', q: 'none' },
+    { key: 'ti', label: 'Integral time Ti (s)', q: 'none' },
+    { key: 'td', label: 'Derivative time Td (s)', q: 'none' },
+    {
+      key: 'reverse',
+      label: 'Output rises when PV is',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 'false', name: 'below setpoint (fill, pressurise)' },
+        { id: 'true', name: 'above setpoint (drain, relieve)' },
+      ],
+    },
+    { key: 'span', label: 'Measurement span (100 %)', q: 'pv' },
+  ],
+  logic: [
+    {
+      key: 'op',
+      label: 'Function',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 'and', name: 'AND — all inputs on' },
+        { id: 'or', name: 'OR — any input on' },
+        { id: 'not', name: 'NOT — no input on' },
+      ],
+    },
+  ],
+  lamp: [
+    {
+      key: 'color',
+      label: 'Colour',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 'red', name: 'Red' },
+        { id: 'amber', name: 'Amber' },
+        { id: 'green', name: 'Green' },
+        { id: 'blue', name: 'Blue' },
       ],
     },
   ],
@@ -151,7 +216,7 @@ function NumberField({ value, q, onCommit }: { value: number; q: Quantity; onCom
   )
 }
 
-function FieldRow({ f, props, onChange }: { f: Field; props: Props; onChange: (patch: Props) => void }) {
+function FieldRow({ f, props, pvq, onChange }: { f: Field; props: Props; pvq: Quantity; onChange: (patch: Props) => void }) {
   const v = props[f.key]
   if (f.type === 'toggle')
     return (
@@ -168,9 +233,10 @@ function FieldRow({ f, props, onChange }: { f: Field; props: Props; onChange: (p
       <div className="field">
         <span>{f.label}</span>
         <select
-          value={v}
+          value={String(v)}
           onChange={(e) => {
-            const patch: Props = { [f.key]: e.target.value }
+            const raw = e.target.value
+            const patch: Props = { [f.key]: raw === 'true' ? true : raw === 'false' ? false : raw }
             if (f.key === 'elementType') patch.cd = e.target.value === 'orifice' ? 0.61 : 0.98
             if (f.key === 'material' && e.target.value !== 'custom') patch.roughness = MATERIALS.find((m) => m.id === e.target.value)!.roughness
             onChange(patch)
@@ -204,7 +270,7 @@ function FieldRow({ f, props, onChange }: { f: Field; props: Props; onChange: (p
       <span>{f.label}</span>
       <NumberField
         value={v}
-        q={f.q}
+        q={f.q === 'pv' ? pvq : f.q}
         onCommit={(si) => {
           const patch: Props = { [f.key]: si }
           if (f.key === 'roughness') patch.material = 'custom'
@@ -241,9 +307,10 @@ function PumpChart({ id }: { id: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.results, id])
   const p = node.data.props
+  const speed = p.speed * (s.controls[id] ?? 1) // what the drive is actually doing, controller included
   const cv = (pts: { x: number; y: number }[]) => pts.map((pt) => ({ x: toDisplay(pt.x, 'flow', s.units), y: toDisplay(pt.y, 'head', s.units) }))
-  const series: Series[] = [{ name: `Pump @ ${Math.round(p.speed * 100)} %`, color: SERIES.blue, points: cv(pumpCurve(p, Math.max(0.05, p.speed))), area: true }]
-  if (Math.abs(p.speed - 1) > 0.01) series.push({ name: 'Pump @ 100 %', color: SERIES.blue, points: cv(pumpCurve(p, 1)), dashed: true })
+  const series: Series[] = [{ name: `Pump @ ${Math.round(speed * 100)} %`, color: SERIES.blue, points: cv(pumpCurve(p, Math.max(0.05, speed))), area: true }]
+  if (Math.abs(speed - 1) > 0.01) series.push({ name: 'Pump @ 100 %', color: SERIES.blue, points: cv(pumpCurve(p, 1)), dashed: true })
   if (system.length > 1) series.push({ name: 'System', color: SERIES.orange, points: cv(system) })
   const markers: Marker[] =
     d && p.on && d.flow > 1e-8
@@ -272,7 +339,7 @@ function PipeChart({ id }: { id: string }) {
 }
 
 function trendQuantity(kind: Kind | 'pipe'): [Quantity, string] {
-  if (kind === 'timer') return ['none', 'Output']
+  if (kind !== 'pipe' && isControl(kind)) return ['none', 'Output']
   if (kind === 'tank') return ['length', 'Level']
   if (kind === 'junction' || kind === 'gauge') return ['pressure', 'Pressure']
   if (kind === 'dpgauge' || kind === 'element') return ['pressure', 'Differential']
@@ -347,6 +414,92 @@ function TimerResults({ id }: { id: string }) {
       <Row label="Switching" value={targets.length ? targets.join(', ') : 'nothing yet'} tone={targets.length ? undefined : 'warn'} />
       {!targets.length && <p className="muted">Pull a wire from the timer’s violet port to the violet port on a pump, valve or outlet.</p>}
       {!s.running && <p className="muted">The lab clock is paused — press play for the timer to advance.</p>}
+    </>
+  )
+}
+
+/** Shared by every control block: what it reads, what it says, what it drives. */
+function useWiring(id: string) {
+  const s = useLab()
+  const label = (nid: string) => s.nodes.find((n) => n.id === nid)?.data.label ?? '?'
+  const wires = s.edges.filter((e) => e.type === 'signal')
+  const pvWire = wires.find((e) => e.target === id && e.sourceHandle === 'pv')
+  const src = pvWire ? s.nodes.find((n) => n.id === pvWire.source) : undefined
+  return {
+    s,
+    src,
+    info: src ? PV_SOURCES[src.data.kind] : undefined,
+    inputs: wires.filter((e) => e.target === id && e.sourceHandle === 'sig').map((e) => label(e.source)),
+    targets: wires.filter((e) => e.source === id).map((e) => label(e.target)),
+  }
+}
+
+function ControlResults({ id, kind }: { id: string; kind: Kind }) {
+  const { s, src, info, inputs, targets } = useWiring(id)
+  const u = s.units
+  const out = s.ctrl.out[id] ?? 0
+  const pv = s.ctrl.pv[id]
+  const node = s.nodes.find((n) => n.id === id)!
+  const q = info?.quantity ?? 'none'
+  const reads = kind === 'switch' || kind === 'pid'
+  return (
+    <>
+      <div className="hero">
+        {reads && (
+          <div>
+            <b>{pv !== undefined ? fmt(pv, q, u) : '—'}</b>
+            <span>{info ? `${info.name} ${unitLabel(q, u)}` : 'measurement'}</span>
+          </div>
+        )}
+        {kind === 'pid' && (
+          <div>
+            <b>{fmt(node.data.props.setpoint, q, u)}</b>
+            <span>setpoint {unitLabel(q, u)}</span>
+          </div>
+        )}
+        <div>
+          <b>{kind === 'pid' ? `${Math.round(out * 100)} %` : out >= 0.5 ? 'ON' : 'OFF'}</b>
+          <span>output</span>
+        </div>
+      </div>
+      {reads && <Row label="Measuring" value={src ? `${src.data.label} · ${info!.name.toLowerCase()}` : 'nothing yet'} tone={src ? undefined : 'warn'} />}
+      {(kind === 'logic' || kind === 'lamp') && <Row label="Inputs" value={inputs.length ? inputs.join(', ') : 'nothing yet'} tone={inputs.length ? undefined : 'warn'} />}
+      {kind !== 'lamp' && <Row label="Driving" value={targets.length ? targets.join(', ') : 'nothing yet'} tone={targets.length ? undefined : 'warn'} />}
+      {reads && !src && <p className="muted">Pull a wire from the green port on a tank, pressure gauge, flow meter or ΔP gauge to this block’s green input.</p>}
+      {kind !== 'lamp' && !targets.length && <p className="muted">Pull a wire from the violet output to the violet port on a pump, valve or outlet — or into a logic gate or lamp.</p>}
+      {kind === 'pid' && <p className="muted">The output scales the device’s own setting: a valve opens to output × its opening, a pump runs at output × its speed.</p>}
+      {reads && !s.running && <p className="muted">The lab clock is paused — controllers only act while it runs.</p>}
+    </>
+  )
+}
+
+/** PV against setpoint (or switch thresholds), and the output below it — two charts, never a dual axis. */
+function LoopCharts({ id, kind }: { id: string; kind: Kind }) {
+  const { s, info } = useWiring(id)
+  const node = s.nodes.find((n) => n.id === id)!
+  const q = info?.quantity ?? 'none'
+  const pts = (key: string, f: (v: number) => number) => s.history.filter((h) => h.v[key] !== undefined).map((h) => ({ x: h.t / 60, y: f(h.v[key]) }))
+  const pv = pts(`${id}:pv`, (v) => toDisplay(v, q, s.units))
+  const flat = (v: number) => (pv.length ? [pv[0], pv[pv.length - 1]].map((p) => ({ x: p.x, y: toDisplay(v, q, s.units) })) : [])
+  const p = node.data.props
+  const refs: Series[] =
+    kind === 'pid'
+      ? [{ name: 'Setpoint', color: SERIES.orange, points: flat(p.setpoint), dashed: true }]
+      : [
+          { name: 'High', color: SERIES.orange, points: flat(Math.max(p.low, p.high)), dashed: true },
+          { name: 'Low', color: SERIES.aqua, points: flat(Math.min(p.low, p.high)), dashed: true },
+        ]
+  return (
+    <>
+      <Chart
+        series={[{ name: info?.name ?? 'Measurement', color: SERIES.blue, points: pv }, ...refs]}
+        xLabel="Lab time (min)"
+        yLabel={`${info?.name ?? 'PV'} (${unitLabel(q, s.units)})`}
+        height={170}
+        yMinZero={false}
+        empty="Wire a measurement and press play"
+      />
+      <Chart series={[{ name: 'Output', color: '#9085e9', points: pts(id, (v) => v * 100), area: true, step: kind !== 'pid' }]} xLabel="Lab time (min)" yLabel="Output (%)" height={120} empty=" " />
     </>
   )
 }
@@ -555,7 +708,9 @@ export function Inspector() {
           </button>
         </header>
         <p className="muted tip">
-          Carries the controller’s on/off command. While the command is OFF the device is held off or shut, whatever its own settings say; while ON it runs on its own settings.
+          {edge.sourceHandle === 'pv'
+            ? 'Carries an instrument’s reading to a controller. Wiring it is what turns a gauge, meter or tank into a transmitter.'
+            : 'Carries a controller’s command, 0–100 %. The command scales the device’s own setting: at 0 % it is held off or shut, at 100 % it runs exactly as configured.'}
         </p>
       </aside>
     )
@@ -563,13 +718,20 @@ export function Inspector() {
   const kind: Kind | 'pipe' = node ? node.data.kind : 'pipe'
   const props = node ? node.data.props : edge!.data!.props
   const label = node ? node.data.label : edge!.data!.label
+  const pvWire = useLab.getState().edges.find((e) => e.type === 'signal' && e.target === id && e.sourceHandle === 'pv')
+  const pvSrc = pvWire && useLab.getState().nodes.find((n) => n.id === pvWire.source)
+  const pvq: Quantity = (pvSrc && PV_SOURCES[pvSrc.data.kind]?.quantity) || 'none'
   const tabs =
     kind === 'timer'
       ? [
           ['main', 'Schedule'],
           ['trend', 'Trend'],
         ]
-      : [...(kind === 'pump' ? [['main', 'Pump curve']] : kind === 'pipe' ? [['main', 'ΔP (Q)']] : []), ['trend', 'Trend'], ['grade', 'Grade line']]
+      : kind === 'switch' || kind === 'pid'
+        ? [['main', 'Loop']]
+        : kind !== 'pipe' && isControl(kind)
+          ? [['trend', 'Trend']]
+          : [...(kind === 'pump' ? [['main', 'Pump curve']] : kind === 'pipe' ? [['main', 'ΔP (Q)']] : []), ['trend', 'Trend'], ['grade', 'Grade line']]
   const active = tabs.find((t) => t[0] === tab) ? tab : tabs[0][0]
 
   return (
@@ -598,7 +760,7 @@ export function Inspector() {
 
       <section>
         <h4>Live readings</h4>
-        {kind === 'timer' ? <TimerResults id={id} /> : <Results id={id} kind={kind} />}
+        {kind === 'timer' ? <TimerResults id={id} /> : kind !== 'pipe' && isControl(kind) ? <ControlResults id={id} kind={kind} /> : <Results id={id} kind={kind} />}
       </section>
 
       <section>
@@ -613,6 +775,7 @@ export function Inspector() {
         {active === 'main' && kind === 'pipe' && <PipeChart id={id} />}
         {active === 'trend' && <TrendChart id={id} kind={kind} />}
         {active === 'main' && kind === 'timer' && <ScheduleChart id={id} />}
+        {active === 'main' && (kind === 'switch' || kind === 'pid') && <LoopCharts id={id} kind={kind} />}
         {active === 'grade' && <GradeChart id={id} />}
       </section>
 
@@ -621,7 +784,7 @@ export function Inspector() {
         {FIELDS[kind]
           .filter((f) => !f.show || f.show(props))
           .map((f) => (
-            <FieldRow key={f.key} f={f} props={props} onChange={(patch) => (node ? updateNode(id, patch) : updateEdge(id, patch))} />
+            <FieldRow key={f.key} f={f} props={props} pvq={pvq} onChange={(patch) => (node ? updateNode(id, patch) : updateEdge(id, patch))} />
           ))}
       </section>
     </aside>

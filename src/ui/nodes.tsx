@@ -1,13 +1,12 @@
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
 import { memo, useEffect, type ReactNode } from 'react'
 import { NODE_SIZE, PORT_Y, type LabNode } from '../experiments'
-import { fmtClock, timerState } from '../model/control'
+import { PV_CONSUMERS, PV_SOURCES, fmtClock, timerState } from '../model/control'
 import { beta, valveK } from '../model/physics'
-import { CONTROLLABLE, ROTATABLE, type Kind } from '../model/types'
+import { CONTROLLABLE, ROTATABLE, isControl, type Kind } from '../model/types'
 import { fmt, fmtU, toSI, unitLabel } from '../model/units'
 import { useLab } from '../store'
-import { SIGNAL_OFF, SIGNAL_ON } from './SignalEdge'
-import { DRY, PLAIN, niceCeil, pressureColor } from './colors'
+import { DRY, PLAIN, SIGNAL_OFF, SIGNAL_ON, niceCeil, pressureColor } from './colors'
 
 // ---- shared shell -----------------------------------------------------------
 
@@ -26,8 +25,29 @@ function ControlPort({ kind, rot }: { kind: Kind; rot: number }) {
   return <Handle id="ctl" type="source" position={rot === 180 ? Position.Top : side(Position.Top, rot)} className="port port-signal" />
 }
 
+/** Measurement output: wiring it turns a gauge, meter or tank into a transmitter. */
+function MeasurementPort({ kind, rot }: { kind: Kind; rot: number }) {
+  if (!PV_SOURCES[kind]) return null
+  // the plain gauge already has a fluid port top-centre, so its transmitter lug sits off to the side
+  return (
+    <Handle
+      id="pv"
+      type="source"
+      position={kind === 'meter' ? (rot === 180 ? Position.Top : side(Position.Top, rot)) : Position.Top}
+      className="port port-signal port-pv"
+      style={kind === 'gauge' ? { left: '86%' } : undefined}
+    />
+  )
+}
+
 function Ports({ kind, rot }: { kind: Kind; rot: number }) {
-  if (kind === 'timer') return <Handle id="sig" type="source" position={Position.Right} className="port port-signal" />
+  if (isControl(kind))
+    return (
+      <>
+        {kind !== 'timer' && kind !== 'manual' && <Handle id="cin" type="source" position={Position.Left} className={`port port-signal ${PV_CONSUMERS.includes(kind) ? 'port-pv' : ''}`} />}
+        {kind !== 'lamp' && <Handle id="sig" type="source" position={Position.Right} className="port port-signal" />}
+      </>
+    )
   if (kind === 'dpgauge' || ROTATABLE.includes(kind)) {
     const y = kind === 'dpgauge' ? { top: `${PORT_Y[kind] * 100}%` } : undefined
     if (kind === 'outlet') return <Handle id="l" type="source" position={side(Position.Left, rot)} className="port" />
@@ -75,6 +95,7 @@ function Shell({ id, kind, selected, label, rot = 0, sub, children, extra }: She
       </div>
       <Ports kind={kind} rot={rot} />
       <ControlPort kind={kind} rot={rot} />
+      <MeasurementPort kind={kind} rot={rot} />
       <div className="eq-label">
         <b>{label}</b>
         {sub && <span>{sub}</span>}
@@ -218,11 +239,11 @@ export const OutletNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const c = usePressureColor(r?.pressure)
   const q = r?.outflow ?? 0
   const on = q > 1e-8
-  const held = useLab((s) => s.controls[id] === false)
+  const held = useLab((s) => (s.controls[id] ?? 1) < 0.5)
   const vigor = Math.min(1, Math.sqrt(Math.max(0, r?.pressure ?? 0) / 150000))
   const droop = rotOf(data) % 180 === 90 ? 0 : 10 + (1 - vigor) * 14 // a vertical jet doesn't sag sideways
   return (
-    <Shell id={id} kind="outlet" rot={rotOf(data)} selected={selected} label={data.label} sub={held ? 'SHUT · timer' : r ? fmtU(Math.abs(q), 'flow', units) : undefined}>
+    <Shell id={id} kind="outlet" rot={rotOf(data)} selected={selected} label={data.label} sub={held ? 'SHUT · held' : r ? fmtU(Math.abs(q), 'flow', units) : undefined}>
       <svg width="76" height="64" viewBox="0 0 76 64" style={{ overflow: 'visible' }}>
         <path d="M0,24 H24 L40,28 V36 L24,40 H0 Z" fill="#04070d" />
         <path d="M0,27 H24 L38,29.5 V34.5 L24,37 H0 Z" fill={c} style={{ filter: `drop-shadow(0 0 4px ${c})` }} />
@@ -323,8 +344,10 @@ export const PumpNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const paused = useLab((s) => !s.running)
   const cav = useLab((s) => s.results.warnings.some((w) => w.id === id && w.level === 'error'))
   const p = data.props
-  const held = useLab((s) => s.controls[id] === false)
-  const running = p.on && p.speed >= 0.01 && !held
+  const cmd = useLab((s) => s.controls[id])
+  const speed = p.speed * (cmd ?? 1) // a controller trims the drive's own speed
+  const held = cmd !== undefined && speed < 0.01
+  const running = p.on && speed >= 0.01
   const cIn = usePressureColor(d?.pIn)
   const cOut = usePressureColor(d?.pOut)
   return (
@@ -334,7 +357,7 @@ export const PumpNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
       rot={rotOf(data)}
       selected={selected}
       label={data.label}
-      sub={running ? (d ? `${fmtU(d.flow, 'flow', units)} · +${fmtU(Math.max(0, d.dH), 'head', units)}` : `${Math.round(p.speed * 100)} %`) : held ? 'OFF · timer' : 'OFF'}
+      sub={running ? (d ? `${fmtU(d.flow, 'flow', units)} · +${fmtU(Math.max(0, d.dH), 'head', units)}` : `${Math.round(speed * 100)} %`) : held ? 'OFF · held' : 'OFF'}
     >
       <svg width="100" height="100" viewBox="0 0 100 100" className={cav ? 'cavitating' : ''}>
         <defs>
@@ -351,7 +374,7 @@ export const PumpNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
         <rect x="86" y="36" width="5" height="28" rx="1.5" fill="#5a7099" />
         <circle cx="50" cy="50" r="39" fill={`url(#pc-${id})`} stroke="#5a7099" strokeWidth="2.5" />
         <circle cx="50" cy="50" r="32" fill="#060b15" stroke={running ? 'var(--accent)' : '#2a3750'} strokeWidth="1.5" className="pump-ring" />
-        <g className="impeller" style={{ transformOrigin: '50px 50px', animationDuration: `${1.1 / Math.max(0.05, p.speed)}s`, animationPlayState: running && !paused ? 'running' : 'paused' }}>
+        <g className="impeller" style={{ transformOrigin: '50px 50px', animationDuration: `${1.1 / Math.max(0.05, speed)}s`, animationPlayState: running && !paused ? 'running' : 'paused' }}>
           {[0, 60, 120, 180, 240, 300].map((a) => (
             <path key={a} d="M50,43 C58,36 70,38 77,48" transform={`rotate(${a} 50 50)`} fill="none" stroke={running ? '#7fe9ff' : '#51617f'} strokeWidth="4" strokeLinecap="round" />
           ))}
@@ -377,12 +400,14 @@ export const ValveNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const rot = rotOf(data)
   const cIn = usePressureColor(d?.pIn)
   const cOut = usePressureColor(d?.pOut)
-  const held = useLab((s) => s.controls[id] === false)
-  const open = held ? 0 : type === 'throttle' ? p.opening : d?.status === 'closed' ? 0 : 1
-  const K = valveK(p.opening, p.kOpen)
+  const cmd = useLab((s) => s.controls[id])
+  const position = p.opening * (cmd ?? 1) // where the plug actually is: its own setting, scaled by any command
+  const held = cmd !== undefined && (type === 'throttle' ? position <= 0.001 : cmd < 0.5)
+  const open = held ? 0 : type === 'throttle' ? position : d?.status === 'closed' ? 0 : 1
+  const K = valveK(position, p.kOpen)
   let sub: string
-  if (held) sub = 'SHUT · timer'
-  else if (type === 'throttle') sub = p.opening <= 0.001 ? 'CLOSED' : `${Math.round(p.opening * 100)} % · K ${K > 999 ? K.toExponential(1) : K.toFixed(1)}`
+  if (held) sub = 'SHUT · held'
+  else if (type === 'throttle') sub = position <= 0.001 ? 'CLOSED' : `${Math.round(position * 100)} %${cmd !== undefined ? ' auto' : ''} · K ${K > 999 ? K.toExponential(1) : K.toFixed(1)}`
   else if (type === 'check') sub = d?.status === 'closed' ? 'seated' : 'open'
   else if (type === 'fcv') sub = `set ${fmtU(p.flowSetting, 'flow', units)}`
   else sub = `set ${fmtU(p.pressureSetting, 'pressure', units)}`
@@ -643,6 +668,171 @@ export const TimerNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   )
 })
 
+// ---- control blocks ---------------------------------------------------------------
+
+/** Which instrument feeds this controller, and how to show its reading. */
+function usePV(id: string) {
+  const src = useLab((s) => {
+    const w = s.edges.find((e) => e.type === 'signal' && e.target === id && e.sourceHandle === 'pv')
+    return w ? s.nodes.find((n) => n.id === w.source) : undefined
+  })
+  const pv = useLab((s) => s.ctrl.pv[id])
+  const info = src ? PV_SOURCES[src.data.kind] : undefined
+  return { src, pv, info, quantity: info?.quantity ?? ('none' as const) }
+}
+
+export const ManualNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const update = useLab((s) => s.updateNode)
+  const on = !!data.props.on
+  return (
+    <Shell id={id} kind="manual" selected={selected} label={data.label} sub={on ? 'ON' : 'OFF'}>
+      <svg width="84" height="84" viewBox="0 0 84 84">
+        <rect x="4" y="4" width="76" height="76" rx="14" fill="#0c1424" stroke="#5a7099" strokeWidth="2.5" />
+        <circle cx="42" cy="42" r="27" fill="#060b15" stroke="#2a3957" strokeWidth="2" />
+        <circle
+          cx="42"
+          cy="42"
+          r="21"
+          fill={on ? '#2fc97a' : '#3a2230'}
+          stroke={on ? '#a5ffd0' : '#ff5d7a'}
+          strokeWidth="2"
+          style={{ filter: on ? 'drop-shadow(0 0 8px #3ddc84)' : undefined, transition: 'fill .15s' }}
+        />
+        <path d="M42,31 V42 M34.5,35.500 A10.500,10.500 0 1 0 49.500,35.500" fill="none" stroke={on ? '#04140a' : '#ff8fa6'} strokeWidth="3" strokeLinecap="round" />
+      </svg>
+      <button className="node-hit nodrag nopan" aria-label={`Switch ${data.label} ${on ? 'off' : 'on'}`} onClick={() => update(id, { on: !on })} />
+    </Shell>
+  )
+})
+
+export const SwitchNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const out = useLab((s) => s.ctrl.out[id] ?? 0)
+  const { src, pv, info, quantity } = usePV(id)
+  const p = data.props
+  const on = out >= 0.5
+  const lo = Math.min(p.low, p.high)
+  const hi = Math.max(p.low, p.high)
+  // bar scale: a little beyond the band on both sides
+  const top = hi + (hi - lo || 1) * 0.5
+  const y = (v: number) => 70 - Math.min(1, Math.max(0, v / top)) * 52
+  const color = !p.enabled ? '#51617f' : on ? SIGNAL_ON : SIGNAL_OFF
+  return (
+    <Shell id={id} kind="switch" selected={selected} label={data.label} sub={!src ? 'no measurement' : `${fmt(lo, quantity, units)} – ${fmtU(hi, quantity, units)}`}>
+      <svg width="92" height="88" viewBox="0 0 92 88">
+        <rect x="4" y="4" width="84" height="80" rx="12" fill="#0c1424" stroke="#5a7099" strokeWidth="2.5" />
+        <text x="37" y="24" className="svg-tag big">
+          {info ? `${info.tag}S` : 'SW'}
+        </text>
+        <text x="37" y="50" className="svg-readout small timer-state" style={{ fill: color }}>
+          {!p.enabled ? '– –' : on ? 'ON' : 'OFF'}
+        </text>
+        <text x="37" y="68" className="svg-lcd timer-count">
+          {pv !== undefined ? fmt(pv, quantity, units) : '—'}
+        </text>
+        <rect x="68" y="18" width="10" height="52" rx="3" fill="#060b15" stroke="#22314d" />
+        <rect x="68" y={y(hi)} width="10" height={y(lo) - y(hi)} fill="#9085e9" opacity=".28" />
+        <path d={`M65,${y(hi)} H81 M65,${y(lo)} H81`} stroke="#b7a9ff" strokeWidth="1.5" />
+        {pv !== undefined && <rect x="66" y={y(pv) - 2} width="14" height="4" rx="2" fill="#4fe0b0" style={{ transition: 'y .3s', filter: 'drop-shadow(0 0 3px #4fe0b0)' }} />}
+      </svg>
+    </Shell>
+  )
+})
+
+export const PidNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const out = useLab((s) => s.ctrl.out[id] ?? 0)
+  const { src, pv, info, quantity } = usePV(id)
+  const p = data.props
+  const full = Math.max(p.span, 1e-9)
+  const bar = (v: number) => Math.min(1, Math.max(0, v / full)) * 56
+  return (
+    <Shell id={id} kind="pid" selected={selected} label={data.label} sub={!src ? 'no measurement' : `SP ${fmtU(p.setpoint, quantity, units)} · ${p.auto ? 'AUTO' : 'MAN'}`}>
+      <svg width="116" height="104" viewBox="0 0 116 104">
+        <rect x="4" y="4" width="108" height="96" rx="12" fill="#0c1424" stroke="#5a7099" strokeWidth="2.5" />
+        <text x="20" y="21" className="svg-tag big" style={{ textAnchor: 'start' }}>
+          {info ? `${info.tag}IC` : 'PID'}
+        </text>
+        <rect x="70" y="10" width="34" height="14" rx="4" fill={p.auto && p.enabled ? 'rgba(61,220,132,.16)' : 'rgba(250,178,25,.16)'} />
+        <text x="87" y="20.500" className="svg-tag" style={{ fill: p.auto && p.enabled ? '#3ddc84' : '#fab219' }}>
+          {!p.enabled ? 'OFF' : p.auto ? 'AUTO' : 'MAN'}
+        </text>
+        {/* PV bar with the setpoint marker */}
+        <rect x="16" y="32" width="14" height="56" rx="3" fill="#060b15" stroke="#22314d" />
+        {pv !== undefined && <rect x="17" y={88 - bar(pv)} width="12" height={bar(pv)} rx="2" fill="#4fe0b0" style={{ transition: 'all .3s' }} />}
+        <path d={`M12,${88 - bar(p.setpoint)} H34`} stroke="#fff" strokeWidth="2" />
+        <path d={`M34,${88 - bar(p.setpoint)} l5,-3.500 v7 z`} fill="#fff" />
+        <text x="23" y="98" className="svg-tick">
+          PV
+        </text>
+        {/* output bar */}
+        <rect x="86" y="32" width="14" height="56" rx="3" fill="#060b15" stroke="#22314d" />
+        <rect x="87" y={88 - out * 56} width="12" height={out * 56} rx="2" fill={SIGNAL_ON} style={{ transition: 'all .3s' }} />
+        <text x="93" y="98" className="svg-tick">
+          OUT
+        </text>
+        <text x="60" y="56" className="svg-lcd timer-count">
+          {pv !== undefined ? fmt(pv, quantity, units) : '—'}
+        </text>
+        <text x="60" y="66" className="svg-tick">
+          {quantity !== 'none' ? unitLabel(quantity, units) : ''}
+        </text>
+        <text x="60" y="84" className="svg-readout small" style={{ fill: SIGNAL_ON }}>
+          {Math.round(out * 100)}%
+        </text>
+      </svg>
+    </Shell>
+  )
+})
+
+const GATE: Record<string, { name: string; d: string }> = {
+  and: { name: 'AND', d: 'M14,10 H40 A22,22 0 0 1 40,54 H14 Z' },
+  or: { name: 'OR', d: 'M12,10 Q40,10 64,32 Q40,54 12,54 Q24,32 12,10 Z' },
+  not: { name: 'NOT', d: 'M14,10 L56,32 L14,54 Z' },
+}
+
+export const LogicNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const on = useLab((s) => (s.ctrl.out[id] ?? 0) >= 0.5)
+  const g = GATE[data.props.op] ?? GATE.and
+  const color = on ? SIGNAL_ON : SIGNAL_OFF
+  return (
+    <Shell id={id} kind="logic" selected={selected} label={data.label} sub={on ? 'ON' : 'OFF'}>
+      <svg width="76" height="64" viewBox="0 0 76 64">
+        <path d="M0,32 H14 M60,32 H76" stroke={color} strokeWidth="2.5" />
+        <path d={g.d} fill="#0c1424" stroke={color} strokeWidth="2.5" strokeLinejoin="round" style={{ filter: on ? `drop-shadow(0 0 5px ${color})` : undefined }} />
+        {data.props.op === 'not' && <circle cx="60" cy="32" r="4" fill="#0c1424" stroke={color} strokeWidth="2.5" />}
+        <text x={data.props.op === 'not' ? 28 : 36} y="35.500" className="svg-tag">
+          {g.name}
+        </text>
+      </svg>
+    </Shell>
+  )
+})
+
+const LAMP: Record<string, string> = { red: '#ff5d7a', amber: '#fab219', green: '#3ddc84', blue: '#4fd4ff' }
+
+export const LampNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const on = useLab((s) => (s.ctrl.out[id] ?? 0) >= 0.5)
+  const c = LAMP[data.props.color] ?? LAMP.red
+  return (
+    <Shell id={id} kind="lamp" selected={selected} label={data.label}>
+      <svg width="60" height="68" viewBox="0 0 60 68" style={{ overflow: 'visible' }}>
+        {on && <circle cx="30" cy="28" r="30" fill={c} opacity=".22" className="lamp-halo" />}
+        <rect x="14" y="52" width="32" height="12" rx="3" fill="#1b2a44" stroke="#5a7099" strokeWidth="2" />
+        <path
+          d="M12,52 V28 A18,18 0 0 1 48,28 V52 Z"
+          fill={on ? c : '#151d2e'}
+          stroke={on ? '#fff' : '#5a7099'}
+          strokeWidth="2"
+          className={on ? 'lamp-on' : undefined}
+          style={{ filter: on ? `drop-shadow(0 0 10px ${c})` : undefined }}
+        />
+        <path d="M20,30 A10,10 0 0 1 30,18" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" opacity={on ? 0.7 : 0.15} />
+      </svg>
+    </Shell>
+  )
+})
+
 export const nodeTypes = {
   reservoir: ReservoirNode,
   tank: TankNode,
@@ -655,4 +845,9 @@ export const nodeTypes = {
   element: ElementNode,
   dpgauge: DpGaugeNode,
   timer: TimerNode,
+  manual: ManualNode,
+  switch: SwitchNode,
+  pid: PidNode,
+  logic: LogicNode,
+  lamp: LampNode,
 }

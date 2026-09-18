@@ -13,6 +13,11 @@ function ramp(stops: RGB[], t: number) {
   return `rgb(${c[0]},${c[1]},${c[2]})`
 }
 
+// signal wires: commands are violet, measurements green, anything idle a dim slate
+export const SIGNAL_ON = '#b7a9ff'
+export const SIGNAL_OFF = '#4a4f7a'
+export const SIGNAL_PV = '#4fe0b0'
+
 export const SUB_ATMOSPHERIC = '#ff4fa3'
 export const PLAIN = '#3aa0ff'
 export const DRY = '#33415a'

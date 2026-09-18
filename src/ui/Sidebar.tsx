@@ -8,7 +8,7 @@ const GROUPS: { name: string; kinds: Kind[] }[] = [
   { name: 'Sources & storage', kinds: ['reservoir', 'tank'] },
   { name: 'Equipment', kinds: ['pump', 'valve'] },
   { name: 'Nodes', kinds: ['junction', 'outlet'] },
-  { name: 'Control', kinds: ['timer'] },
+  { name: 'Control', kinds: ['manual', 'timer', 'switch', 'pid', 'logic', 'lamp'] },
   { name: 'Instruments', kinds: ['gauge', 'dpgauge', 'meter', 'element'] },
 ]
 

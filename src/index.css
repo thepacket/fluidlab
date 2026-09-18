@@ -941,6 +941,36 @@ input[type='range']::-webkit-slider-thumb {
   border-color: #d9d2ff;
   box-shadow: 0 0 10px #9085e9;
 }
+.port.port-pv.react-flow__handle {
+  border-color: #4fe0b0;
+}
+.port.port-pv.react-flow__handle:hover,
+.port.port-pv.react-flow__handle.connectingto {
+  border-color: #c9fff0;
+  box-shadow: 0 0 10px #4fe0b0;
+}
+.node-hit {
+  position: absolute;
+  inset: 14px;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.signal-chip {
+  position: absolute;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font: 600 10px var(--mono);
+  color: #d9d2ff;
+  background: rgba(6, 10, 18, 0.9);
+  border: 1px solid #4a4f7a;
+  pointer-events: none;
+}
+.lamp-on {
+  animation: led 0.9s ease-in-out infinite;
+}
+.lamp-halo {
+  animation: halo 0.9s ease-in-out infinite;
+}
 .signal-live {
   animation: signal 0.7s linear infinite;
 }
@@ -1266,6 +1296,11 @@ input[type='range']::-webkit-slider-thumb {
   overflow: hidden;
 }
 
+@keyframes halo {
+  50% {
+    opacity: 0.06;
+  }
+}
 @keyframes signal {
   to {
     stroke-dashoffset: -11;

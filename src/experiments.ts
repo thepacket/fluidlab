@@ -14,10 +14,32 @@ export const NODE_SIZE: Record<Kind, [number, number]> = {
   element: [120, 64],
   dpgauge: [96, 96],
   timer: [96, 104],
+  manual: [84, 84],
+  switch: [92, 88],
+  pid: [116, 104],
+  logic: [76, 64],
+  lamp: [60, 68],
 }
 
 /** vertical position (fraction of height) of the side ports for each kind */
-export const PORT_Y: Record<Kind, number> = { reservoir: 0.7, tank: 0.86, junction: 0.5, outlet: 0.5, gauge: 0.5, pump: 0.5, valve: 0.5, meter: 0.5, element: 0.5, dpgauge: 0.8, timer: 0.54 }
+export const PORT_Y: Record<Kind, number> = {
+  reservoir: 0.7,
+  tank: 0.86,
+  junction: 0.5,
+  outlet: 0.5,
+  gauge: 0.5,
+  pump: 0.5,
+  valve: 0.5,
+  meter: 0.5,
+  element: 0.5,
+  dpgauge: 0.8,
+  timer: 0.54,
+  manual: 0.5,
+  switch: 0.5,
+  pid: 0.5,
+  logic: 0.5,
+  lamp: 0.5,
+}
 
 export type LabNode = Node<NodeData>
 export type LabEdge = Edge<PipeData>
@@ -74,9 +96,38 @@ class Rig {
     })
     return this
   }
+  /** signal wire: `pv` → `cin` for a measurement, `sig` → `ctl` / `cin` for a command */
+  wire(source: string, target: string, handles: [string, string] = ['sig', 'ctl']) {
+    this.edges.push({ id: `s${this.edges.length + 1}`, type: 'signal', source, sourceHandle: handles[0], target, targetHandle: handles[1] })
+    return this
+  }
   done() {
     return { nodes: this.nodes, edges: this.edges }
   }
+}
+
+type History = { t: number; v: Record<string, number> }[]
+
+/** Minutes, counting back from now, that `key` has stayed inside [lo, hi] without a break. */
+function heldFor(history: History, key: string, lo: number, hi: number) {
+  if (!history.length) return 0
+  const now = history[history.length - 1].t
+  let since = now
+  for (let i = history.length - 1; i >= 0; i--) {
+    const v = history[i].v[key]
+    if (v === undefined || v < lo || v > hi) break
+    since = history[i].t
+  }
+  return (now - since) / 60
+}
+
+/** Share of the last `windowS` lab-seconds that `key` spent inside [lo, hi] — null until that much has been recorded. */
+function shareInBand(history: History, key: string, lo: number, hi: number, windowS: number) {
+  if (!history.length) return null
+  const now = history[history.length - 1].t
+  const recent = history.filter((h) => h.t > now - windowS && h.v[key] !== undefined)
+  if (!recent.length || now - history[0].t < windowS * 0.97) return null
+  return recent.filter((h) => h.v[key] >= lo && h.v[key] <= hi).length / recent.length
 }
 
 const flowGoal = (deviceOrLink: string, target: number, tolerance: number) => (r: Results) => {
@@ -548,5 +599,127 @@ export const EXPERIMENTS: Experiment[] = [
       rig.edges.push({ id: 's1', type: 'signal', source: 'tm', sourceHandle: 'sig', target: 'p', targetHandle: 'ctl' })
       return rig.done()
     },
+  },
+  {
+    id: 'level-switch',
+    no: '17',
+    title: 'Level switch',
+    concept: 'On/off control with hysteresis',
+    formula: 'ON below low · OFF above high · hold in between',
+    brief:
+      'A timer pumps blind; a level switch pumps because the tank needs it. The green wire carries the tower’s level to the switch, the violet wire carries its decision to the pump. The gap between the two thresholds — the hysteresis — is what stops the pump chattering on and off.',
+    steps: [
+      'Select LS1 and watch the level bounce between its thresholds on the Loop chart.',
+      'Narrow the band: the level holds tighter, but count how often the pump now starts.',
+      'Open the demand valve further — the switch simply runs the pump for longer. A timer could not do that.',
+    ],
+    goal: {
+      text: 'Set the thresholds so the tower stays between 40 % and 70 % for 20 lab-minutes',
+      check: (_r, nodes, levels, history) => {
+        const tank = nodes.find((n) => n.id === 't')
+        if (!tank) return { done: false, readout: '—' }
+        const max = tank.data.props.maxLevel
+        const held = heldFor(history, 't', 0.4 * max, 0.7 * max)
+        const pct = ((levels['t'] ?? tank.data.props.initLevel) / max) * 100
+        return { done: held >= 20, readout: `${pct.toFixed(0)} % · ${Math.min(20, held).toFixed(0)}/20 min` }
+      },
+    },
+    timeScale: 60,
+    select: 'ls',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 100, 470, { head: 1 }, 'Well')
+        .add('p', 'pump', 300, 470, { designFlow: 50 * LPM, designHead: 9 })
+        .add('ls', 'switch', 800, 240, { action: 'fill', low: 0.3, high: 2.2, pvKind: 'tank' }, 'LS1')
+        .add('t', 'tank', 560, 250, { elevation: 6, diameter: 1, initLevel: 1.2, maxLevel: 2.4 }, 'Tower')
+        .add('v', 'valve', 780, 470, { diameter: 0.025, opening: 0.45, kOpen: 3 }, 'Demand')
+        .add('out', 'outlet', 980, 470, { nozzleDiameter: 0.016 }, 'Town')
+        .pipe('src', 'p', { length: 3, diameter: 0.04 })
+        .pipe('p', 't', { length: 12, diameter: 0.032 }, ['out', 'l'])
+        .pipe('t', 'v', { length: 10, diameter: 0.025 }, ['r', 'in'])
+        .pipe('v', 'out', { length: 4, diameter: 0.025 })
+        .wire('t', 'ls', ['pv', 'cin'])
+        .wire('ls', 'p')
+        .done(),
+  },
+  {
+    id: 'pressure-pid',
+    no: '18',
+    title: 'Constant-pressure booster',
+    concept: 'PID control of a variable-speed pump',
+    formula: 'out = Kp·e + (Kp/Ti)·∫e dt',
+    brief:
+      'A timer opens and shuts a big consumer every 90 seconds. The pressure transmitter feeds a PID controller that trims the pump’s speed to hold 250 kPa through it all. As delivered, the loop is far too lazy: pressure sags and surges for most of each cycle.',
+    steps: [
+      'Select PIC1: watch pressure against setpoint, and the output below it.',
+      'Shorten Ti to a second or two and nudge Kp up until the pressure snaps back after each step.',
+      'Go too far and it hunts. Every real loop has that edge — find it, then back off.',
+    ],
+    goal: {
+      text: 'Tune PIC1 so the header stays within 250 ± 15 kPa for 85 % of the last 5 lab-minutes',
+      check: (r, _n, _l, history) => {
+        const share = shareInBand(history, 'pt', 235e3, 265e3, 300)
+        const now = (r.nodes['pt']?.pressure ?? 0) / 1000
+        return { done: share !== null && share >= 0.85, readout: `${now.toFixed(0)} kPa · ${share === null ? 'recording…' : `${(share * 100).toFixed(0)} % in band`}` }
+      },
+    },
+    timeScale: 10,
+    select: 'pic',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 90, 470, { head: 2 }, 'Break tank')
+        .add('p', 'pump', 280, 470, { designFlow: 90 * LPM, designHead: 24, speed: 1.4 })
+        .add('pt', 'gauge', 470, 470, {}, 'PT1')
+        .add('pic', 'pid', 330, 210, { setpoint: 250e3, span: 500e3, kp: 0.15, ti: 120, pvKind: 'gauge' }, 'PIC1')
+        .add('j', 'junction', 640, 470)
+        .add('o1', 'outlet', 900, 360, { nozzleDiameter: 0.009 }, 'Base load')
+        .add('o2', 'outlet', 900, 580, { nozzleDiameter: 0.011 }, 'Big user')
+        .add('tm', 'timer', 700, 700, { onTime: 90, offTime: 90, startOn: false }, 'Shift')
+        .pipe('src', 'p', { length: 3, diameter: 0.05 })
+        .pipe('p', 'pt', { length: 2, diameter: 0.04 })
+        .pipe('pt', 'j', { length: 10, diameter: 0.04 })
+        .pipe('j', 'o1', { length: 8, diameter: 0.025 }, ['t', 'l'])
+        .pipe('j', 'o2', { length: 8, diameter: 0.025 }, ['b', 'l'])
+        .wire('pt', 'pic', ['pv', 'cin'])
+        .wire('pic', 'p')
+        .wire('tm', 'o2')
+        .done(),
+  },
+  {
+    id: 'flow-pid',
+    no: '19',
+    title: 'Flow control loop',
+    concept: 'A motorised valve under PID',
+    formula: 'valve position = output × opening',
+    brief:
+      'The flow transmitter, the controller and a motorised valve make a classic flow loop. The valve needs 20 s to stroke end to end, and its equal-percentage trim makes the loop lively when nearly shut and sluggish when wide open — which is why flow loops are tuned gently.',
+    steps: [
+      'FIC1 starts in MANUAL at 100 %. Select it and switch it to automatic.',
+      'Watch the valve travel (its stroke time is on the valve) until the flow settles at the setpoint.',
+      'Now disturb it: raise the supply head, or change the setpoint, and watch the loop recover.',
+    ],
+    goal: {
+      text: 'Put FIC1 in automatic and hold 40 ± 1.5 L/min for 3 lab-minutes',
+      check: (r, nodes, _l, history) => {
+        const auto = !!nodes.find((n) => n.id === 'fic')?.data.props.auto
+        const held = heldFor(history, 'ft', 38.5 * LPM, 41.5 * LPM)
+        return { done: auto && held >= 3, readout: `${(Math.abs(r.devices['ft']?.flow ?? 0) / LPM).toFixed(1)} L/min · ${Math.min(3, held).toFixed(1)}/3 min` }
+      },
+    },
+    timeScale: 10,
+    select: 'fic',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 100, 440, { head: 20 }, 'Supply')
+        .add('ft', 'meter', 340, 440, { diameter: 0.025 }, 'FT1')
+        .add('fic', 'pid', 470, 190, { auto: false, manualOut: 1, setpoint: 40 * LPM, span: 100 * LPM, kp: 0.3, ti: 20, pvKind: 'meter' }, 'FIC1')
+        .add('v', 'valve', 620, 440, { diameter: 0.025, kOpen: 4, strokeTime: 20 }, 'FV1')
+        .add('out', 'outlet', 880, 440, { nozzleDiameter: 0.014 })
+        .pipe('src', 'ft', { length: 10, diameter: 0.025 })
+        .pipe('ft', 'v', { length: 2, diameter: 0.025 })
+        .pipe('v', 'out', { length: 10, diameter: 0.025 })
+        .wire('ft', 'fic', ['pv', 'cin'])
+        .wire('fic', 'v')
+        .done(),
   },
 ]

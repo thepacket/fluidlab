@@ -2,7 +2,7 @@ import { addEdge, applyEdgeChanges, applyNodeChanges, type Connection, type Edge
 import { create } from 'zustand'
 import { solver } from './engine/client'
 import { EXPERIMENTS, NODE_SIZE, PORT_Y, type LabEdge, type LabNode } from './experiments'
-import { computeControls, timerState } from './model/control'
+import { EMPTY_CONTROL, PV_CONSUMERS, PV_SOURCES, SIGNAL_CONSUMERS, sameControl, stepControl, type ControlState } from './model/control'
 import { area } from './model/physics'
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
 import { METRIC, type UnitPrefs } from './model/units'
@@ -31,7 +31,9 @@ interface State {
   engineReady: boolean
   levels: Record<string, number>
   /** live on/off commands from controllers, keyed by the device they switch */
-  controls: Record<string, boolean>
+  controls: Record<string, number>
+  /** the controllers' own state: block outputs, measurements, PID memory, actuator positions */
+  ctrl: ControlState
   simTime: number
   running: boolean
   timeScale: number
@@ -84,21 +86,32 @@ export const model = (s: Pick<State, 'nodes' | 'edges' | 'fluidId' | 'levels' | 
 })
 
 /**
- * Classify a new connection. Signal ports only pair with each other (controller `sig` ↔ device `ctl`),
- * and fluid ports never accept a signal wire. Returns null for an ordinary pipe.
+ * Classify a new connection. Signal ports only pair output → input, and only where the pairing means something:
+ *   instrument `pv` → switch / PID `cin`        controller `sig` → device `ctl`  or  logic / lamp `cin`
+ * Fluid ports never accept a signal wire. Returns null for an ordinary pipe; wires come back stored output → input.
  */
 export function signalEnds(c: { source: string | null; target: string | null; sourceHandle?: string | null; targetHandle?: string | null }, nodes: LabNode[]) {
   const ends = [
     { id: c.source, h: c.sourceHandle },
     { id: c.target, h: c.targetHandle },
   ]
-  const isSignalPort = (h?: string | null) => h === 'sig' || h === 'ctl'
+  const isSignalPort = (h?: string | null) => h === 'sig' || h === 'ctl' || h === 'pv' || h === 'cin'
   if (!ends.some((e) => isSignalPort(e.h))) return null
-  const from = ends.find((e) => e.h === 'sig')
-  const to = ends.find((e) => e.h === 'ctl')
-  const target = nodes.find((n) => n.id === to?.id)
-  if (!from?.id || !to?.id || !target || !CONTROLLABLE.includes(target.data.kind)) return 'invalid' as const
-  return { from: from.id, to: to.id }
+  const from = ends.find((e) => e.h === 'sig' || e.h === 'pv')
+  const to = ends.find((e) => e.h === 'ctl' || e.h === 'cin')
+  const kindOf = (id?: string | null) => nodes.find((n) => n.id === id)?.data.kind
+  const target = kindOf(to?.id)
+  if (!from?.id || !to?.id || !target || from.id === to.id) return 'invalid' as const
+  const ok = from.h === 'pv' ? to.h === 'cin' && PV_CONSUMERS.includes(target) : to.h === 'ctl' ? CONTROLLABLE.includes(target) : SIGNAL_CONSUMERS.includes(target)
+  return ok ? { from: from.id, fromHandle: from.h as string, to: to.id, toHandle: to.h as string } : ('invalid' as const)
+}
+
+/** Sensible thresholds / setpoint the first time a controller is wired to a given kind of measurement. */
+function pvDefaults(ctrl: LabNode, src: LabNode): Props {
+  const info = PV_SOURCES[src.data.kind]
+  if (!info || ctrl.data.props.pvKind === src.data.kind) return {}
+  const span = src.data.kind === 'tank' ? src.data.props.maxLevel : info.quantity === 'flow' ? 100 / 60000 : 500e3
+  return ctrl.data.kind === 'switch' ? { pvKind: src.data.kind, low: span * 0.3, high: span * 0.7 } : { pvKind: src.data.kind, span, setpoint: span * 0.5 }
 }
 
 /** Only hydraulically meaningful state — dragging a node must not trigger a re-solve. */
@@ -129,6 +142,7 @@ export const useLab = create<State>((set, get) => ({
   engineReady: false,
   levels: {},
   controls: {},
+  ctrl: EMPTY_CONTROL,
   simTime: 0,
   running: true,
   timeScale: 60,
@@ -156,9 +170,15 @@ export const useLab = create<State>((set, get) => ({
     if (signal && edges.some((e) => e.type === 'signal' && e.source === signal.from && e.target === signal.to)) return
     get().checkpoint()
     if (signal) {
-      // stored controller → device, whichever end the user dragged from
-      const wire = { id: `s${++uid}`, type: 'signal', source: signal.from, sourceHandle: 'sig', target: signal.to, targetHandle: 'ctl' }
-      set({ edges: [...edges.map((e) => ({ ...e, selected: false })), wire as LabEdge] })
+      const wire = { id: `s${++uid}`, type: 'signal', source: signal.from, sourceHandle: signal.fromHandle, target: signal.to, targetHandle: signal.toHandle }
+      // a controller listens to one measurement: a new one replaces the old
+      const kept = signal.fromHandle === 'pv' ? edges.filter((e) => !(e.type === 'signal' && e.target === signal.to && e.sourceHandle === 'pv')) : edges
+      const nodes = get().nodes
+      const src = nodes.find((n) => n.id === signal.from)!
+      set({
+        edges: [...kept.map((e) => ({ ...e, selected: false })), wire as LabEdge],
+        nodes: signal.fromHandle === 'pv' ? nodes.map((n) => (n.id === signal.to ? { ...n, data: { ...n.data, props: { ...n.data.props, ...pvDefaults(n, src) } } } : n)) : nodes,
+      })
       return
     }
     const n = edges.length + 1
@@ -306,7 +326,7 @@ export const useLab = create<State>((set, get) => ({
       1,
     )
   },
-  resetSim: () => set({ levels: {}, simTime: 0, history: [] }),
+  resetSim: () => set({ levels: {}, simTime: 0, history: [], ctrl: EMPTY_CONTROL }),
 
   /** Quasi-steady time stepping: solve → integrate tank volumes → solve again. */
   tick: (dtReal) => {
@@ -327,20 +347,24 @@ export const useLab = create<State>((set, get) => ({
       if (Math.abs(next - cur) > 1e-7) moved = true
       levels[n.id] = next
     }
+    // one controller scan per tick, on the measurements of the network as last solved
+    const ctrl = stepControl({ nodes: s.nodes, edges: s.edges, t: s.simTime + dt, dt, results: s.results, levels, prev: s.ctrl })
     const v: Record<string, number> = {}
     for (const n of s.nodes) {
       const nr = s.results.nodes[n.id]
       const dr = s.results.devices[n.id]
       if (n.data.kind === 'tank') v[n.id] = levels[n.id] ?? n.data.props.initLevel
-      else if (n.data.kind === 'timer') v[n.id] = timerState(n.data.props, s.simTime).on ? 1 : 0
-      else if (n.data.kind === 'outlet' || n.data.kind === 'reservoir') v[n.id] = Math.abs(nr?.outflow ?? 0)
+      else if (ctrl.out[n.id] !== undefined) {
+        v[n.id] = ctrl.out[n.id]
+        if (ctrl.pv[n.id] !== undefined) v[`${n.id}:pv`] = ctrl.pv[n.id]
+      } else if (n.data.kind === 'outlet' || n.data.kind === 'reservoir') v[n.id] = Math.abs(nr?.outflow ?? 0)
       else if (nr) v[n.id] = nr.pressure
       else if (dr) v[n.id] = n.data.kind === 'dpgauge' ? dr.pIn - dr.pOut : n.data.kind === 'element' ? (dr.tapDp ?? 0) : dr.flow
     }
     for (const e of s.edges) if (s.results.links[e.id]) v[e.id] = s.results.links[e.id].flow
     const simTime = s.simTime + dt
     const history = [...s.history.slice(-599), { t: simTime, v }]
-    set(moved ? { levels, simTime, history } : { simTime, history })
+    set(moved ? { levels, simTime, history, ctrl, controls: ctrl.commands } : { simTime, history, ctrl, controls: ctrl.commands })
   },
 
   solve: () => {
@@ -380,10 +404,10 @@ export function bootLab() {
 
   useLab.subscribe((s) => {
     // controllers first: if a timer just switched something, that lands in the signature below
-    const controls = computeControls(s.nodes, s.edges, s.simTime)
-    const keys = Object.keys(controls)
-    if (keys.length !== Object.keys(s.controls).length || keys.some((k) => controls[k] !== s.controls[k])) {
-      useLab.setState({ controls })
+    // (dt = 0: nothing integrates, so re-running this on every change is harmless)
+    const ctrl = stepControl({ nodes: s.nodes, edges: s.edges, t: s.simTime, dt: 0, results: s.results, levels: s.levels, prev: s.ctrl })
+    if (!sameControl(ctrl, s.ctrl)) {
+      useLab.setState({ ctrl, controls: ctrl.commands })
       return
     }
     const sig = signature(s)
