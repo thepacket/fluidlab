@@ -75,6 +75,35 @@ const march = (m: Model, seconds: number, dt: number, each?: (t: number, s: Heat
   check('heat balance closes at steady state', s.balance.input, s.balance.emitted + s.balance.pipeLoss, 0.01)
 }
 
+// 4. drawing off a cylinder while cold water refills it: stirred, the tap cools exponentially; stratified, it stays hot
+//    until the cold front has climbed the whole tank
+{
+  const q = 0.1e-3
+  const build = (stratified: boolean): Model => ({
+    fluid: water,
+    nodes: [
+      node('R', 'reservoir', { head: 40 }),
+      node('F', 'valve', { valveType: 'fcv', flowSetting: q, diameter: 0.02 }),
+      node('T', 'tank', { elevation: 5, initTemp: 60, diameter: 0.5, initLevel: 1.02, maxLevel: 1.5, stratified }),
+      node('tap', 'outlet', { mode: 'demand', demand: q }),
+    ],
+    edges: [
+      { ...pipe('in1', 'R', 'F'), targetHandle: 'in' },
+      { ...pipe('in2', 'F', 'T', { length: 1 }), sourceHandle: 'out', targetHandle: 'b' },
+      { ...pipe('out', 'T', 'tap', { length: 1, diameter: 0.02 }), sourceHandle: 't' },
+    ],
+  })
+  const V = tankVolume(build(false).nodes[2].data.props, 1.02)
+  const half = V / 2 / q // seconds to draw half the cylinder
+  const stirred = march(build(false), half, 5).s
+  check('stirred tank after half a volume: 15 + 45·e^(−½)', stirred.tanks.T, 15 + 45 * Math.exp(-0.5), 0.01)
+  const layered = march(build(true), half, 5).s
+  check('stratified tank still delivers hot water from the top', layered.layers.T.at(-1)!, 60, 0.03)
+  check('…while its bottom is already cold', layered.layers.T[0], 15, 0.05)
+  // half its volume left at ~60 °C and was replaced at 15 °C, so the mean must have fallen by half of 45 K
+  check('energy: the mean fell by what was drawn off', layered.tanks.T, 60 - 45 / 2, 0.02)
+}
+
 if (failed) {
   console.error(`${failed} heat check(s) failed`)
   process.exit(1)

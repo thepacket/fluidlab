@@ -97,6 +97,8 @@ export interface Experiment {
   timeScale?: number
   /** 'live' marches water temperatures through lab time instead of showing where they settle */
   heatMode?: 'steady' | 'live'
+  /** 'live' marches the open-channel water surface through lab time (flood waves, gate surges) */
+  flowMode?: 'steady' | 'live'
   autoRun?: boolean
   select?: string
   build: () => { nodes: LabNode[]; edges: LabEdge[] }
@@ -2001,5 +2003,129 @@ export const EXPERIMENTS: Experiment[] = [
         .add('end', 'outfall', 900, 300, { elevation: 9, mode: 'normal' }, 'Downstream')
         .channel('lake', 'end', { length: 800, width: 1.5, bankHeight: 1.2 }, [], 'Canal')
         .done(),
+  },
+  {
+    id: 'flood-wave',
+    no: '52',
+    title: 'A flood wave down a river',
+    concept: 'Unsteady flow: translation and attenuation',
+    formula: '∂A/∂t + ∂Q/∂x = 0    ·    c ≈ u + √(g·A/T)',
+    brief:
+      'A storm on a tributary sends a pulse of water into a quiet river. The pulse does not arrive downstream as it left: the channel stores water as the level rises and gives it back as it falls, so the peak gets lower, later and longer. This rig runs in “live flow” mode — the Saint-Venant equations marched through time — instead of showing the settled water surface.',
+    steps: [
+      'Press play. After two minutes the storm inflow switches on for ten. Select the town gauge and watch its trend.',
+      'Select a reach and open “Water surface” to watch the wave travel.',
+      'The town floods above 0.90 m. Give the river more room — a wider or smoother channel — press reset (⟲) and run the storm again.',
+    ],
+    goal: {
+      text: 'Let the whole storm pass with the town gauge never above 0.90 m',
+      check: (_r, _n, _l, history) => {
+        const peak = Math.max(0, ...history.map((h) => (h.v.town ?? 0) / (998.2 * 9.80665)))
+        const over = (history.at(-1)?.t ?? 0) > 2400
+        return { done: over && peak <= 0.9 && peak > 0, readout: `peak ${peak.toFixed(2)} m${over ? '' : ' · storm still passing'}` }
+      },
+    },
+    timeScale: 20,
+    flowMode: 'live',
+    select: 'town',
+    build: () =>
+      new Rig()
+        .add('base', 'inflow', 120, 220, { elevation: 1.3, flow: 0.8 }, 'River')
+        .add('storm', 'inflow', 120, 420, { elevation: 1.3, flow: 3 }, 'Storm inflow')
+        .add('tm', 'timer', 120, 600, { mode: 'cycle', onTime: 600, offTime: 120, startOn: false }, 'Storm')
+        .add('j', 'junction', 380, 320, { elevation: 1.2 }, 'Confluence')
+        .add('town', 'gauge', 700, 320, { elevation: 0.6 }, 'Town gauge')
+        .add('w', 'weir', 980, 320, { elevation: 0, variant: 'broad', crestHeight: 0.3, crestWidth: 3 }, 'Old weir')
+        .add('sea', 'outfall', 1180, 320, { elevation: -0.1 }, 'Estuary')
+        .channel('base', 'j', { length: 100, width: 3, bankHeight: 2, lining: 'stream' }, ['r', 'l'])
+        .channel('storm', 'j', { length: 100, width: 3, bankHeight: 2, lining: 'stream' }, ['r', 'b'])
+        .channel('j', 'town', { length: 600, width: 3, bankHeight: 2, lining: 'stream' }, ['r', 'l'], 'Upper river')
+        .channel('town', 'w', { length: 600, width: 3, bankHeight: 2, lining: 'stream' }, ['r', 'in'], 'Lower river')
+        .channel('w', 'sea', { length: 40, width: 3, bankHeight: 2, lining: 'stream' })
+        .wire('tm', 'storm')
+        .done(),
+  },
+  {
+    id: 'stratified',
+    no: '53',
+    title: 'A cylinder that stratifies',
+    concept: 'Hot water floats on cold',
+    formula: 'stirred:  T = T_cold + (T₀ − T_cold) · e^(−V_drawn / V_tank)',
+    brief:
+      'A hot-water cylinder is drawn from the top and refilled with cold at the bottom. If the contents were stirred, every litre of cold would dilute the whole tank and the tap would cool from the first moment. Real cylinders do better: cold water is denser, stays at the bottom, and pushes the hot water up and out like a piston — nearly the whole volume is delivered hot before the cold front reaches the top.',
+    steps: [
+      'Press play with the tank stirred: the tap temperature falls away exponentially.',
+      'Select the cylinder, switch “Stratified” on and press reset (⟲). Watch the cold layer climb while the tap stays hot.',
+      'Compare how many litres each way delivers above 45 °C.',
+    ],
+    goal: {
+      text: 'Draw 150 L at 45 °C or hotter from the 200 L cylinder (heater off)',
+      check: (_r, _n, _l, history) => {
+        let litres = 0
+        for (let i = 1; i < history.length; i++) if ((history[i].v['tap:T'] ?? 0) >= 45) litres += (history[i].v.tap ?? 0) * (history[i].t - history[i - 1].t) * 1000
+        return { done: litres >= 150, readout: `${litres.toFixed(0)} L hot so far · tap at ${history.at(-1)?.v['tap:T']?.toFixed(0) ?? '—'} °C` }
+      },
+    },
+    timeScale: 30,
+    heatMode: 'live',
+    select: 'cyl',
+    build: () =>
+      new Rig()
+        .add('main', 'reservoir', 140, 470, { head: 40 }, 'Cold main')
+        .add('f', 'valve', 360, 470, { valveType: 'fcv', flowSetting: 6 * LPM, diameter: 0.02 }, 'Cold feed')
+        .add('cyl', 'tank', 600, 300, { elevation: 5, initTemp: 60, diameter: 0.5, initLevel: 1.02, maxLevel: 1.5 }, 'Cylinder')
+        .add('tt', 'thermo', 820, 120, { elevation: 5 }, 'Draw-off')
+        .add('tap', 'outlet', 1020, 190, { mode: 'demand', demand: 6 * LPM, elevation: 0 }, 'Bath tap')
+        .pipe('main', 'f', { length: 5, diameter: 0.0199, material: 'copper' })
+        .pipe('f', 'cyl', { length: 2, diameter: 0.0199, material: 'copper' }, ['out', 'b'])
+        .pipe('cyl', 'tt', { length: 1, diameter: 0.0199, material: 'copper' }, ['t', 'l'])
+        .pipe('tt', 'tap', { length: 2, diameter: 0.0199, material: 'copper' }, ['r', 'l'])
+        .done(),
+  },
+  {
+    id: 'condensate-return',
+    no: '54',
+    title: 'Bringing the condensate home',
+    concept: 'Flash steam and return-line sizing',
+    formula: 'flash = (h_f1 − h_f2) / h_fg2',
+    brief:
+      'Condensate leaves a trap as water at steam temperature. The moment it meets the lower pressure of the return line, part of it flashes back into steam — only a tenth or so by mass, but hundreds of times the volume. So a return line is sized as a steam line, not a water line. Undersize it and the flash steam races, the line’s pressure climbs, and that back-pressure robs every trap of the differential it needs to drain. Get it right and the boiler is fed hot water instead of cold.',
+    steps: [
+      'Select the common return: far too fast, and look at the back-pressure it puts on the exchanger.',
+      'Select the receiver to see how much heat is coming home, and the boiler to see what that does to its feedwater.',
+      'Size the return lines for their flash steam.',
+    ],
+    goal: {
+      text: 'Keep every return line at or below 25 m/s and the back-pressure on the exchanger under 50 kPa',
+      check: (r) => {
+        const st = r.steam
+        const v = Math.max(0, ...Object.values(st?.returns.links ?? {}).map((l) => l.velocity))
+        const bp = st?.returns.backPressure.hx ?? 0
+        return {
+          done: !!st && v > 0 && v <= 25 && bp <= 50e3,
+          readout: st ? `fastest return ${v.toFixed(0)} m/s · back-pressure ${(bp / 1000).toFixed(0)} kPa · ${(st.totals.heatReturned / 1000).toFixed(0)} kW coming home` : '—',
+        }
+      },
+    },
+    fluidId: 'steam',
+    select: 'e6',
+    build: () => {
+      const steel = { material: 'steel', roughness: 0.045e-3 }
+      const back = { ...steel, conduit: 'condensate' }
+      return new Rig()
+        .add('b', 'reservoir', 140, 200, { pressure: 800e3 }, 'Boiler')
+        .add('j', 'junction', 460, 200, {}, 'Drip pocket')
+        .add('t', 'trap', 460, 360, { orifice: 0.004 }, 'Drip trap')
+        .add('hx', 'steamload', 760, 200, { variant: 'exchanger', duty: 400e3, processTemp: 140 }, 'Exchanger')
+        .add('rj', 'junction', 760, 480, {}, 'Return header')
+        .add('rx', 'tank', 300, 520, { elevation: 0, diameter: 1, initLevel: 0.6, maxLevel: 1.5 }, 'Receiver')
+        .pipe('b', 'j', { length: 60, diameter: 0.0627, insulation: 0.05, ...steel }, [], 'Steam main')
+        .pipe('j', 't', { length: 0.5, diameter: 0.0209, insulation: 0, ...steel }, ['b', 't'], 'Drip leg')
+        .pipe('j', 'hx', { length: 8, diameter: 0.0525, insulation: 0.05, ...steel }, [], 'Branch')
+        .pipe('hx', 'rj', { length: 6, diameter: 0.0209, ...back }, ['b', 't'], 'Exchanger return')
+        .pipe('t', 'rj', { length: 12, diameter: 0.0158, ...back }, ['b', 'l'], 'Trap return')
+        .pipe('rj', 'rx', { length: 50, diameter: 0.0209, ...back }, ['b', 'r'], 'Common return')
+        .done()
+    },
   },
 ]

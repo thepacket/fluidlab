@@ -17,6 +17,7 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
   const paused = useLab((s) => !s.running)
   const reach = useLab((s) => s.results.channel?.reaches[id])
   const open = data?.props.conduit === 'channel'
+  const back = data?.props.conduit === 'condensate' // condensate return: a thinner, green line
 
   const [path, labelX, labelY] = getSmoothStepPath({
     sourceX,
@@ -39,6 +40,7 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
     else if (overlay === 'velocity') c1 = c2 = velocityColor(r.velocity, vMax)
     else if (overlay === 'thermal' && heat) [c1, c2] = [thermalColor(heat.t.tStart, heat.tMin, heat.tMax), thermalColor(heat.t.tEnd, heat.tMin, heat.tMax)]
     else c1 = c2 = PLAIN
+    if (back) c1 = c2 = '#2fbf8f'
   }
   const gid = `grad-${id}`
   // dash pattern period is 18px; speed in px/s grows with velocity but saturates so fast pipes stay readable

@@ -105,7 +105,7 @@ function Ports({ kind, rot }: { kind: Kind; rot: number }) {
     <>
       <Handle id="l" type="source" position={Position.Left} className="port" style={{ top: y }} />
       <Handle id="r" type="source" position={Position.Right} className="port" style={{ top: y }} />
-      {kind !== 'reservoir' && kind !== 'tank' && kind !== 'vessel' && kind !== 'inflow' && kind !== 'outfall' && <Handle id="t" type="source" position={Position.Top} className="port" />}
+      {kind !== 'reservoir' && kind !== 'vessel' && kind !== 'inflow' && kind !== 'outfall' && <Handle id="t" type="source" position={Position.Top} className="port" />}
       <Handle id="b" type="source" position={Position.Bottom} className="port" />
     </>
   )
@@ -236,6 +236,8 @@ export const TankNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const trend = Math.abs(net) < 1e-7 ? '' : net > 0 ? '▲' : '▼'
   const spilling = !!p.overflow && frac >= 0.999 && net > 1e-7
   const waterTemp = useLab((s) => (s.results.steam ? undefined : s.results.thermal?.nodes[id]))
+  const layers = useLab((s) => s.results.thermal?.layers?.[id])
+  const tRange = useLab(useShallow((s) => [s.results.thermal?.tMin ?? 0, s.results.thermal?.tMax ?? 1]))
   const paused = useLab((s) => !s.running)
   return (
     <Shell
@@ -261,6 +263,11 @@ export const TankNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
             <path className="wave wave-slow" d={wave(-3, 112, 140)} fill="#2b7fe0" opacity=".5" />
             <path className="wave" d={wave(0, 112, 140)} fill={`url(#tw-${id})`} opacity=".92" />
           </g>
+          {/* a stratified tank shows its layers: hot on top, cold below */}
+          {layers?.map((t, i) => {
+            const hBand = (bottom - y) / layers.length
+            return <rect key={i} x="0" y={bottom - (i + 1) * hBand} width="112" height={hBand + 0.5} fill={thermalColor(t, tRange[0], tRange[1])} opacity=".8" />
+          })}
           <rect x="22" y="0" width="9" height="136" fill="#fff" opacity=".07" />
         </g>
         <path d={art.d} fill="none" stroke="#5a7099" strokeWidth="2.5" strokeLinejoin="round" />

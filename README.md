@@ -84,7 +84,8 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   isentropic power), PRVs are regulators with droop, pressure vessels are receivers that charge and blow down on the
   lab clock, nozzles and leaks choke at the critical ratio. Flows are standard volumes (15 °C, 1 atm). Controls,
   charts and goals work unchanged. `scripts/gas-check.ts` checks it against hand calculations. Elevation is ignored;
-  tees, three-way valves and jet pumps are plain junctions; no water hammer or thermal layer for gases.
+  tees and three-way valves carry their port losses as in the liquid engine; a jet pump only costs pressure (entrainment
+  by a gas jet is not modelled); no water hammer or thermal layer for gases.
 - **Steam** (`src/engine/steam.ts`, properties in `src/model/steam.ts`): pick "Saturated steam" as the fluid. The gas
   engine does the hydraulics with three changes — p/ρ comes from the steam table at each link's mean pressure instead
   of one Z·R·T, **steam loads** take duty ÷ h_fg(p) (so their demand depends on the pressure they get), and every pipe
@@ -96,8 +97,15 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   choked orifice blowing live steam, priced per plant year; a blocked one drains nothing. Reservoirs are boilers
   (feedwater temperature, efficiency, steam cost); throttling valves report the superheat they leave; loads warn when
   saturation temperature is below the process temperature + 5 K; loads and traps report flash steam at their return
-  pressure. The thermal overlay shows steam temperature; the overview gives the heat balance. Saturated steam only:
-  no superheated mains, no condensate-return pipework, no warm-up loads, no control valve / stall on the loads.
+  pressure. The thermal overlay shows steam temperature; the overview gives the heat balance. **Condensate return**:
+  a pipe can carry "condensate, returning" instead of steam (anything piped to an open tank does so from the start),
+  and the tank is the vented receiver. Each trap's and load's condensate is routed down the tree to the receiver; every
+  line is a homogeneous two-phase flow whose flash fraction follows from the enthalpy it left the steam space with, so
+  its velocity and friction are those of the flash steam; lifts cost 950·g·Δz. The pressure that builds up the line is
+  the back-pressure the traps and loads really discharge against — it sets trap capacity and flash, and a load whose
+  return stands as high as its steam space is reported as stalled. The receiver keeps the liquid and vents the flash;
+  what comes home raises the boiler's feedwater temperature and cuts its heat input. Saturated steam only: no
+  superheated mains, no pumped return or pressurised flash recovery, no warm-up loads, no control valve on the loads.
   `scripts/steam-check.ts` checks tables, mass balance, Darcy drop, choked trap and PRV against hand calculations.
 - **Open-channel engine** (`src/engine/channel.ts`, hydraulics in `src/model/openchannel.ts`): any conduit can be
   switched from "pipe, flowing full" to "open channel" (rectangular, trapezoidal, V or part-full circular; Manning n from
@@ -119,14 +127,24 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   long mild one — found by bisection around the whole channel solve); downstream, its level is the tailwater. The sill
   level is a property of the tank or reservoir. Tanks add up what pipes and channels give and take, so the lab clock
   fills and drains them correctly.
-  Steady only (no flood routing), one bed level per node (no drops), more than two branches split equally.
+  One bed level per node (no drops), more than two branches split equally.
+- **Unsteady channel flow** (`src/engine/wave.ts`): the "live flow" switch marches the channels through lab time with
+  the Saint-Venant equations — finite volumes carrying area and discharge, HLL fluxes (bores and jumps capture
+  themselves), hydrostatic reconstruction for the bed slope (still water stays still), implicit Manning friction.
+  Junctions are small ponds exchanging water with the reach ends round them; weirs and gates pass what their own law
+  allows, drowned or free, either way; inflows, outfalls, lakes and outlet feeds are boundary states. It starts on the
+  steady solution, so nothing moves until something changes: a storm pulse on a timer, a gate, a lake level.
+  `scripts/wave-check.ts` checks that it holds the steady state, conserves water, settles on the new steady state
+  after a change and moves a disturbance at about u + c. Tanks still fill from the steady channel flow, not the live one.
   `scripts/channel-check.ts` checks it against hand calculations.
 - **Jet pump (ejector)**: three ports, and both of its internal links depend on heads elsewhere in the network — the
   nozzle sees motive − suction, the entrainment curve scales with motive − discharge — which no single EPANET element
   can express. The engine wraps EPANET in a relaxed fixed-point: solve, read those heads, rebuild the nozzle's K and
   the entrainment pump curve from Cunningham's N(M, R) model, solve again (settles in a handful of passes, ~10 ms).
   Inspector shows M, N, R, efficiency M·N and the characteristic with the operating point. In the water-hammer
-  engine it is a plain junction.
+  engine tees, three-way valves and jet pumps keep their anatomy — a hub whose ports each reach it through their own
+  loss, solved for the hub head that balances them every time step; the jet pump's nozzle loss and entrainment head are
+  frozen at their steady values.
 - **Thermal layer** (`src/engine/thermal.ts`): once flows are known, water temperature is carried round the loop —
   mixed at junctions, reset by a boiler, given up by emitters (NTU model against a constant room temperature).
   Shows as a "Thermal" pipe-colour overlay with temperatures and heat duty per part. It switches on for a boiler, a
@@ -142,7 +160,9 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   the pipe and its trend; a **thermometer** (`pv` output in °C) gives switches and PIDs a temperature to act on; the
   overview shows where the heat is going right now (in, to the rooms, lost, soaking into water and metal). Run long
   enough it lands exactly on the steady layer (`scripts/heat-check.ts` checks that, the plug-flow delay of a dead
-  leg including its copper, and a cylinder warming at P/ρcV). Limits: tanks are fully mixed (no stratification),
+  leg including its copper, and a cylinder warming at P/ρcV). A tank can be **stratified**: ten stacked layers, its top port drawing from the
+  top and the others from the bottom, plug flow between them, a heater at a set height, and convective turnover
+  wherever warm would sit under cold — so a cylinder delivers nearly its whole volume hot. Limits:
   first-order upwind smears sharp fronts, rooms are at fixed temperature, water properties do not change with
   temperature, and liquids only.
 - **Sources**: a reservoir is an open surface, a **mains connection** quoted in pressure, or a **well** whose pumping
@@ -153,10 +173,10 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **51 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **54 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
   valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
-  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap → waiting for hot water, warming up a heating loop, lagging a hot-water main → pumping into a canal, a canal out of a lake). `scripts/control-sim.ts` runs the loops closed
+  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap → waiting for hot water, warming up a heating loop, lagging a hot-water main → pumping into a canal, a canal out of a lake → a flood wave down a river, a cylinder that stratifies, bringing the condensate home). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli
@@ -179,7 +199,7 @@ fly deploy                             # build remotely and ship
 
 ```
 src/model/     types + defaults, units, physics, openchannel, steam (pure, SI)
-src/engine/    inp.ts (compile) · epanet.ts (steady engine) · gas.ts (gas engine) · steam.ts (steam layer) · channel.ts (open-channel engine)
+src/engine/    inp.ts (compile) · epanet.ts (steady engine) · gas.ts (gas engine) · steam.ts (steam layer) · channel.ts + wave.ts (open channels, steady and unsteady)
                transient.ts (water-hammer engine) · thermal.ts (steady heat layer) · heat.ts (transient heat)
                worker.ts + client.ts (threading)
                analysis.ts (curves, grade line)

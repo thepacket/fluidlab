@@ -85,3 +85,30 @@ tryOut('surge-vessel', 'slam, 2 L vessel (as delivered)', {}, { id: 'v', duratio
 tryOut('surge-vessel', 'slam, 50 L vessel', { sv: { volume: 0.05 } }, { id: 'v', duration: 0.1, to: 0, runFor: 10 })
 tryOut('surge-vessel', 'slam, 200 L vessel', { sv: { volume: 0.2 } }, { id: 'v', duration: 0.1, to: 0, runFor: 10 })
 for (const i of [0.5, 2, 5, 10]) tryOut('pump-trip', `trip, speed halves in ${i} s`, {}, { id: 'p', duration: 0, to: 0, inertia: i, runFor: 25 })
+
+// a tee with losses: the wave engine must start in equilibrium with it (no drift), and still see the hammer through it
+{
+  const m: Model = {
+    fluid: FLUIDS[0],
+    nodes: [
+      node('R', 'reservoir', { head: 40 }),
+      node('T', 'tee', { diameter: 0.04 }),
+      node('A', 'outlet', { mode: 'demand', demand: 0.001 }),
+      node('V', 'valve', { diameter: 0.04 }),
+      node('B', 'outlet', { nozzleDiameter: 0.02 }),
+    ],
+    edges: [
+      pipe('p0', 'R', 'T', 'r', 'l', { length: 200, material: 'steel' }),
+      pipe('p1', 'T', 'A', 'r', 'l', { length: 30 }),
+      pipe('p2', 'T', 'V', 'b', 'in', { length: 100, material: 'steel' }),
+      pipe('p3', 'V', 'B', 'out', 'l', { length: 1 }),
+    ],
+  }
+  const st = engine.solve(m)
+  const idle = runTransient(m, st, { id: 'V', start: 0.5, duration: 1, to: 1, runFor: 4 })
+  const slam = runTransient(m, st, { id: 'V', start: 0.5, duration: 0.05, to: 0, runFor: 4 })
+  const riseOf = (r: typeof idle) => r.peak.pressure - r.series[r.peak.key][0]
+  const ok = idle.ok && slam.ok && riseOf(idle) < 2000 && riseOf(slam) > 0.5 * slam.joukowsky
+  console.log(`tee        ${ok}  idle drift ${(riseOf(idle) / 1000).toFixed(2)} kPa · slam rise ${(riseOf(slam) / 1000).toFixed(0)} kPa (Joukowsky ${(slam.joukowsky / 1000).toFixed(0)})`)
+  if (!ok) process.exit(1)
+}

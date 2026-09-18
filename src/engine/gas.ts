@@ -94,8 +94,8 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
     return n
   }
   const links: GLink[] = []
+  let ejector = false
   const onBore = (K: number, d: number) => K / area(d) ** 2
-  let simplified = false
 
   for (const nd of model.nodes) {
     const kind = nd.data.kind
@@ -137,6 +137,34 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
       continue
     }
     const n = add(nd.id)
+    if (kind === 'tee' || kind === 'threeway' || kind === 'jetpump') {
+      // the hub is the common port; every other port reaches it through its own loss, as in the liquid engine
+      const handles = new Set<string>()
+      for (const e of model.edges) {
+        if (e.type === 'signal') continue
+        if (e.source === nd.id && e.sourceHandle) handles.add(e.sourceHandle)
+        if (e.target === nd.id && e.targetHandle) handles.add(e.targetHandle)
+      }
+      for (const h of handles) {
+        if ((kind === 'threeway' && h === 'ab') || (kind === 'jetpump' && h === 'd')) continue
+        add(`${nd.id}:${h}`)
+        const link: GLink = { id: `${nd.id}:${h}`, a: index.get(`${nd.id}:${h}`)!, b: index.get(nd.id)!, kind: 'loss', res: 0, noReverse: false, props: p, speed: 0, mdot: 0 }
+        if (kind === 'tee') link.res = onBore(h === 'l' || h === 'r' ? p.kRun / 2 : p.kBranch, p.diameter)
+        else if (kind === 'threeway') {
+          const x = Math.min(1, Math.max(0, p.position * command(model, nd.id)))
+          const K = valveK(h === 'a' ? x : 1 - x, p.kOpen, p.trim)
+          if (isFinite(K)) link.res = onBore(K, p.diameter)
+          else link.kind = 'closed'
+        } else {
+          // a gas ejector's entrainment is a compressible-flow problem of its own: here it only costs pressure
+          link.res = h === 'm' ? onBore(1 + p.kn, p.nozzleDiameter) : (1 + p.ks) / Math.max(1e-9, area(p.throatDiameter) - area(p.nozzleDiameter)) ** 2
+          if (h === 's') link.noReverse = true
+          ejector = true
+        }
+        links.push(link)
+      }
+      continue
+    }
     if (kind === 'reservoir') {
       n.fixed = true
       n.p = P_ATM + Math.max(0, p.pressure ?? 400e3)
@@ -144,7 +172,8 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
       n.fixed = true
       n.p = model.levels?.[`${nd.id}:gas`] ?? P_ATM + p.initPressure
     } else if (kind === 'tank') {
-      warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: an open tank cannot hold gas — use a pressure vessel as a receiver` })
+      // in a steam system an open tank is the condensate receiver: the steam layer looks after it
+      if (!fluid.steam) warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: an open tank cannot hold gas — use a pressure vessel as a receiver` })
     } else if (kind === 'junction') n.demand = (p.demand ?? 0) * rs
     else if (kind === 'outlet') {
       if (commandedOff(model, nd.id) || (dischargeDevice(p.variant)?.glyph === 'sprinkler' && !p.fused)) n.cdA = 0
@@ -155,13 +184,12 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
     else if (kind === 'trap') n.cdA = p.state === 'open' ? 0.7 * area(p.orifice) : 0
     else if (kind === 'leak') n.cdA = p.active === false ? 0 : p.cd * area(p.holeDiameter)
     else if (kind === 'relief') n.relief = { set: P_ATM + p.setPressure, cdA: 0.7 * area(p.diameter) }
-    else if (kind === 'tee' || kind === 'threeway' || kind === 'jetpump') simplified = true
   }
-  if (simplified) warnings.push({ level: 'info', text: 'Tees, three-way valves and jet pumps are treated as plain junctions by the gas solver' })
 
-  const port = (id: string, handle?: string | null) => (index.has(id) ? index.get(id) : index.get(`${id}:${handle === 'out' ? 'out' : 'in'}`))
+  if (ejector) warnings.push({ level: 'info', text: 'Jet pumps only cost pressure in a gas network — entrainment by a gas jet is not modelled' })
+  const port = (id: string, handle?: string | null) => index.get(`${id}:${handle}`) ?? (index.has(id) ? index.get(id) : index.get(`${id}:${handle === 'out' ? 'out' : 'in'}`))
   for (const e of model.edges) {
-    if (e.type === 'signal' || !e.data) continue
+    if (e.type === 'signal' || !e.data || e.data.props.conduit === 'condensate') continue
     const a = port(e.source, e.sourceHandle)
     const b = port(e.target, e.targetHandle)
     if (a === undefined || b === undefined || a === b) continue
@@ -201,10 +229,13 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
   for (const nd of model.nodes) {
     if (isControl(nd.data.kind)) continue
     const i = index.get(nd.id) ?? index.get(`${nd.id}:in`)!
+    // receivers and return headers belong to the condensate side, which the steam layer solves
+    const mine = model.edges.filter((e) => e.type !== 'signal' && (e.source === nd.id || e.target === nd.id))
+    if (fluid.steam && (nd.data.kind === 'tank' || (mine.length > 0 && mine.every((e) => e.data?.props.conduit === 'condensate')))) continue
     if (!reached.has(i) || adj[i].length === 0) excluded.push(nd.id)
   }
   const live = links.filter((l) => reached.has(l.a) && reached.has(l.b))
-  for (const e of model.edges) if (e.type !== 'signal' && !live.some((l) => l.id === e.id)) excluded.push(e.id)
+  for (const e of model.edges) if (e.type !== 'signal' && e.data?.props.conduit !== 'condensate' && !live.some((l) => l.id === e.id)) excluded.push(e.id)
   if (!live.length || !nodes.some((n) => n.fixed)) {
     return { ...EMPTY_RESULTS, gas: true, excluded, warnings, error: model.nodes.length ? 'Connect a pressure source (reservoir) or a receiver to something with a pipe' : undefined }
   }
@@ -402,7 +433,8 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
           text: `${model.edges.find((e) => e.id === l.id)?.data?.label ?? 'Pipe'}: ${v.toFixed(0)} m/s — ${fluid.steam ? 'steam mains are sized for 25–35 m/s; this fast it erodes fittings and roars' : 'above the usual 20 m/s limit for gas lines'}`,
         })
     } else {
-      const nd = byId.get(l.id)!
+      const nd = byId.get(l.id)
+      if (!nd) continue // an internal port of a tee, three-way valve or jet pump
       const dev: Results['devices'][string] = {
         flow: q,
         headIn: asHead(pa - P_ATM),

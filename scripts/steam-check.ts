@@ -97,6 +97,32 @@ check('throttling 10 → 3 bar abs leaves superheat', throttledTemp(10e5, 3e5) -
   if (!(r.steam!.throttled.V > tSat(r.devices.V.pOut + P_ATM) + 10)) (failed++, console.log('✗ expected superheat after the PRV'))
 }
 
+// 5. condensate return: the line carries what the load condenses, flashing as it drops to the receiver's pressure
+{
+  const D = 0.0266
+  const m: Model = {
+    fluid: steam,
+    nodes: [node('B', 'reservoir', { pressure: 700e3 }), node('HX', 'steamload', { duty: 300e3, processTemp: 120 }), node('RX', 'tank', {})],
+    edges: [pipe('main', 'B', 'HX', { length: 30, diameter: 0.05, insulation: 0.05 }), pipe('ret', 'HX', 'RX', { length: 40, diameter: D, conduit: 'condensate' })],
+  }
+  const r = engine.solve(m)
+  const st = r.steam!
+  const kg = st.loads.HX.steam + st.loads.HX.carryover
+  check('return line carries the load’s condensate', st.returns.links.ret.flow, kg, 1e-6)
+  const pHx = r.nodes.HX.pressure + P_ATM
+  const x = flashFraction(pHx, P_ATM)
+  check('flash fraction in the line', st.returns.links.ret.flash, x, 1e-3)
+  const rho = 1 / (x / rhoSteam(P_ATM) + (1 - x) / 950)
+  check('two-phase velocity = ṁ / (ρ_mix · A)', st.returns.links.ret.velocity, kg / (rho * area(D)), 1e-3)
+  check('receiver keeps the liquid, vents the flash', st.returns.receivers.RX.condensate + st.returns.receivers.RX.flashVent, kg, 1e-6)
+  check('back-pressure at the load = line loss', st.returns.backPressure.HX, st.returns.links.ret.dp, 1e-6)
+  const open = engine.solve({ ...m, edges: [m.edges[0]] })
+  check('returned condensate cuts the boiler’s heat input', st.boilers.B.heat < open.steam!.boilers.B.heat ? 1 : 0, 1)
+  console.log(
+    `  return: ${(kg * 3600).toFixed(0)} kg/h, ${(x * 100).toFixed(1)} % flash, ${st.returns.links.ret.velocity.toFixed(0)} m/s, back-pressure ${(st.returns.backPressure.HX / 1000).toFixed(0)} kPa, feed ${st.boilers.B.feedTemp?.toFixed(0)} °C`,
+  )
+}
+
 if (failed) {
   console.error(`${failed} steam check(s) failed`)
   process.exit(1)

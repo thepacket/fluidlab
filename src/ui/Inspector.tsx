@@ -63,9 +63,12 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
   ],
   tank: [
     { key: 'shape', label: 'Shape', q: 'none', type: 'select', options: TANK_SHAPES },
+    { key: 'backPressure', label: 'Receiver pressure (0 = vented)', q: 'pressure', show: (_p, _g, steam) => steam },
     { key: 'overflow', label: 'Overflow at the rim', q: 'none', type: 'toggle' },
     { key: 'channelInvert', label: 'Channel sill level (elevation)', q: 'length', hint: 'Bed of the open channel where it meets the tank', show: (_p, _g, _s, _t, wet) => wet },
     { key: 'initTemp', label: 'Water temperature at the start (°C)', q: 'none' },
+    { key: 'stratified', label: 'Stratified (hot floats on cold)', q: 'none', type: 'toggle', hint: 'Live heat only. The top port draws from the top layer, the others from the bottom' },
+    { key: 'heaterHeight', label: 'Heater height (fraction of depth)', q: 'none', show: (p) => p.stratified && p.heaterPower > 0 },
     { key: 'heaterPower', label: 'Immersion heater', q: 'power', hint: 'Zero = no heater. Switch “live heat” on in the top bar to watch it work' },
     { key: 'heaterSetpoint', label: 'Heater thermostat (°C)', q: 'none', show: (p) => p.heaterPower > 0 },
     { key: 'heatLoss', label: 'Standing loss (W per K)', q: 'none', show: (p) => p.heaterPower > 0 || (p.initTemp ?? 15) !== 15 },
@@ -382,12 +385,23 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
       ],
       show: (_p, gas) => !gas,
     },
+    {
+      key: 'conduit',
+      label: 'Carries',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 'pipe', name: 'Steam' },
+        { id: 'condensate', name: 'Condensate, returning' },
+      ],
+      show: (_p, _g, steam) => steam,
+    },
     { key: 'length', label: 'Length', q: 'length' },
     { key: 'diameter', label: 'Inside diameter', q: 'diameter', show: (p) => p.conduit !== 'channel' || p.shape === 'circ' },
     { key: 'material', label: 'Material', q: 'none', type: 'select', options: MATERIALS, show: (p) => p.conduit !== 'channel' },
     { key: 'roughness', label: 'Absolute roughness', q: 'roughness', show: (p) => p.conduit !== 'channel' },
     { key: 'minorK', label: 'Minor-loss K (fittings)', q: 'none', show: (p) => p.conduit !== 'channel' },
-    { key: 'insulation', label: 'Insulation', q: 'none', type: 'select', options: INSULATION, show: (_p, _g, steam) => steam },
+    { key: 'insulation', label: 'Insulation', q: 'none', type: 'select', options: INSULATION, show: (p, _g, steam) => steam && p.conduit !== 'condensate' },
     { key: 'insulation', label: 'Heat loss to the room', q: 'none', type: 'select', options: WATER_INSULATION, show: (p, _g, steam, thermal) => thermal && !steam && p.conduit !== 'channel' },
     { key: 'shape', label: 'Cross-section', q: 'none', type: 'select', options: oc.CHANNEL_SHAPES, show: (p) => p.conduit === 'channel' },
     { key: 'width', label: 'Bed width', q: 'length', show: (p) => p.conduit === 'channel' && (p.shape === 'rect' || p.shape === 'trap') },
@@ -1166,6 +1180,9 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
         <Row label="Condensate to drain" value={kgh(x.steam + x.carryover)} />
         <Row label="… of which arrived from the pipework" value={kgh(x.carryover)} tone={x.carryover > 0.03 * x.steam ? 'warn' : undefined} />
         <Row label="Flash steam at the return" value={`${(x.flash * 100).toFixed(1)} %  ·  ${kgh(x.flash * x.steam)}`} />
+        {st.returns.backPressure[id] !== undefined && (
+          <Row label="Back-pressure from the return line" value={fmtU(st.returns.backPressure[id], 'pressure', u)} tone={st.returns.backPressure[id] > 0.5 * n.pressure ? 'warn' : undefined} />
+        )}
       </>
     )
   }
@@ -1195,6 +1212,9 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
         />
         <Row label="Loading" value={x.capacity > 0 ? `${((x.load / x.capacity) * 100).toFixed(0)} % of capacity` : '—'} />
         <Row label="Flash steam at the outlet" value={`${(x.flash * 100).toFixed(1)} %`} />
+        {st.returns.backPressure[id] !== undefined && (
+          <Row label="Back-pressure from the return line" value={fmtU(st.returns.backPressure[id], 'pressure', u)} tone={st.returns.backPressure[id] > 0.5 * n.pressure ? 'warn' : undefined} />
+        )}
         {x.steamLoss > 0 && (
           <>
             <Row label="Live steam lost" value={kgh(x.steamLoss)} tone="bad" />
@@ -1202,6 +1222,58 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
             <Row label="Cost over a plant year (8000 h)" value={Math.round(x.costPerYear).toLocaleString('en-US')} tone="bad" />
           </>
         )}
+      </>
+    )
+  }
+  if (st && l && st.returns.links[id]) {
+    const x = st.returns.links[id]
+    return (
+      <>
+        <div className="hero">
+          <div>
+            <b>{fmt(x.flow, 'flow', u)}</b>
+            <span>condensate {unitLabel('flow', u)}</span>
+          </div>
+          <div>
+            <b>{fmt(x.velocity, 'velocity', u)}</b>
+            <span>{unitLabel('velocity', u)}</span>
+          </div>
+          <div>
+            <b>{(x.flash * 100).toFixed(1)}</b>
+            <span>% flash</span>
+          </div>
+        </div>
+        <Row label="Flash steam in the line" value={kgh(x.flash * x.flow)} />
+        <Row label="Pressure drop (friction and lift)" value={fmtU(x.dp, 'pressure', u)} />
+        <Row label="Pressure, upstream → downstream" value={`${fmt(Math.max(l.pStart, l.pEnd), 'pressure', u)} → ${fmtU(Math.min(l.pStart, l.pEnd), 'pressure', u)}`} />
+        <Row
+          label="Sizing"
+          value={x.velocity > 25 ? 'too small for its flash steam' : x.velocity > 15 ? 'working hard' : 'comfortable'}
+          tone={x.velocity > 25 ? 'bad' : x.velocity > 15 ? 'warn' : 'good'}
+        />
+      </>
+    )
+  }
+  if (st && kind === 'tank' && st.returns.receivers[id]) {
+    const x = st.returns.receivers[id]
+    return (
+      <>
+        <div className="hero">
+          <div>
+            <b>{fmt(x.condensate, 'flow', u)}</b>
+            <span>returned {unitLabel('flow', u)}</span>
+          </div>
+          <div>
+            <b>{x.temp.toFixed(0)}</b>
+            <span>°C</span>
+          </div>
+          <div>
+            <b>{fmt(x.heat, 'power', u)}</b>
+            <span>recovered {unitLabel('power', u)}</span>
+          </div>
+        </div>
+        <Row label="Flash steam vented" value={kgh(x.flashVent)} tone={x.flashVent > 0.1 * x.condensate ? 'warn' : undefined} />
+        <Row label="Share of the boiler’s output coming home" value={st.totals.generated > 0 ? `${((st.totals.returned / st.totals.generated) * 100).toFixed(0)} %` : '—'} />
       </>
     )
   }
@@ -1225,6 +1297,7 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
         </div>
         <Row label="Heat into the steam" value={fmtU(x.heat, 'power', u)} />
         <Row label="Fuel input" value={fmtU(x.fuel, 'power', u)} />
+        {x.feedTemp !== undefined && <Row label="Feedwater, warmed by returned condensate" value={`${x.feedTemp.toFixed(0)} °C`} tone="good" />}
         <Row label="Delivered to the loads" value={st.totals.heat > 0 ? `${((st.totals.useful / st.totals.heat) * 100).toFixed(1)} % of the heat` : '—'} />
         <Row label="Lost from the pipework" value={fmtU(st.totals.mainsLoss, 'power', u)} tone={st.totals.mainsLoss > 0.08 * st.totals.heat ? 'warn' : undefined} />
         {st.totals.trapLoss > 0 && <Row label="Blown through failed traps" value={fmtU(st.totals.trapLoss, 'power', u)} tone="bad" />}
@@ -1546,7 +1619,11 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
 
 /** Switching a conduit between pipe and open channel brings in the other kind's defaults, keeping its length. */
 const reconduit = (props: Props, patch: Props): Props =>
-  !('conduit' in patch) ? patch : patch.conduit === 'channel' ? { ...oc.defaultChannelProps(), length: props.length } : { ...defaultPipeProps(), conduit: 'pipe', length: props.length }
+  !('conduit' in patch) || patch.conduit === 'condensate' || props.conduit === 'condensate'
+    ? patch
+    : patch.conduit === 'channel'
+      ? { ...oc.defaultChannelProps(), length: props.length }
+      : { ...defaultPipeProps(), conduit: 'pipe', length: props.length }
 /** Picking another weir type brings in that type's usual dimensions. */
 const reshape = (kind: Kind | 'pipe', patch: Props): Props => (kind === 'weir' && 'variant' in patch ? { ...oc.weirType(patch.variant).defaults, ...patch } : patch)
 
@@ -1614,7 +1691,7 @@ export function Inspector() {
                 ? [['main', 'Pump curve']]
                 : channelPart
                   ? [['profile', 'Water surface'], ...(kind === 'weir' ? [['main', 'Rating']] : [])]
-                  : kind === 'pipe'
+                  : kind === 'pipe' && props.conduit !== 'condensate'
                     ? [['main', 'ΔP (Q)']]
                     : kind === 'jetpump'
                       ? [['main', 'Characteristic']]

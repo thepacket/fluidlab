@@ -200,7 +200,22 @@ export function defaultProps(kind: Kind): Props {
         ratedYield: 60 / 60000,
       }
     case 'tank':
-      return { initTemp: 15, heaterPower: 0, heaterSetpoint: 60, heatLoss: 0, overflow: false, elevation: 0, shape: 'cylinder', diameter: 1.2, length: 2, initLevel: 0.5, minLevel: 0, maxLevel: 2.5 }
+      return {
+        stratified: false,
+        heaterHeight: 0.2,
+        initTemp: 15,
+        heaterPower: 0,
+        heaterSetpoint: 60,
+        heatLoss: 0,
+        overflow: false,
+        elevation: 0,
+        shape: 'cylinder',
+        diameter: 1.2,
+        length: 2,
+        initLevel: 0.5,
+        minLevel: 0,
+        maxLevel: 2.5,
+      }
     case 'junction':
       return { elevation: 0, demand: 0, pattern: 'constant' }
     case 'gauge':

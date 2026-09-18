@@ -8,6 +8,7 @@ import { EMPTY_CONTROL, PV_CONSUMERS, PV_SOURCES, SIGNAL_CONSUMERS, sameControl,
 import { catalogueSpec } from './model/catalog'
 import { receiverRate } from './engine/gas'
 import { heatView, stepHeat, type HeatState } from './engine/heat'
+import { stepWave, waveView, type WaveState } from './engine/wave'
 import { P_ATM, VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from './model/physics'
 import { defaultChannelProps, isChannel, isChannelKind } from './model/openchannel'
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
@@ -37,6 +38,11 @@ interface State {
   /** water temperatures: 'steady' shows where they settle, 'live' marches them through lab time (engine/heat.ts) */
   heatMode: 'steady' | 'live'
   heat: HeatState | null
+  /** open channels: 'steady' shows the settled water surface, 'live' marches it through lab time (engine/wave.ts) */
+  flowMode: 'steady' | 'live'
+  wave: WaveState | null
+  /** what the solver last returned, before any live layer was painted over it */
+  solved: Results | null
   engineReady: boolean
   levels: Record<string, number>
   /** running totals since the last reset: metered volume (m³) per meter, electrical energy (J) per pump */
@@ -97,6 +103,9 @@ let lastTag: string | undefined
 let lastTagAt = 0
 const snapshot = (s: Snapshot): Snapshot => ({ nodes: s.nodes, edges: s.edges, fluidId: s.fluidId, experimentId: s.experimentId, projectName: s.projectName })
 let uid = Date.now() % 100000
+
+/** What each outlet that empties into a channel is delivering, as the pipe engine last found it. */
+const outletFeeds = (nodes: LabNode[], r: Results) => Object.fromEntries(nodes.filter((n) => n.data.kind === 'outlet').map((n) => [n.id, r.nodes[n.id]?.outflow ?? 0]))
 
 /** Does this component make lab time matter (so the accelerated clock applies)? */
 export const usesClock = (n: LabNode) => n.data.kind === 'tank' || n.data.kind === 'vessel' || isControl(n.data.kind) || (!!n.data.props.pattern && n.data.props.pattern !== 'constant')
@@ -170,6 +179,9 @@ export const useLab = create<State>((set, get) => ({
   results: EMPTY_RESULTS,
   heatMode: 'steady',
   heat: null,
+  flowMode: 'steady',
+  wave: null,
+  solved: null,
   engineReady: false,
   levels: {},
   totals: {},
@@ -224,14 +236,25 @@ export const useLab = create<State>((set, get) => ({
     }
     const spill = ends.some((x, i) => x.data.kind === 'outlet' && (i === 0 ? c.sourceHandle : c.targetHandle) === 'o')
     const open = spill || ends.some((x) => isChannelKind(x.data.kind)) || ends.some((x) => ['junction', 'gauge'].includes(x.data.kind) && wet(x.id))
-    const word = open ? 'Reach' : 'Pipe'
+    // in a steam system, anything piped to an open tank is condensate on its way home
+    const steam = !!FLUIDS.find((f) => f.id === get().fluidId)?.steam
+    const back =
+      steam &&
+      (ends.some((x) => x.data.kind === 'tank') ||
+        ends.some((x) => x.data.kind === 'junction' && edges.some((e) => (e.source === x.id || e.target === x.id) && e.data?.props.conduit === 'condensate')))
+    const word = open ? 'Reach' : back ? 'Return' : 'Pipe'
     const n = edges.length + 1
     let label = `${word} ${n}`
     const used = new Set(edges.map((e) => e.data?.label))
     for (let i = n; used.has(label); i++) label = `${word} ${i + 1}`
     set({
       edges: addEdge(
-        { ...c, id: `e${++uid}`, type: 'pipe', data: { label, props: open ? defaultChannelProps() : defaultPipeProps() } },
+        {
+          ...c,
+          id: `e${++uid}`,
+          type: 'pipe',
+          data: { label, props: open ? defaultChannelProps() : back ? { ...defaultPipeProps(), conduit: 'condensate', diameter: 0.0266, material: 'steel', roughness: 0.045e-3 } : defaultPipeProps() },
+        },
         edges.map((e) => ({ ...e, selected: false })),
       ) as LabEdge[],
     })
@@ -330,6 +353,8 @@ export const useLab = create<State>((set, get) => ({
       history: [],
       timeScale: ex.timeScale ?? 60,
       heatMode: ex.heatMode ?? 'steady',
+      flowMode: ex.flowMode ?? 'steady',
+      wave: null,
       ...(ex.heatMode === 'live' ? { overlay: 'thermal' as const } : {}),
       heat: null,
       running: true,
@@ -374,7 +399,7 @@ export const useLab = create<State>((set, get) => ({
       1,
     )
   },
-  resetSim: () => set({ levels: {}, simTime: 0, history: [], totals: {}, ctrl: EMPTY_CONTROL, heat: null }),
+  resetSim: () => set({ levels: {}, simTime: 0, history: [], totals: {}, ctrl: EMPTY_CONTROL, heat: null, wave: null }),
 
   /** Quasi-steady time stepping: solve → integrate tank volumes → solve again. */
   tick: (dtReal) => {
@@ -403,7 +428,7 @@ export const useLab = create<State>((set, get) => ({
     }
     if (!s.running || !s.results.ok) return
     // tanks and timers live on the accelerated lab clock; a purely steady rig just counts real seconds
-    const clocked = s.nodes.some(usesClock) || (s.heatMode === 'live' && !!s.results.thermal)
+    const clocked = s.nodes.some(usesClock) || (s.heatMode === 'live' && !!s.results.thermal) || (s.flowMode === 'live' && !!s.results.channel)
     const dt = dtReal * (clocked ? s.timeScale : 1)
     const levels = { ...s.levels }
     const fluid = FLUIDS.find((f) => f.id === s.fluidId) ?? FLUIDS[0]
@@ -450,7 +475,11 @@ export const useLab = create<State>((set, get) => ({
     const ctrl = stepControl({ nodes: s.nodes, edges: s.edges, t: s.simTime + dt, dt, results: s.results, levels, prev: s.ctrl })
     // live heat: carry the water temperatures forward on the flows as last solved
     const heat = s.heatMode === 'live' ? stepHeat(model(s), s.results, s.heat, dt) : null
-    const results = heat ? { ...s.results, thermal: heatView(model(s), s.results, heat) } : s.results
+    // live flow: the same for the water surface in the open channels, always stepped from the solver's own answer
+    const base = s.solved ?? s.results
+    const wave = s.flowMode === 'live' && base.channel ? stepWave(model(s), base, s.wave, dt, outletFeeds(s.nodes, base)) : null
+    let results = heat ? { ...s.results, thermal: heatView(model(s), s.results, heat) } : s.results
+    if (wave) results = { ...results, ...waveView(model(s), base, wave) }
     const totals = { ...s.totals }
     for (const n of s.nodes) {
       const d = s.results.devices[n.id]
@@ -460,8 +489,8 @@ export const useLab = create<State>((set, get) => ({
     }
     const v: Record<string, number> = {}
     for (const n of s.nodes) {
-      const nr = s.results.nodes[n.id]
-      const dr = s.results.devices[n.id]
+      const nr = results.nodes[n.id]
+      const dr = results.devices[n.id]
       if (n.data.kind === 'tank') v[n.id] = levels[n.id] ?? n.data.props.initLevel
       else if (ctrl.out[n.id] !== undefined) {
         v[n.id] = ctrl.out[n.id]
@@ -472,7 +501,7 @@ export const useLab = create<State>((set, get) => ({
       else if (nr) v[n.id] = nr.pressure
       else if (dr) v[n.id] = n.data.kind === 'dpgauge' ? dr.pIn - dr.pOut : n.data.kind === 'element' ? (dr.tapDp ?? 0) : dr.flow
     }
-    for (const e of s.edges) if (s.results.links[e.id]) v[e.id] = s.results.links[e.id].flow
+    for (const e of s.edges) if (results.links[e.id]) v[e.id] = results.links[e.id].flow
     if (results.thermal) {
       for (const [id, t] of Object.entries(results.thermal.nodes)) v[`${id}:T`] = t
       for (const [id, d] of Object.entries(results.thermal.devices)) v[`${id}:T`] = d.tOut
@@ -480,7 +509,7 @@ export const useLab = create<State>((set, get) => ({
     }
     const simTime = s.simTime + dt
     const history = [...s.history.slice(-599), { t: simTime, v }]
-    const live = heat ? { heat, results } : {}
+    const live = heat || wave ? { heat, wave, results } : {}
     set(moved ? { ...live, levels, simTime, history, totals, ctrl, controls: ctrl.commands } : { ...live, simTime, history, totals, ctrl, controls: ctrl.commands })
   },
 
@@ -511,8 +540,10 @@ export const useLab = create<State>((set, get) => ({
     solver.solve(model(s)).then((results) => {
       if (!results) return
       // in live mode the temperatures on show are the marched ones, not the steady answer that came back with the flows
-      const { heat, heatMode } = get()
-      set({ results: heatMode === 'live' && heat && results.thermal ? { ...results, thermal: heatView(model(get()), results, heat) } : results })
+      const { heat, heatMode, wave, flowMode } = get()
+      let shown = heatMode === 'live' && heat && results.thermal ? { ...results, thermal: heatView(model(get()), results, heat) } : results
+      if (flowMode === 'live' && wave && results.channel) shown = { ...shown, ...waveView(model(get()), results, wave) }
+      set({ results: shown, solved: results })
     })
   },
 }))

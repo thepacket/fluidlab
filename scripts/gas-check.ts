@@ -106,3 +106,23 @@ const pipe = (id: string, s: string, t: string, sh: string, th: string, props = 
     'ms',
   )
 }
+
+// 4. a tee's branch loss: across the branch port, p_hub² − p_port² = K·ṁ²·ZRT / A²
+{
+  const m: Model = {
+    fluid: air,
+    nodes: [
+      node('S', 'reservoir', { pressure: 600e3 }),
+      node('T', 'tee', { diameter: 0.04, kRun: 0.4, kBranch: 1 }),
+      node('A', 'outlet', { mode: 'demand', demand: 40 / 3600 }),
+      node('B', 'outlet', { mode: 'demand', demand: 60 / 3600 }),
+    ],
+    edges: [pipe('p0', 'S', 'T', 'r', 'l', { length: 20 }), pipe('p1', 'T', 'A', 'r', 'l', { length: 20 }), pipe('p2', 'T', 'B', 'b', 'l', { length: 20 })],
+  }
+  const r = engine.solve(m)
+  const got = (r.nodes.T.pressure + 101325) ** 2 - (r.links.p2.pStart + 101325) ** 2
+  const want = (((60 / 3600) * rhoStd(air)) ** 2 * zrt(air)) / area(0.04) ** 2
+  const ok = r.ok && Math.abs(got - want) / want < 0.02
+  console.log(`tee        ${ok}  branch loss ${got.toExponential(3)} Pa² · formula ${want.toExponential(3)}`)
+  if (!ok) process.exit(1)
+}

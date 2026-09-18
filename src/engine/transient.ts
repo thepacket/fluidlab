@@ -107,6 +107,17 @@ interface Device {
   Q: number
 }
 
+/** A loss coefficient K on a bore, as head per (m³/s)². */
+const kvOnBore = (K: number, d: number) => K / (2 * G * area(d) ** 2)
+
+/** A tee, three-way valve or jet pump: a hub node whose ports each reach it through their own loss. */
+interface Hub {
+  id: string
+  node: number
+  /** gain: head a jet pump's entrainment adds on its suction port, frozen at its steady value */
+  ports: { node: number; kv: number; gain: number; closed: boolean; noReverse: boolean; Q: number }[]
+}
+
 const waveSpeedOf = (material: string) => MATERIALS.find((m) => m.id === material)?.waveSpeed ?? 1000
 
 /** Emitter coefficient in m³/s per √m of pressure head — the same law the steady compile hands to EPANET. */
@@ -197,6 +208,7 @@ export function runTransient(full: Model, results: Results, event: TransientEven
     return n
   }
   const devices: Device[] = []
+  const hubs: Hub[] = []
   for (const nd of model.nodes) {
     if (excluded.has(nd.id) || isControl(nd.data.kind)) continue
     const p = nd.data.props
@@ -219,6 +231,36 @@ export function runTransient(full: Model, results: Results, event: TransientEven
     }
     const r = results.nodes[nd.id]
     if (!r) continue
+    if (kind === 'tee' || kind === 'threeway' || kind === 'jetpump') {
+      // same anatomy the steady compile gives them: every port but the common one joins the hub through a loss
+      addNode(nd.id, p.elevation, r.head)
+      const hub: Hub = { id: nd.id, node: index.get(nd.id)!, ports: [] }
+      const into = new Map<string, number>() // steady flow arriving at the hub through each port
+      for (const e of model.edges) {
+        const l = results.links[e.id]
+        if (e.type === 'signal' || !l) continue
+        if (e.source === nd.id && e.sourceHandle) into.set(e.sourceHandle, (into.get(e.sourceHandle) ?? 0) - l.flow)
+        if (e.target === nd.id && e.targetHandle) into.set(e.targetHandle, (into.get(e.targetHandle) ?? 0) + l.flow)
+      }
+      for (const [h, q] of into) {
+        if ((kind === 'threeway' && h === 'ab') || (kind === 'jetpump' && h === 'd')) continue
+        let kv = 0
+        let gain = 0
+        let closed = false
+        if (kind === 'tee') kv = kvOnBore(h === 'l' || h === 'r' ? p.kRun / 2 : p.kBranch, p.diameter)
+        else if (kind === 'threeway') {
+          const x = Math.min(1, Math.max(0, p.position * command(model, nd.id)))
+          const K = valveK(h === 'a' ? x : 1 - x, p.kOpen, p.trim)
+          closed = !isFinite(K)
+          kv = closed ? 0 : kvOnBore(K, p.diameter)
+        } else if (h === 'm') kv = (r.extra?.q1 ?? 0) > 1e-9 ? Math.max(0, (r.extra!.pMotive / rhoG + p.elevation - r.head) / r.extra!.q1 ** 2) : kvOnBore(1 + p.kn, p.nozzleDiameter)
+        else gain = Math.max(0, r.head - (r.extra?.pSuction ?? 0) / rhoG - p.elevation) // the jet keeps pulling as hard as it was
+        const port = addNode(`${nd.id}:${h}`, p.elevation, r.head + kv * q * Math.abs(q) - gain)
+        hub.ports.push({ node: index.get(port.key)!, kv, gain, closed, noReverse: kind === 'jetpump' && h === 's', Q: closed ? 0 : q })
+      }
+      hubs.push(hub)
+      continue
+    }
     const n = addNode(nd.id, kind === 'reservoir' ? sourceElevation(p, r.head) : p.elevation, r.head)
     if (kind === 'reservoir' || kind === 'tank') n.kind = 'fixed'
     else if (kind === 'vessel') {
@@ -231,7 +273,7 @@ export function runTransient(full: Model, results: Results, event: TransientEven
   }
 
   // ---- pipes ----
-  const port = (id: string, handle?: string | null) => (index.has(id) ? index.get(id) : index.get(`${id}:${handle === 'out' ? 'out' : 'in'}`))
+  const port = (id: string, handle?: string | null) => index.get(`${id}:${handle}`) ?? (index.has(id) ? index.get(id) : index.get(`${id}:${handle === 'out' ? 'out' : 'in'}`))
   const raw = model.edges
     .filter((e) => e.type !== 'signal' && e.data && results.links[e.id])
     .map((e) => ({ e, up: port(e.source, e.sourceHandle), down: port(e.target, e.targetHandle), a: waveSpeedOf(e.data!.props.material) }))
@@ -418,6 +460,37 @@ export function runTransient(full: Model, results: Results, event: TransientEven
       d.Q = Q
       if (na.SB > 0) na.H = (na.SC - Q) / na.SB
       if (nb.SB > 0) nb.H = (nb.SC + Q) / nb.SB
+    }
+
+    // tees, three-way valves and jet pumps: find the hub head at which what the ports deliver balances what the hub's own pipes take
+    for (const hub of hubs) {
+      const hn = nodes[hub.node]
+      owned.add(hub.node)
+      hub.ports.forEach((pt) => owned.add(pt.node))
+      const through = (pt: Hub['ports'][number], Hh: number) => {
+        const pn = nodes[pt.node]
+        if (pt.closed || pn.SB === 0) return 0
+        const E = pn.SC / pn.SB + pt.gain - Hh
+        const M = 1 / pn.SB
+        const Q = pt.kv > 0 ? (Math.sign(E) * (-M + Math.sqrt(M * M + 4 * pt.kv * Math.abs(E)))) / (2 * pt.kv) : E / M
+        return pt.noReverse && Q < 0 ? 0 : Q
+      }
+      const balance = (Hh: number) => hn.SC - hn.SB * Hh + hub.ports.reduce((s, pt) => s + through(pt, Hh), 0)
+      let lo = hn.H - 50
+      let hi = hn.H + 50
+      for (let k = 0; k < 30 && balance(lo) < 0; k++) lo -= (hi - lo) * 2
+      for (let k = 0; k < 30 && balance(hi) > 0; k++) hi += (hi - lo) * 2
+      for (let k = 0; k < 60; k++) {
+        const mid = (lo + hi) / 2
+        if (balance(mid) > 0) lo = mid
+        else hi = mid
+      }
+      hn.H = (lo + hi) / 2
+      for (const pt of hub.ports) {
+        pt.Q = through(pt, hn.H)
+        const pn = nodes[pt.node]
+        if (pn.SB > 0) pn.H = (pn.SC - pt.Q) / pn.SB
+      }
     }
 
     // everything else

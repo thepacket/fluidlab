@@ -17,6 +17,8 @@ export interface Thermal {
   /** °C at the two ends of each pipe */
   links: Record<string, { tStart: number; tEnd: number; /** live mode: °C along the pipe, source → target */ cells?: number[] }>
   /** live mode: where the heat is going right now, W */
+  /** live mode, stratified tanks: °C of each layer, bottom first */
+  layers?: Record<string, number[]>
   balance?: { input: number; emitted: number; pipeLoss: number; tankLoss: number; stored: number }
   tMin: number
   tMax: number
@@ -46,6 +48,9 @@ export interface Carrier {
   /** … or the pipe it runs along, and whether it runs source → target */
   edge?: string
   forward?: boolean
+  /** the port it leaves `from` by, and arrives at `to` by — a stratified tank cares whether that is its top or its bottom */
+  fromHandle?: string | null
+  toHandle?: string | null
 }
 /** The thermal network: temperature points (plain nodes, and the two ends of inline parts) and what carries water between them. */
 export function thermalNetwork(model: Model, results: Results) {
@@ -71,7 +76,11 @@ export function thermalNetwork(model: Model, results: Results) {
     const b = key(e.target, e.targetHandle)
     if (!points.has(a) || !points.has(b)) continue
     const q = Math.abs(r.flow) < 1e-9 ? 0 : r.flow
-    carriers.push(q >= 0 ? { from: a, to: b, q, edge: e.id, forward: true } : { from: b, to: a, q: -q, edge: e.id, forward: false })
+    carriers.push(
+      q >= 0
+        ? { from: a, to: b, q, edge: e.id, forward: true, fromHandle: e.sourceHandle, toHandle: e.targetHandle }
+        : { from: b, to: a, q: -q, edge: e.id, forward: false, fromHandle: e.targetHandle, toHandle: e.sourceHandle },
+    )
   }
   for (const n of model.nodes) {
     const d = results.devices[n.id]

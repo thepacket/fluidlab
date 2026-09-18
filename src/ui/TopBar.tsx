@@ -104,8 +104,21 @@ export function TopBar() {
       {s.results.thermal && !steam && (
         <div className="seg" title="Water temperatures: where they settle, or marched through lab time (warm-up, cool-down, dead legs)">
           {(['steady', 'live'] as const).map((m) => (
-            <button key={m} className={s.heatMode === m ? 'on' : ''} onClick={() => s.set({ heatMode: m, heat: null, ...(m === 'live' ? { overlay: 'thermal' as Overlay } : {}) })}>
+            <button
+              key={m}
+              className={s.heatMode === m ? 'on' : ''}
+              onClick={() => s.set({ heatMode: m, heat: null, ...(m === 'live' ? { overlay: 'thermal' as Overlay } : s.solved ? { results: s.solved } : {}) })}
+            >
               {m === 'steady' ? 'settled' : 'live heat'}
+            </button>
+          ))}
+        </div>
+      )}
+      {s.results.channel && (
+        <div className="seg" title="Open channels: the settled water surface, or marched through lab time (flood waves, gate surges)">
+          {(['steady', 'live'] as const).map((m) => (
+            <button key={m} className={s.flowMode === m ? 'on' : ''} onClick={() => s.set({ flowMode: m, wave: null, ...(m === 'steady' && s.solved ? { results: s.solved } : {}) })}>
+              {m === 'steady' ? 'settled' : 'live flow'}
             </button>
           ))}
         </div>
