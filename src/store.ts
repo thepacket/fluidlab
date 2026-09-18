@@ -8,6 +8,7 @@ import { EMPTY_CONTROL, PV_CONSUMERS, PV_SOURCES, SIGNAL_CONSUMERS, sameControl,
 import { catalogueSpec } from './model/catalog'
 import { receiverRate } from './engine/gas'
 import { P_ATM, VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from './model/physics'
+import { defaultChannelProps, isChannel, isChannelKind } from './model/openchannel'
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
 import { METRIC, type UnitPrefs } from './model/units'
 
@@ -209,13 +210,21 @@ export const useLab = create<State>((set, get) => ({
       })
       return
     }
+    // anything joined to an open-channel part — or to a joint that so far only carries channels — is a reach, not a pipe
+    const ends = [c.source, c.target].map((id) => get().nodes.find((x) => x.id === id)!)
+    const wet = (id: string) => {
+      const touching = edges.filter((e) => e.type !== 'signal' && (e.source === id || e.target === id))
+      return touching.length > 0 && touching.every(isChannel)
+    }
+    const open = ends.some((x) => isChannelKind(x.data.kind)) || ends.some((x) => ['junction', 'gauge'].includes(x.data.kind) && wet(x.id))
+    const word = open ? 'Reach' : 'Pipe'
     const n = edges.length + 1
-    let label = `Pipe ${n}`
+    let label = `${word} ${n}`
     const used = new Set(edges.map((e) => e.data?.label))
-    for (let i = n; used.has(label); i++) label = `Pipe ${i + 1}`
+    for (let i = n; used.has(label); i++) label = `${word} ${i + 1}`
     set({
       edges: addEdge(
-        { ...c, id: `e${++uid}`, type: 'pipe', data: { label, props: defaultPipeProps() } },
+        { ...c, id: `e${++uid}`, type: 'pipe', data: { label, props: open ? defaultChannelProps() : defaultPipeProps() } },
         edges.map((e) => ({ ...e, selected: false })),
       ) as LabEdge[],
     })

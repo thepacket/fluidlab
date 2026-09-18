@@ -171,6 +171,30 @@ export function KindIcon({ kind }: { kind: Kind | 'pipe' | 'network' }) {
           <path d="M14 9V3M11 5l3-2 3 2" stroke="var(--accent)" />
         </>
       )}
+      {kind === 'inflow' && (
+        <>
+          <path d="M3 26h26M4 6h9v10" />
+          <path d="M13 12q8 0 9 9h7" stroke="var(--accent)" />
+        </>
+      )}
+      {kind === 'weir' && (
+        <>
+          <path d="M3 27h26M15 27V14" strokeWidth="2.400" />
+          <path d="M3 10h10q7 0 9 12h7" stroke="var(--accent)" />
+        </>
+      )}
+      {kind === 'gate' && (
+        <>
+          <path d="M3 27h26M16 3v17M11 3h10" />
+          <path d="M3 10h13M16 23h13" stroke="var(--accent)" />
+        </>
+      )}
+      {kind === 'outfall' && (
+        <>
+          <path d="M3 20h14v9" />
+          <path d="M3 14h13q7 0 8 15" stroke="var(--accent)" />
+        </>
+      )}
       {kind === 'pipe' && (
         <>
           <path d="M3 12h26M3 20h26" />

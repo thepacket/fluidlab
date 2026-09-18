@@ -15,6 +15,8 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
   const heat = thermal?.links[id] ? { t: thermal.links[id], tMin: thermal.tMin, tMax: thermal.tMax } : null
   const units = useLab((s) => s.units)
   const paused = useLab((s) => !s.running)
+  const reach = useLab((s) => s.results.channel?.reaches[id])
+  const open = data?.props.conduit === 'channel'
 
   const [path, labelX, labelY] = getSmoothStepPath({
     sourceX,
@@ -26,7 +28,7 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
     borderRadius: 18,
   })
   const d = data?.props.diameter ?? 0.04
-  const w = Math.min(15, Math.max(5, 3.5 + d * 1000 * 0.16))
+  const w = open ? Math.min(24, Math.max(10, 8 + (data?.props.shape === 'circ' ? d : (data?.props.width ?? 0.5)) * 7)) : Math.min(15, Math.max(5, 3.5 + d * 1000 * 0.16))
   const live = ok && !!r
   const flowing = live && Math.abs(r.flow) > 1e-8
 
@@ -53,7 +55,9 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
         </linearGradient>
       </defs>
       {selected && <path d={path} fill="none" stroke="var(--accent)" strokeWidth={w + 12} strokeLinecap="round" opacity={0.28} />}
-      <path d={path} fill="none" stroke="#04070d" strokeWidth={w + 5} strokeLinecap="round" />
+      {/* an open channel is drawn from above: two banks with the water between them */}
+      {open && <path d={path} fill="none" stroke="#6b7fa6" strokeWidth={w + 9} strokeLinecap="butt" />}
+      <path d={path} fill="none" stroke="#04070d" strokeWidth={w + 5} strokeLinecap={open ? 'butt' : 'round'} />
       <path d={path} fill="none" stroke={`url(#${gid})`} strokeWidth={w + 2} strokeLinecap="round" opacity={0.45} />
       <path
         d={path}
@@ -66,7 +70,19 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
         }}
         strokeDasharray={live ? undefined : '3 9'}
       />
-      <path d={path} fill="none" stroke="rgba(255,255,255,.22)" strokeWidth={1} transform="translate(0,-1.5)" strokeLinecap="round" />
+      {!open && <path d={path} fill="none" stroke="rgba(255,255,255,.22)" strokeWidth={1} transform="translate(0,-1.5)" strokeLinecap="round" />}
+      {open && reach?.jump && (
+        <g style={{ offsetPath: `path('${path}')`, offsetDistance: `${(r && r.flow < 0 ? 1 - reach.jump.x / data!.props.length : reach.jump.x / data!.props.length) * 100}%`, offsetRotate: 'auto' }}>
+          <path
+            className="jump-mark"
+            d={`M-3,${-w / 2} q3,${w / 4} 0,${w / 2} t0,${w / 2} M3,${-w / 2} q3,${w / 4} 0,${w / 2} t0,${w / 2}`}
+            fill="none"
+            stroke="#ffffff"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+        </g>
+      )}
       {flowing && (
         <path
           d={path}
@@ -100,8 +116,19 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
                 <b>{fmt(Math.abs(r.flow), 'flow', units)}</b>
                 <em>{unitLabel('flow', units)}</em>
                 <span className="sep" />
-                <b>{fmt(r.velocity, 'velocity', units, 2)}</b>
-                <em>{unitLabel('velocity', units)}</em>
+                {reach ? (
+                  <>
+                    <b>{fmt(reach.depth[reach.depth.length >> 1], 'length', units, 2)}</b>
+                    <em>{unitLabel('length', units)} deep</em>
+                    <span className="sep" />
+                    <em>{reach.profile}</em>
+                  </>
+                ) : (
+                  <>
+                    <b>{fmt(r.velocity, 'velocity', units, 2)}</b>
+                    <em>{unitLabel('velocity', units)}</em>
+                  </>
+                )}
               </>
             ) : (
               <em>dry</em>

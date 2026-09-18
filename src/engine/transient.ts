@@ -9,6 +9,7 @@
 //
 // Every pipe needs a whole number of reaches, so wave speeds are nudged (a′ = L / N·Δt); pipes shorter than one
 // reach are stretched to one. That is the classic compromise, and it is why very short stubs barely matter.
+import { stripChannels } from '../model/openchannel'
 import { dischargeDevice, lossDevice } from '../model/catalog'
 import { G, P_ATM, area, sourceElevation, elementK, fittingK, frictionFactor, pumpHead, ratedDp, reynolds, valveK, vesselPressure, vesselWater } from '../model/physics'
 import { MATERIALS, isControl, isInline, type Model, type ModelNode, type Props, type Results } from '../model/types'
@@ -154,7 +155,8 @@ function deviceKv(nd: ModelNode, model: Model, results: Results, rhoG: number): 
   }
 }
 
-export function runTransient(model: Model, results: Results, event: TransientEvent): TransientResult {
+export function runTransient(full: Model, results: Results, event: TransientEvent): TransientResult {
+  const model = stripChannels(full) // open channels take no part in a pressure surge
   const t0 = performance.now()
   const fail = (error: string): TransientResult => ({
     ok: false,

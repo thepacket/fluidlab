@@ -1,6 +1,7 @@
 // The "Lab" part of FluidLab: ready-made rigs with something to discover.
 import type { Edge, Node } from '@xyflow/react'
 import type { TransientResult } from './engine/transient'
+import { defaultChannelProps } from './model/openchannel'
 import { KIND_META, defaultPipeProps, defaultProps, isInline, type Kind, type NodeData, type PipeData, type Props, type Results } from './model/types'
 
 export const NODE_SIZE: Record<Kind, [number, number]> = {
@@ -30,6 +31,10 @@ export const NODE_SIZE: Record<Kind, [number, number]> = {
   pid: [116, 104],
   logic: [76, 64],
   lamp: [60, 68],
+  inflow: [104, 84],
+  weir: [112, 88],
+  gate: [112, 96],
+  outfall: [104, 84],
 }
 
 /** vertical position (fraction of height) of the side ports for each kind */
@@ -60,6 +65,10 @@ export const PORT_Y: Record<Kind, number> = {
   pid: 0.5,
   logic: 0.5,
   lamp: 0.5,
+  inflow: 0.72,
+  weir: 0.72,
+  gate: 0.72,
+  outfall: 0.72,
 }
 
 export type LabNode = Node<NodeData>
@@ -114,6 +123,21 @@ class Rig {
       sourceHandle: handles[0] ?? (isInline(s.data.kind) ? 'out' : 'r'),
       targetHandle: handles[1] ?? (isInline(t.data.kind) ? 'in' : 'l'),
       data: { label: label ?? `Pipe ${this.edges.length + 1}`, props: { ...defaultPipeProps(), ...props } },
+    })
+    return this
+  }
+  /** open-channel reach: water runs from `source` to `target` */
+  channel(source: string, target: string, props: Props = {}, handles: [string?, string?] = [], label?: string) {
+    const two = (id: string) => ['weir', 'gate'].includes(this.nodes.find((n) => n.id === id)!.data.kind)
+    const count = this.edges.filter((e) => e.data?.props.conduit === 'channel').length + 1
+    this.edges.push({
+      id: `e${this.edges.length + 1}`,
+      type: 'pipe',
+      source,
+      target,
+      sourceHandle: handles[0] ?? (two(source) ? 'out' : 'r'),
+      targetHandle: handles[1] ?? (two(target) ? 'in' : 'l'),
+      data: { label: label ?? `Reach ${count}`, props: { ...defaultChannelProps(), ...props } },
     })
     return this
   }
@@ -1553,6 +1577,139 @@ export const EXPERIMENTS: Experiment[] = [
         .pipe('rx', 'v', { length: 1, diameter: 0.025 }, ['r', 'in'])
         .pipe('v', 'g', { length: 1, diameter: 0.025 })
         .pipe('g', 'out', { length: 1, diameter: 0.025 })
+        .done(),
+  },
+  {
+    id: 'normal-depth',
+    no: '40',
+    title: 'Uniform flow',
+    concept: 'Manning and normal depth',
+    formula: 'Q = (1/n) · A · R^⅔ · √S₀',
+    brief:
+      'Water in a long, even channel settles at the one depth where the pull of the slope is exactly used up by friction on the bed: the normal depth. Rougher lining, gentler slope or a narrower bed all make the water run deeper and slower.',
+    steps: [
+      'Select the channel: the dashed green line is the normal depth, the grey one the critical depth.',
+      'Change the lining from concrete to grass and watch the depth rise.',
+      'Raise the inflow’s bed elevation to steepen the channel: past about 0.4 % the flow turns supercritical.',
+    ],
+    goal: {
+      text: 'Carry the same 300 L/s at a depth between 0.50 and 0.55 m — without touching the discharge',
+      check: (r) => {
+        const c = r.channel?.reaches.e1
+        const y = c?.depth[40] ?? 0
+        return { done: !!c && Math.abs(c.flow - 0.3) < 1e-6 && y >= 0.5 && y <= 0.55, readout: c ? `${y.toFixed(3)} m deep · Fr ${c.froude[40].toFixed(2)}` : '—' }
+      },
+    },
+    select: 'e1',
+    build: () =>
+      new Rig()
+        .add('in', 'inflow', 200, 300, { elevation: 0.5, flow: 0.3 }, 'Headworks')
+        .add('out', 'outfall', 900, 300, { elevation: 0, mode: 'normal' }, 'Downstream')
+        .channel('in', 'out', { length: 500, width: 1, bankHeight: 1 }, [], 'Canal')
+        .done(),
+  },
+  {
+    id: 'backwater',
+    no: '41',
+    title: 'Backwater behind a weir',
+    concept: 'Gradually varied flow: the M1 curve',
+    formula: 'dy/dx = (S₀ − S_f) / (1 − Fr²)',
+    brief:
+      'A weir forces the water to rise until enough head stands over its crest. In slow (subcritical) flow that news travels upstream: the surface climbs away from normal depth in a long, flat M1 curve that can flood land far from the weir itself.',
+    steps: [
+      'Select the upper reach and open “Water surface”: the pool behind the weir fades into normal depth upstream.',
+      'Raise the crest and watch how far upstream the staff gauge notices.',
+      'Swap the weir for a V-notch: much more head for the same flow.',
+    ],
+    goal: {
+      text: 'Raise the water at the staff gauge, 300 m upstream, to at least 0.80 m — without overtopping the 1.2 m banks',
+      check: (r) => {
+        const y = r.nodes.g?.extra?.depth ?? 0
+        const top = Math.max(0, ...Object.values(r.channel?.reaches ?? {}).flatMap((c) => c.depth))
+        return { done: y >= 0.8 && top <= 1.2, readout: `${y.toFixed(3)} m at the gauge · deepest ${top.toFixed(2)} m` }
+      },
+    },
+    select: 'e2',
+    build: () =>
+      new Rig()
+        .add('in', 'inflow', 120, 300, { elevation: 0.6, flow: 0.4 }, 'Headworks')
+        .add('g', 'gauge', 420, 300, { elevation: 0.3 }, 'Staff gauge')
+        .add('w', 'weir', 760, 300, { elevation: 0, crestHeight: 0.3, crestWidth: 1.2 }, 'Weir')
+        .add('out', 'outfall', 1000, 300, { elevation: -0.02 }, 'Drop')
+        .channel('in', 'g', { length: 300, width: 1.2, bankHeight: 1.2 })
+        .channel('g', 'w', { length: 300, width: 1.2, bankHeight: 1.2 })
+        .channel('w', 'out', { length: 20, width: 1.2, bankHeight: 1.2 })
+        .done(),
+  },
+  {
+    id: 'hydraulic-jump',
+    no: '42',
+    title: 'Sluice gate and hydraulic jump',
+    concept: 'Supercritical flow, conjugate depths',
+    formula: 'y₂/y₁ = ½ (√(1 + 8 Fr₁²) − 1)',
+    brief:
+      'Under a sluice gate the water shoots out fast and shallow — supercritical. The channel downstream wants it slow and deep. The two can only meet in a hydraulic jump: a standing, churning step that destroys energy. Where it stands depends on the tailwater: deeper tailwater pushes the jump back towards the gate, and finally drowns it.',
+    steps: [
+      'Select the reach below the gate: M3 jet, then the jump, then tranquil flow.',
+      'Raise the tail weir’s crest: the jump marches upstream.',
+      'Raise it too far and the gate drowns — the jet disappears under the tailwater.',
+    ],
+    goal: {
+      text: 'Hold the jump within 15 m of the gate — without drowning the gate',
+      check: (r) => {
+        const j = r.channel?.reaches.e2?.jump
+        const drowned = !!r.nodes.sg?.extra?.submerged
+        return { done: !!j && j.x <= 15 && !drowned, readout: drowned ? 'gate drowned' : j ? `jump ${j.x.toFixed(0)} m below the gate · ${(j.power / 1000).toFixed(1)} kW lost` : 'no jump' }
+      },
+    },
+    select: 'e2',
+    build: () =>
+      new Rig()
+        .add('in', 'inflow', 120, 300, { elevation: 0.15, flow: 0.6 }, 'Headworks')
+        .add('sg', 'gate', 400, 300, { elevation: 0.1, opening: 0.15, width: 1 }, 'Sluice gate')
+        .add('w', 'weir', 800, 300, { elevation: 0.02, variant: 'broad', crestHeight: 0.15, crestWidth: 1 }, 'Tail weir')
+        .add('out', 'outfall', 1040, 300, { elevation: 0 }, 'Drop')
+        .channel('in', 'sg', { length: 50, width: 1, bankHeight: 3, lining: 'glass' })
+        .channel('sg', 'w', { length: 80, width: 1, bankHeight: 3, lining: 'glass' })
+        .channel('w', 'out', { length: 20, width: 1, bankHeight: 3, lining: 'glass' })
+        .done(),
+  },
+  {
+    id: 'chute',
+    no: '43',
+    title: 'Spillway chute',
+    concept: 'Mild → steep → mild',
+    formula: 'Fr = v / √(g · A/T)',
+    brief:
+      'Where a gentle channel tips into a steep chute the flow passes through critical depth at the brink, then accelerates down an S2 curve. At the bottom it meets a gentle channel again and must jump back. If the jump forms in the tail channel it scours the bed; engineers raise the tailwater so that it sits on the concrete chute instead.',
+    steps: [
+      'Select each reach in turn: M2 drawdown, S2 acceleration, then the jump.',
+      'Note the scour warning on the gravel tail channel.',
+      'Raise the end sill until the jump climbs onto the chute (an S1 curve appears behind it).',
+    ],
+    goal: {
+      text: 'Move the hydraulic jump out of the gravel channel and onto the concrete chute — without overtopping',
+      check: (r) => {
+        const [chute, tail] = [r.channel?.reaches.e2, r.channel?.reaches.e3]
+        const top = Math.max(0, ...Object.values(r.channel?.reaches ?? {}).flatMap((c) => c.depth))
+        return {
+          done: !!chute?.jump && !tail?.jump && top <= 1.5,
+          readout: chute?.jump ? `jump on the chute, ${chute.jump.x.toFixed(0)} m down it` : tail?.jump ? `jump in the tail channel, ${tail.jump.x.toFixed(0)} m along` : 'no jump',
+        }
+      },
+    },
+    select: 'e2',
+    build: () =>
+      new Rig()
+        .add('in', 'inflow', 100, 160, { elevation: 6.1, flow: 1.5 }, 'Reservoir outlet')
+        .add('brink', 'junction', 380, 160, { elevation: 6 }, 'Brink')
+        .add('toe', 'junction', 620, 420, { elevation: 0.2 }, 'Toe')
+        .add('sill', 'weir', 880, 420, { elevation: 0, variant: 'broad', crestHeight: 0.1, crestWidth: 3 }, 'End sill')
+        .add('out', 'outfall', 1100, 420, { elevation: -0.05 }, 'River')
+        .channel('in', 'brink', { length: 100, width: 2, bankHeight: 1.5 }, [], 'Approach')
+        .channel('brink', 'toe', { length: 60, width: 2, bankHeight: 1.5 }, ['r', 'l'], 'Chute')
+        .channel('toe', 'sill', { length: 100, width: 3, bankHeight: 1.5, lining: 'gravel' }, [], 'Tail channel')
+        .channel('sill', 'out', { length: 20, width: 3, bankHeight: 1.5, lining: 'riprap' }, [], 'Apron')
         .done(),
   },
 ]

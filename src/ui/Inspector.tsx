@@ -23,9 +23,11 @@ import {
   vesselPressure,
   vesselWater,
 } from '../model/physics'
-import { ELEMENT_TYPES, FLUIDS, KIND_META, MATERIALS, ROTATABLE, VALVE_TYPES, isControl, type Kind, type Props } from '../model/types'
+import { ELEMENT_TYPES, FLUIDS, KIND_META, MATERIALS, ROTATABLE, VALVE_TYPES, defaultPipeProps, isControl, type Kind, type Props } from '../model/types'
 import { fmt, fmtNum, fmtU, toDisplay, toSI, unitLabel, type Quantity } from '../model/units'
 import { model, selectedId, useLab } from '../store'
+import { waterProfile } from '../engine/channel'
+import * as oc from '../model/openchannel'
 import { Chart, SERIES, type Marker, type Series } from './Chart'
 import { KindIcon } from './icons'
 
@@ -311,12 +313,61 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
       ],
     },
   ],
+  inflow: [
+    { key: 'flow', label: 'Discharge', q: 'flow' },
+    { ...elevation, label: 'Bed elevation' },
+  ],
+  weir: [
+    { key: 'variant', label: 'Type', q: 'none', type: 'select', options: oc.WEIR_TYPES },
+    { key: 'crestHeight', label: 'Crest height above the bed', q: 'length', show: (p) => p.variant !== 'parshall' },
+    { key: 'crestWidth', label: 'Crest width', q: 'length', show: (p) => p.variant !== 'parshall' && p.variant !== 'vnotch' },
+    { key: 'notchAngle', label: 'Notch angle (°)', q: 'none', show: (p) => p.variant === 'vnotch' },
+    { key: 'throat', label: 'Throat width', q: 'none', type: 'select', options: Object.entries(oc.PARSHALL).map(([id, f]) => ({ id, name: f.name })), show: (p) => p.variant === 'parshall' },
+    { ...elevation, label: 'Bed elevation' },
+  ],
+  gate: [
+    { key: 'opening', label: 'Gate opening', q: 'length', hint: 'A controller wired to the gate scales this opening' },
+    { key: 'width', label: 'Gate width', q: 'length' },
+    { ...elevation, label: 'Bed elevation' },
+  ],
+  outfall: [
+    {
+      key: 'mode',
+      label: 'Ends in',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 'free', name: 'Free drop (critical depth)' },
+        { id: 'level', name: 'Water at a fixed level' },
+        { id: 'normal', name: 'A long channel (normal depth)' },
+      ],
+    },
+    { key: 'level', label: 'Tailwater level (elevation)', q: 'length', show: (p) => p.mode === 'level' },
+    { ...elevation, label: 'Bed elevation' },
+  ],
   pipe: [
+    {
+      key: 'conduit',
+      label: 'Conduit',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 'pipe', name: 'Pipe, flowing full' },
+        { id: 'channel', name: 'Open channel' },
+      ],
+      show: (_p, gas) => !gas,
+    },
     { key: 'length', label: 'Length', q: 'length' },
-    { key: 'diameter', label: 'Inside diameter', q: 'diameter' },
-    { key: 'material', label: 'Material', q: 'none', type: 'select', options: MATERIALS },
-    { key: 'roughness', label: 'Absolute roughness', q: 'roughness' },
-    { key: 'minorK', label: 'Minor-loss K (fittings)', q: 'none' },
+    { key: 'diameter', label: 'Inside diameter', q: 'diameter', show: (p) => p.conduit !== 'channel' || p.shape === 'circ' },
+    { key: 'material', label: 'Material', q: 'none', type: 'select', options: MATERIALS, show: (p) => p.conduit !== 'channel' },
+    { key: 'roughness', label: 'Absolute roughness', q: 'roughness', show: (p) => p.conduit !== 'channel' },
+    { key: 'minorK', label: 'Minor-loss K (fittings)', q: 'none', show: (p) => p.conduit !== 'channel' },
+    { key: 'shape', label: 'Cross-section', q: 'none', type: 'select', options: oc.CHANNEL_SHAPES, show: (p) => p.conduit === 'channel' },
+    { key: 'width', label: 'Bed width', q: 'length', show: (p) => p.conduit === 'channel' && (p.shape === 'rect' || p.shape === 'trap') },
+    { key: 'sideSlope', label: 'Side slope (horizontal : 1 vertical)', q: 'none', show: (p) => p.conduit === 'channel' && (p.shape === 'trap' || p.shape === 'tri') },
+    { key: 'bankHeight', label: 'Bank height', q: 'length', show: (p) => p.conduit === 'channel' && p.shape !== 'circ' },
+    { key: 'lining', label: 'Lining', q: 'none', type: 'select', options: oc.LININGS.map((l) => ({ id: l.id, name: `${l.name} · n ${l.n}` })), show: (p) => p.conduit === 'channel' },
+    { key: 'manningN', label: 'Manning n', q: 'none', show: (p) => p.conduit === 'channel' && p.lining === 'custom' },
   ],
 }
 
@@ -539,6 +590,50 @@ function PipeChart({ id }: { id: string }) {
       markers={now && q > 1e-8 ? [{ ...now, label: `${fmtNum(now.y)} ${unitLabel('pressure', s.units)}`, color: '#ffffff' }] : []}
       xLabel={`Flow (${unitLabel('flow', s.units)})`}
       yLabel={`ΔP (${unitLabel('pressure', s.units)})`}
+    />
+  )
+}
+
+/** Water surface along the main stem through a reach or structure — bed, surface, normal and critical depth lines. */
+function ProfileChart({ id }: { id: string }) {
+  const results = useLab((s) => s.results)
+  const units = useLab((s) => s.units)
+  const prof = useMemo(() => waterProfile(results, id), [results, id])
+  const line = (key: 'bed' | 'surface' | 'normal' | 'critical') =>
+    prof.stations.filter((p) => p[key] !== null).map((p) => ({ x: toDisplay(p.dist, 'length', units), y: toDisplay(p[key] as number, 'head', units) }))
+  const at = (dist: number) => prof.stations.reduce((best, p) => (Math.abs(p.dist - dist) < Math.abs(best.dist - dist) ? p : best), prof.stations[0])
+  return (
+    <Chart
+      series={[
+        { name: 'Water surface', color: SERIES.blue, points: line('surface'), area: true },
+        { name: 'Bed', color: SERIES.orange, points: line('bed'), area: true },
+        { name: 'Normal depth', color: SERIES.aqua, points: line('normal'), dashed: true },
+        { name: 'Critical depth', color: '#8aa0c6', points: line('critical'), dashed: true },
+      ]}
+      markers={prof.jumps.map((d) => ({ x: toDisplay(d, 'length', units), y: toDisplay(at(d).surface, 'head', units), label: 'jump', color: '#ffffff' }))}
+      yMinZero={false}
+      xLabel={`Distance downstream (${unitLabel('length', units)})`}
+      yLabel={`Elevation (${unitLabel('head', units)})`}
+      empty="No water in this channel yet"
+    />
+  )
+}
+
+/** Head–discharge rating of a weir or flume, with where it is sitting now. */
+function RatingChart({ id }: { id: string }) {
+  const s = useLab()
+  const p = s.nodes.find((n) => n.id === id)!.data.props
+  const x = s.results.nodes[id]?.extra
+  const hMax = Math.max(0.3, (x?.headOver ?? 0) * 1.8)
+  const cv = (h: number, q: number) => ({ x: toDisplay(h, 'length', s.units), y: toDisplay(q, 'flow', s.units) })
+  const pts = Array.from({ length: 41 }, (_, i) => cv((hMax * i) / 40, oc.weirFlow(p, (hMax * i) / 40)))
+  const now = x && x.flow > 0 ? cv(x.headOver, x.flow) : null
+  return (
+    <Chart
+      series={[{ name: 'Free-flow rating', color: SERIES.blue, points: pts, area: true }]}
+      markers={now ? [{ ...now, label: `${fmtNum(now.y)} ${unitLabel('flow', s.units)}`, color: '#ffffff' }] : []}
+      xLabel={`Head over the crest (${unitLabel('length', s.units)})`}
+      yLabel={`Flow (${unitLabel('flow', s.units)})`}
     />
   )
 }
@@ -979,6 +1074,82 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
   const l = s.results.links[id]
   const node = s.nodes.find((x) => x.id === id)
   if (!s.results.ok || (!n && !d && !l)) return <p className="muted">No results — this part is not connected to a solved network.</p>
+  const reach = s.results.channel?.reaches[id]
+  if (l && reach) {
+    const ep = s.edges.find((x) => x.id === id)!.data!.props
+    const mid = reach.depth[reach.depth.length >> 1]
+    const fr = reach.froude
+    const [frMin, frMax] = [Math.min(...fr), Math.max(...fr)]
+    return (
+      <>
+        <div className="hero">
+          <div>
+            <b>{fmt(reach.flow, 'flow', u)}</b>
+            <span>{unitLabel('flow', u)}</span>
+          </div>
+          <div>
+            <b>{fmt(mid, 'length', u)}</b>
+            <span>depth {unitLabel('length', u)}</span>
+          </div>
+          <div>
+            <b>{fmt(l.velocity, 'velocity', u)}</b>
+            <span>{unitLabel('velocity', u)}</span>
+          </div>
+        </div>
+        <Row label="Bed slope" value={`${(reach.slope * 100).toFixed(3)} %  ·  ${reach.slopeClass}`} tone={reach.slopeClass === 'adverse' ? 'warn' : undefined} />
+        <Row label="Normal depth yₙ" value={reach.yn === null ? '— (no uniform flow)' : fmtU(reach.yn, 'length', u)} />
+        <Row label="Critical depth y꜀" value={fmtU(reach.yc, 'length', u)} />
+        <Row label="Depth, upstream → downstream" value={`${fmt(reach.depth[0], 'length', u)} → ${fmtU(reach.depth[reach.depth.length - 1], 'length', u)}`} />
+        <Row label="Froude number" value={frMax - frMin < 0.02 ? frMax.toFixed(2) : `${frMin.toFixed(2)} – ${frMax.toFixed(2)}`} tone={frMax > 1 && frMin < 1 ? 'warn' : undefined} />
+        <Row label="Flow state" value={frMax < 1 ? 'subcritical (tranquil)' : frMin > 1 ? 'supercritical (shooting)' : 'mixed'} />
+        <Row label="Profile" value={reach.profile} />
+        {reach.jump && (
+          <>
+            <Row label="Hydraulic jump" value={`${fmt(reach.jump.y1, 'length', u)} → ${fmtU(reach.jump.y2, 'length', u)} at ${fmtU(reach.jump.x, 'length', u)}`} tone="warn" />
+            <Row label="Energy lost in the jump" value={`${fmtU(reach.jump.loss, 'head', u)}  ·  ${fmtU(reach.jump.power, 'power', u)}`} />
+          </>
+        )}
+        <Row label="Energy loss along the reach" value={fmtU(l.headloss, 'head', u)} />
+        <Row label="Manning n" value={String(ep.lining === 'custom' ? ep.manningN : oc.lining(ep.lining).n)} />
+        <Row label="Peak velocity" value={fmtU(reach.vMax, 'velocity', u)} tone={reach.vMax > oc.lining(ep.lining).vMax ? 'bad' : undefined} />
+      </>
+    )
+  }
+  if (n?.extra && 'depthUp' in n.extra) {
+    const x = n.extra
+    const two = kind === 'weir' || kind === 'gate'
+    return (
+      <>
+        <div className="hero">
+          <div>
+            <b>{fmt(x.flow, 'flow', u)}</b>
+            <span>{unitLabel('flow', u)}</span>
+          </div>
+          <div>
+            <b>{fmt(x.depth, 'length', u)}</b>
+            <span>
+              {two ? 'depth upstream' : 'depth'} {unitLabel('length', u)}
+            </span>
+          </div>
+          <div>
+            <b>{x.froude.toFixed(2)}</b>
+            <span>Froude</span>
+          </div>
+        </div>
+        <Row label="Water level" value={fmtU(n.head, 'head', u)} />
+        {kind === 'weir' && <Row label="Head over the crest" value={fmtU(x.headOver, 'length', u)} />}
+        {two && <Row label="Depth just downstream" value={fmtU(x.depthDn, 'length', u)} />}
+        {two && (
+          <Row
+            label="State"
+            value={x.submerged ? 'drowned by tailwater' : x.controlling ? 'free flow — it sets the upstream level' : 'not controlling'}
+            tone={x.submerged ? 'warn' : x.controlling ? 'good' : undefined}
+          />
+        )}
+        {kind === 'gate' && x.controlling > 0 && <Row label="Level difference across the gate" value={fmtU(x.depthUp - x.depthDn, 'length', u)} />}
+      </>
+    )
+  }
   if (l)
     return (
       <>
@@ -1208,6 +1379,12 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
   )
 }
 
+/** Switching a conduit between pipe and open channel brings in the other kind's defaults, keeping its length. */
+const reconduit = (props: Props, patch: Props): Props =>
+  !('conduit' in patch) ? patch : patch.conduit === 'channel' ? { ...oc.defaultChannelProps(), length: props.length } : { ...defaultPipeProps(), conduit: 'pipe', length: props.length }
+/** Picking another weir type brings in that type's usual dimensions. */
+const reshape = (kind: Kind | 'pipe', patch: Props): Props => (kind === 'weir' && 'variant' in patch ? { ...oc.weirType(patch.variant).defaults, ...patch } : patch)
+
 export function Inspector() {
   const id = useLab(selectedId)
   const node = useLab((s) => s.nodes.find((n) => n.id === id))
@@ -1219,6 +1396,7 @@ export function Inspector() {
   const rotate = useLab((s) => s.rotate)
   const [tab, setTab] = useState('main')
   const gasMode = useLab((s) => !!FLUIDS.find((f) => f.id === s.fluidId)?.gas)
+  const results = useLab((s) => s.results)
 
   if (!id || (!node && !edge)) return <Overview />
   if (edge?.type === 'signal') {
@@ -1253,6 +1431,7 @@ export function Inspector() {
   const pvWire = useLab.getState().edges.find((e) => e.type === 'signal' && e.target === id && e.sourceHandle === 'pv')
   const pvSrc = pvWire && useLab.getState().nodes.find((n) => n.id === pvWire.source)
   const pvq: Quantity = (pvSrc && PV_SOURCES[pvSrc.data.kind]?.quantity) || 'none'
+  const channelPart = kind === 'pipe' ? oc.isChannel(edge!) : !!results.channel && 'depthUp' in (results.nodes[id]?.extra ?? {})
   const tabs =
     kind === 'timer'
       ? [
@@ -1266,15 +1445,17 @@ export function Inspector() {
           : [
               ...(kind === 'pump'
                 ? [['main', 'Pump curve']]
-                : kind === 'pipe'
-                  ? [['main', 'ΔP (Q)']]
-                  : kind === 'jetpump'
-                    ? [['main', 'Characteristic']]
-                    : props.pattern && props.pattern !== 'constant'
-                      ? [['main', 'Daily pattern']]
-                      : []),
+                : channelPart
+                  ? [['profile', 'Water surface'], ...(kind === 'weir' ? [['main', 'Rating']] : [])]
+                  : kind === 'pipe'
+                    ? [['main', 'ΔP (Q)']]
+                    : kind === 'jetpump'
+                      ? [['main', 'Characteristic']]
+                      : props.pattern && props.pattern !== 'constant'
+                        ? [['main', 'Daily pattern']]
+                        : []),
               ['trend', 'Trend'],
-              ['grade', 'Grade line'],
+              ...(channelPart ? [] : [['grade', 'Grade line']]),
             ]
   const active = tabs.find((t) => t[0] === tab) ? tab : tabs[0][0]
 
@@ -1286,7 +1467,17 @@ export function Inspector() {
         </div>
         <div>
           <input className="insp-name" value={label} onChange={(e) => rename(id, e.target.value)} />
-          <span>{kind === 'pipe' ? 'Pipe' : kind === 'fitting' ? lossDevice(props.variant).name : (kind === 'outlet' && dischargeDevice(props.variant)?.name) || KIND_META[kind].name}</span>
+          <span>
+            {kind === 'pipe'
+              ? channelPart
+                ? 'Open-channel reach'
+                : 'Pipe'
+              : kind === 'weir'
+                ? oc.weirType(props.variant).name
+                : kind === 'fitting'
+                  ? lossDevice(props.variant).name
+                  : (kind === 'outlet' && dischargeDevice(props.variant)?.name) || KIND_META[kind].name}
+          </span>
         </div>
         {node && ROTATABLE.includes(node.data.kind) && (
           <button className="icon-btn" title="Rotate 90° (R)" onClick={() => rotate(id)}>
@@ -1322,6 +1513,8 @@ export function Inspector() {
           </>
         )}
         {active === 'main' && kind === 'pipe' && <PipeChart id={id} />}
+        {active === 'profile' && <ProfileChart id={id} />}
+        {active === 'main' && kind === 'weir' && <RatingChart id={id} />}
         {active === 'trend' && (
           <>
             <TrendChart id={id} kind={kind} />
@@ -1347,11 +1540,11 @@ export function Inspector() {
         <h4>Properties</h4>
         {kind === 'pump' && props.pumpType === 'custom' && <CurvePoints props={props} onChange={(patch) => updateNode(id, patch)} />}
         {kind === 'valve' && props.valveType === 'throttle' && <KvField props={props} onChange={(patch) => updateNode(id, patch)} />}
-        {kind === 'pipe' && <PipeSizePicker props={props} onChange={(patch) => updateEdge(id, patch)} />}
+        {kind === 'pipe' && !channelPart && <PipeSizePicker props={props} onChange={(patch) => updateEdge(id, patch)} />}
         {FIELDS[kind]
           .filter((f) => !f.show || f.show(props, gasMode))
           .map((f) => (
-            <FieldRow key={f.key} f={f} props={props} pvq={pvq} onChange={(patch) => (node ? updateNode(id, patch) : updateEdge(id, patch))} />
+            <FieldRow key={f.key} f={f} props={{ conduit: 'pipe', ...props }} pvq={pvq} onChange={(patch) => (node ? updateNode(id, reshape(kind, patch)) : updateEdge(id, reconduit(props, patch)))} />
           ))}
       </section>
     </aside>

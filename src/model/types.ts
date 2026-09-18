@@ -27,6 +27,10 @@ export type Kind =
   | 'pid'
   | 'logic'
   | 'lamp'
+  | 'inflow'
+  | 'weir'
+  | 'gate'
+  | 'outfall'
 
 /** two-port components: compiled to a link between two hidden junctions */
 export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter', 'element', 'dpgauge', 'fitting']
@@ -34,7 +38,7 @@ export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter', 'element', 'dpgau
 export const CONTROL_KINDS: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'lamp', 'stager', 'schedule']
 export const isControl = (k: Kind) => CONTROL_KINDS.includes(k)
 /** components a controller can switch */
-export const CONTROLLABLE: Kind[] = ['pump', 'valve', 'outlet', 'threeway']
+export const CONTROLLABLE: Kind[] = ['pump', 'valve', 'outlet', 'threeway', 'inflow', 'gate']
 /** components that can be turned in 90° steps on the bench */
 export const ROTATABLE: Kind[] = ['pump', 'valve', 'meter', 'element', 'outlet', 'fitting', 'relief']
 export const isInline = (k: Kind) => INLINE_KINDS.includes(k)
@@ -164,6 +168,10 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
   pid: { name: 'PID controller', prefix: 'IC', blurb: 'Holds a setpoint by trimming a valve or pump' },
   logic: { name: 'Logic gate', prefix: 'LG', blurb: 'AND · OR · NOT for combining signals' },
   lamp: { name: 'Alarm lamp', prefix: 'AL', blurb: 'Lights when its input is on' },
+  inflow: { name: 'Channel inflow', prefix: 'IN', blurb: 'A steady discharge entering an open channel' },
+  weir: { name: 'Weir', prefix: 'WR', blurb: 'Backs water up; its head tells you the flow' },
+  gate: { name: 'Sluice gate', prefix: 'SG', blurb: 'Underflow gate — shoots a fast, shallow jet' },
+  outfall: { name: 'Outfall', prefix: 'OF', blurb: 'Where a channel ends: free drop, fixed level or normal depth' },
 }
 
 export function defaultProps(kind: Kind): Props {
@@ -248,6 +256,14 @@ export function defaultProps(kind: Kind): Props {
       return { op: 'and' }
     case 'lamp':
       return { color: 'red' }
+    case 'inflow':
+      return { elevation: 1, flow: 0.1 }
+    case 'weir':
+      return { elevation: 0, variant: 'sharp', crestHeight: 0.3, crestWidth: 0.5, notchAngle: 90, throat: '6in' }
+    case 'gate':
+      return { elevation: 0, opening: 0.1, width: 0.5 }
+    case 'outfall':
+      return { elevation: 0, mode: 'free', level: 0.5 }
   }
 }
 
@@ -318,6 +334,8 @@ export interface Results {
   gas?: boolean
   /** water temperatures and heat duties, when the rig has a boiler (see engine/thermal.ts) */
   thermal?: import('../engine/thermal').Thermal
+  /** water-surface profiles of open-channel reaches (see engine/channel.ts) */
+  channel?: import('../engine/channel').ChannelResults
   ok: boolean
   error?: string
   warnings: Warning[]

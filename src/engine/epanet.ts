@@ -24,6 +24,8 @@ import {
 } from '../model/physics'
 import { EMPTY_RESULTS, isControl, type Model, type Results, type Warning } from '../model/types'
 import { solveGas } from './gas'
+import { solveChannel } from './channel'
+import { stripChannels } from '../model/openchannel'
 import { solveThermal } from './thermal'
 import { command, commandedOff, compile, floatTank, valvePosition, type JetState, type Overrides } from './inp'
 
@@ -92,7 +94,30 @@ class EpanetEngine implements HydraulicEngine {
     return state
   }
 
-  solve(model: Model, overrides: Overrides = {}): Results {
+  solve(full: Model, overrides: Overrides = {}): Results {
+    const open = solveChannel(full)
+    if (!open) return this.solvePressurised(full, overrides)
+    // open channels and pipework share a bench but not (yet) any water: solve each, then lay one over the other
+    const model = stripChannels(full)
+    const piped = model.edges.some((e) => e.type !== 'signal')
+    const press = piped ? this.solvePressurised(model, overrides) : { ...EMPTY_RESULTS, ok: true }
+    return {
+      ...press,
+      ok: open.ok || (piped && press.ok),
+      error: open.error ?? (piped ? press.error : undefined),
+      warnings: [...open.warnings, ...press.warnings],
+      nodes: { ...press.nodes, ...open.nodes },
+      links: { ...press.links, ...open.links },
+      excluded: [...press.excluded, ...open.excluded],
+      channel: open.channel,
+      solveMs: press.solveMs + open.solveMs,
+      pMin: Math.min(press.pMin, open.pMin),
+      pMax: piped && press.ok ? Math.max(press.pMax, open.pMax) : open.pMax,
+      vMax: piped && press.ok ? Math.max(press.vMax, open.vMax) : open.vMax,
+    }
+  }
+
+  private solvePressurised(model: Model, overrides: Overrides = {}): Results {
     if (model.fluid.gas) return solveGas(model, overrides) // a different physics altogether: see engine/gas.ts
     const t0 = performance.now()
     if (!this.ws) return { ...EMPTY_RESULTS, error: 'Solver still loading' }

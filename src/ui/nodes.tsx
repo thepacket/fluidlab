@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { NODE_SIZE, PORT_Y, type LabNode } from '../experiments'
 import { dischargeDevice, lossDevice, type Glyph } from '../model/catalog'
 import { PV_CONSUMERS, PV_SOURCES, fmtClock, timerState } from '../model/control'
+import { weirType } from '../model/openchannel'
 import { beta, fittingK, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
 import { CONTROLLABLE, ROTATABLE, isControl, type Kind } from '../model/types'
 import { fmt, fmtU, toSI, unitLabel } from '../model/units'
@@ -71,6 +72,15 @@ function Ports({ kind, rot }: { kind: Kind; rot: number }) {
         <Handle id="ab" type="source" position={Position.Right} className="port port-out" style={{ top: '45.24%' }} />
       </>
     )
+  if (kind === 'weir' || kind === 'gate') {
+    const y = { top: `${PORT_Y[kind] * 100}%` }
+    return (
+      <>
+        <Handle id="in" type="source" position={Position.Left} className="port port-in" style={y} />
+        <Handle id="out" type="source" position={Position.Right} className="port port-out" style={y} />
+      </>
+    )
+  }
   if (kind === 'dpgauge' || ROTATABLE.includes(kind)) {
     const y = kind === 'dpgauge' ? { top: `${PORT_Y[kind] * 100}%` } : undefined
     if (kind === 'outlet' || kind === 'relief') return <Handle id="l" type="source" position={side(Position.Left, rot)} className="port" />
@@ -86,7 +96,7 @@ function Ports({ kind, rot }: { kind: Kind; rot: number }) {
     <>
       <Handle id="l" type="source" position={Position.Left} className="port" style={{ top: y }} />
       <Handle id="r" type="source" position={Position.Right} className="port" style={{ top: y }} />
-      {kind !== 'reservoir' && kind !== 'tank' && kind !== 'vessel' && <Handle id="t" type="source" position={Position.Top} className="port" />}
+      {kind !== 'reservoir' && kind !== 'tank' && kind !== 'vessel' && kind !== 'inflow' && kind !== 'outfall' && <Handle id="t" type="source" position={Position.Top} className="port" />}
       <Handle id="b" type="source" position={Position.Bottom} className="port" />
     </>
   )
@@ -1403,7 +1413,193 @@ export const ScheduleNode = memo(({ id, data, selected }: NodeProps<LabNode>) =>
   )
 })
 
+// ---- open channel: inflow, weir, sluice gate, outfall ---------------------------------------------
+
+const BED = 70 // y of the channel bed in the structure artwork
+const WATER = '#2b8fe6'
+/** px per metre, so the tallest thing in the picture fills ~48 px */
+const depthScale = (...heights: number[]) => 48 / Math.max(0.25, ...heights)
+
+function Bed({ width }: { width: number }) {
+  return (
+    <>
+      <path d={`M0,${BED + 1.5} H${width}`} stroke="#5a7099" strokeWidth="3" />
+      {Array.from({ length: Math.floor(width / 10) }, (_, i) => (
+        <path key={i} d={`M${i * 10 + 8},${BED + 3} l-6,8`} stroke="#3a4a6b" strokeWidth="1.5" />
+      ))}
+    </>
+  )
+}
+
+export const InflowNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const r = useLab((s) => s.results.nodes[id])
+  const paused = useLab((s) => !s.running)
+  const q = Math.abs(r?.outflow ?? 0)
+  const d = (r?.extra?.depth ?? 0) * depthScale(r?.extra?.depth ?? 0, 0.5)
+  return (
+    <Shell id={id} kind="inflow" selected={selected} label={data.label} sub={fmtU(q || data.props.flow, 'flow', units)}>
+      <svg width="104" height="84" viewBox="0 0 104 84" style={{ overflow: 'visible' }}>
+        <rect x="4" y="6" width="34" height={BED - 6} rx="4" fill="#101a2c" stroke="#5a7099" strokeWidth="2.5" />
+        <circle cx="21" cy="34" r="10" fill="#04070d" stroke="#5a7099" strokeWidth="2" />
+        {q > 0 && (
+          <>
+            <path d={`M21,28 H40 Q56,28 58,${BED - d} V${BED} H21 Z`} fill={WATER} opacity=".85" />
+            <rect x="38" y={BED - d} width="66" height={d} fill={WATER} opacity=".85" />
+            <path
+              className="pipe-flow"
+              d={`M22,34 H40 Q54,34 56,${BED - d / 2} H104`}
+              fill="none"
+              stroke="#f4fdff"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeDasharray="0.1 12"
+              style={{ animationDuration: '.5s', animationPlayState: paused ? 'paused' : 'running' }}
+            />
+          </>
+        )}
+        <Bed width={104} />
+      </svg>
+    </Shell>
+  )
+})
+
+export const WeirNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const r = useLab((s) => s.results.nodes[id])
+  const paused = useLab((s) => !s.running)
+  const p = data.props
+  const x = r?.extra
+  const flume = p.variant === 'parshall'
+  const crest = flume ? 0 : p.crestHeight
+  const k = depthScale(crest * 1.5, x?.depthUp ?? 0, x?.depthDn ?? 0)
+  const [up, dn, c] = [(x?.depthUp ?? 0) * k, (x?.depthDn ?? 0) * k, crest * k]
+  const wet = (x?.flow ?? 0) > 0
+  const broad = p.variant === 'broad'
+  return (
+    <Shell
+      id={id}
+      kind="weir"
+      selected={selected}
+      label={data.label}
+      sub={wet ? `H ${fmtU(x!.headOver, 'length', units)} · ${fmtU(x!.flow, 'flow', units)}${x!.submerged ? ' · drowned' : ''}` : weirType(p.variant).name}
+    >
+      <svg width="112" height="88" viewBox="0 0 112 88" style={{ overflow: 'visible' }}>
+        {wet && (
+          <>
+            <rect x="0" y={BED - up} width={broad ? 40 : 52} height={up} fill={WATER} opacity=".85" />
+            <path
+              d={`M${broad ? 40 : 52},${BED - up} Q${broad ? 66 : 62},${BED - up} ${broad ? 74 : 66},${BED - Math.max(dn, 2)} H112 V${BED} H${broad ? 40 : 56} V${BED - c} Z`}
+              fill={WATER}
+              opacity=".85"
+            />
+            <path
+              className="pipe-flow"
+              d={`M2,${BED - up / 2 - c / 2} H${broad ? 40 : 50} Q64,${BED - up / 2 - c / 2} 70,${BED - dn / 2} H112`}
+              fill="none"
+              stroke="#f4fdff"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeDasharray="0.1 12"
+              style={{ animationDuration: '.6s', animationPlayState: paused ? 'paused' : 'running' }}
+            />
+          </>
+        )}
+        {flume ? (
+          <path d={`M30,${BED} L50,${BED - 5} H62 L82,${BED}`} fill="#101a2c" stroke="#8aa0c6" strokeWidth="2.5" strokeLinejoin="round" />
+        ) : broad ? (
+          <path d={`M40,${BED} V${BED - c} H72 V${BED} Z`} fill="#101a2c" stroke="#8aa0c6" strokeWidth="2.5" strokeLinejoin="round" />
+        ) : (
+          <path d={`M52,${BED} V${BED - c} L56,${BED - c + 4} V${BED} Z`} fill="#8aa0c6" stroke="#8aa0c6" strokeWidth="2" strokeLinejoin="round" />
+        )}
+        <Bed width={112} />
+      </svg>
+    </Shell>
+  )
+})
+
+export const GateNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const r = useLab((s) => s.results.nodes[id])
+  const cmd = useLab((s) => s.controls[id])
+  const paused = useLab((s) => !s.running)
+  const x = r?.extra
+  const a = data.props.opening * (cmd ?? 1)
+  const k = depthScale(a * 2, x?.depthUp ?? 0, x?.depthDn ?? 0)
+  const [up, dn, lip] = [(x?.depthUp ?? 0) * k, (x?.depthDn ?? 0) * k, Math.min(54, a * k)]
+  const wet = (x?.flow ?? 0) > 0
+  return (
+    <Shell id={id} kind="gate" selected={selected} label={data.label} sub={`a ${fmtU(a, 'length', units)}${x?.submerged ? ' · drowned' : x && !x.controlling && wet ? ' · clear' : ''}`}>
+      <svg width="112" height="96" viewBox="0 0 112 96" style={{ overflow: 'visible' }}>
+        {wet && (
+          <>
+            <rect x="0" y={BED - up} width="53" height={up} fill={WATER} opacity=".85" />
+            <path d={`M59,${BED - Math.min(lip, Math.max(dn, 2))} Q70,${BED - dn} 80,${BED - dn} H112 V${BED} H59 Z`} fill={WATER} opacity=".85" />
+            <path
+              className="pipe-flow"
+              d={`M2,${BED - up / 2} Q44,${BED - up / 2} 54,${BED - lip / 2} H112`}
+              fill="none"
+              stroke="#f4fdff"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeDasharray="0.1 12"
+              style={{ animationDuration: '.4s', animationPlayState: paused ? 'paused' : 'running' }}
+            />
+          </>
+        )}
+        <path d={`M50,2 V${BED} M62,2 V${BED}`} stroke="#3a4a6b" strokeWidth="2" />
+        <rect x="53" y={BED - lip - 52} width="6" height="52" rx="1.5" fill="#8aa0c6" style={{ transition: 'y .3s' }} />
+        <path d={`M56,${BED - lip - 52} V0 M47,0 H65`} stroke="#fab219" strokeWidth="2.5" strokeLinecap="round" />
+        <Bed width={112} />
+      </svg>
+    </Shell>
+  )
+})
+
+export const OutfallNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const r = useLab((s) => s.results.nodes[id])
+  const paused = useLab((s) => !s.running)
+  const mode: string = data.props.mode
+  const q = r?.outflow ?? 0
+  const d = (r?.extra?.depth ?? 0) * depthScale(r?.extra?.depth ?? 0, 0.5)
+  return (
+    <Shell id={id} kind="outfall" selected={selected} label={data.label} sub={q > 0 ? fmtU(q, 'flow', units) : mode === 'level' ? 'fixed level' : mode === 'normal' ? 'normal depth' : 'free drop'}>
+      <svg width="104" height="84" viewBox="0 0 104 84" style={{ overflow: 'visible' }}>
+        {mode === 'free' ? (
+          <>
+            {q > 0 && <path d={`M0,${BED - d} H44 Q62,${BED - d} 66,96 H56 Q54,${BED} 44,${BED} H0 Z`} fill={WATER} opacity=".85" />}
+            {q > 0 && (
+              <path
+                className="pipe-flow"
+                d={`M2,${BED - d / 2} H44 Q58,${BED - d / 2} 61,96`}
+                fill="none"
+                stroke="#f4fdff"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeDasharray="0.1 12"
+                style={{ animationDuration: '.5s', animationPlayState: paused ? 'paused' : 'running' }}
+              />
+            )}
+            <path d={`M0,${BED + 1.5} H46 V96`} fill="none" stroke="#5a7099" strokeWidth="3" strokeLinejoin="round" />
+          </>
+        ) : (
+          <>
+            <rect x="0" y={BED - Math.max(d, 3)} width="104" height={Math.max(d, 3)} fill={WATER} opacity=".85" />
+            {mode === 'level' && <path d={`M70,${BED - Math.max(d, 3) - 8} l5,8 l5,-8 z`} fill="#fab219" />}
+            <Bed width={104} />
+          </>
+        )}
+      </svg>
+    </Shell>
+  )
+})
+
 export const nodeTypes = {
+  inflow: InflowNode,
+  weir: WeirNode,
+  gate: GateNode,
+  outfall: OutfallNode,
   reservoir: ReservoirNode,
   tank: TankNode,
   vessel: VesselNode,

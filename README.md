@@ -30,10 +30,10 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   speed), pipe ΔP(Q), hydraulic grade line, per-element trends.
 - **Control layer** (`src/model/control.ts`): a PLC-style scan runs once per tick — read measurements, update every
   block, resolve commands, move actuators — and the commands are applied when the network is compiled.
-  - *Signal wires* are a second, non-hydraulic edge type. Green = measurement (instrument `pv` → controller `cin`);
+  - _Signal wires_ are a second, non-hydraulic edge type. Green = measurement (instrument `pv` → controller `cin`);
     wiring one turns a tank, pressure gauge, flow meter or ΔP gauge into a transmitter. Violet = command, 0–100 %
     (controller `sig` → device `ctl`, or into a logic gate / lamp).
-  - A command *scales the device's own setting*: pump speed × command, throttle-valve opening × command; anything
+  - A command _scales the device's own setting_: pump speed × command, throttle-valve opening × command; anything
     else is on/off. Throttle valves can have an actuator stroke time.
   - Blocks: manual switch, timer, limit switch with hysteresis (level / pressure / flow by what it's wired to), PID
     with auto/manual, anti-windup and bumpless transfer, AND/OR/NOT gate, alarm lamp.
@@ -46,7 +46,7 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   Also from the catalogue: valve bodies (gate, globe, ball, butterfly…) with equal-%/linear/quick-opening trims and
   a Kv/Cv readout, and nominal pipe sizes (steel Sch 40, copper L, PVC Sch 40, PEX) that set bore, material and
   roughness together.
-- **Storage & sources**: the app integrates storage itself as *volume*, so tanks can be cylinders, cones, spheres or
+- **Storage & sources**: the app integrates storage itself as _volume_, so tanks can be cylinders, cones, spheres or
   horizontal drums, and a **pressure vessel** (gas cushion, polytropic) is a fixed-head node whose head follows the
   gas law each tick. **Float valve**: a self-acting valve type that finds the tank on its outlet side and closes as
   it fills. **Demand patterns**: 24 h residential / commercial / industrial multipliers on the lab clock (re-solved
@@ -60,9 +60,9 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   separation. Operate a valve, pump or outlet from its inspector: peak/trough, Joukowsky's ρ·a·Δv, the critical time
   2L/a, pressure and flow histories anywhere, and a **replay on the bench** that drives gauges, pipe colours and
   flow particles with the recorded wave. `scripts/transient-check.ts` checks it against theory.
-- **Domain kits** — still data, not new component types. *Discharge devices* preset the outlet: K-factor
+- **Domain kits** — still data, not new component types. _Discharge devices_ preset the outlet: K-factor
   sprinklers (sealed until their bulb breaks), hose reel, hydrant, drip emitters (plain and pressure-compensating),
-  spray heads and rotors; Q = K·√p is exactly the solver's emitter. *Pump types* set the curve shape as shut-off and
+  spray heads and rotors; Q = K·√p is exactly the solver's emitter. _Pump types_ set the curve shape as shut-off and
   run-out ratios — EPANET fits H = H₀ − B·Qᶜ through three points and `pumpHead()` uses the same form — giving a
   fire pump (with the NFPA 20 churn / 150 % checks in the inspector), a steep multistage and a flat circulator.
   Hydronics adds boiler, radiator and a balancing-valve body; closed loops solve with the expansion vessel as the
@@ -85,6 +85,22 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   lab clock, nozzles and leaks choke at the critical ratio. Flows are standard volumes (15 °C, 1 atm). Controls,
   charts and goals work unchanged. `scripts/gas-check.ts` checks it against hand calculations. Elevation is ignored;
   tees, three-way valves and jet pumps are plain junctions; no water hammer or thermal layer for gases.
+- **Open-channel engine** (`src/engine/channel.ts`, hydraulics in `src/model/openchannel.ts`): any conduit can be
+  switched from "pipe, flowing full" to "open channel" (rectangular, trapezoidal, V or part-full circular; Manning n from
+  a lining catalogue), and anything connected to a channel part is a reach from the start. Bed levels come from the node
+  elevations. Steady gradually-varied flow: reaches are oriented towards the nearest outfall and get their discharge from
+  continuity; a subcritical standard-step pass runs upstream from every downstream control (free drop, fixed tailwater,
+  normal depth, weir, gate, junction level), a supercritical pass runs downstream from every upstream control (critical
+  inlet, gate vena contracta, weir toe), and at each station the profile with the larger specific force wins — the
+  hand-over is the **hydraulic jump** (HEC-RAS's mixed-flow method). Forks are iterated until both branches agree on
+  the level at the fork. Parts: **inflow**, **weirs** (sharp-crested/Rehbock, contracted/Francis, V-notch, Cipolletti,
+  broad-crested, Parshall flume; Villemonte when drowned; a `pv` flow output), **sluice gate** (free and drowned/Henry;
+  takes a controller's command), **outfall**. Readings give yₙ, y꜀, slope class, Froude range, the profile name
+  (M1, S2, "M3 → jump → M1" …), jump depths and the power it dissipates; the inspector draws the water surface against
+  bed, normal and critical depth along the main stem; warnings cover overtopping, scour and pipes running full.
+  Channels and pipework share a bench but exchange no water: each is solved by its own engine and the results merged.
+  Steady only (no flood routing), one bed level per node (no drops), more than two branches split equally.
+  `scripts/channel-check.ts` checks it against hand calculations.
 - **Jet pump (ejector)**: three ports, and both of its internal links depend on heads elsewhere in the network — the
   nozzle sees motive − suction, the entrainment curve scales with motive − discharge — which no single EPANET element
   can express. The engine wraps EPANET in a relaxed fixed-point: solve, read those heads, rebuild the nozzle's K and
@@ -102,14 +118,14 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **39 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **43 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
   valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
-  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown). `scripts/control-sim.ts` runs the loops closed
+  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli
-  in the educational layer and only the *permanent* loss is handed to the solver as a minor-loss K.
+  in the educational layer and only the _permanent_ loss is handed to the solver as a minor-loss K.
 - **Units engine**: SI stored, anything displayed (kPa/bar/psi/m H₂O, L/min/GPM/m³/h, mm/in, W/hp …).
 - **Fluids**: water at 20/60/90 °C, glycol mix, diesel, light oil.
 - Autosave to localStorage, JSON project save/open.
@@ -127,8 +143,8 @@ fly deploy                             # build remotely and ship
 ## Layout
 
 ```
-src/model/     types + defaults, units, physics (pure, SI)
-src/engine/    inp.ts (compile) · epanet.ts (steady engine) · gas.ts (gas engine)
+src/model/     types + defaults, units, physics, openchannel (pure, SI)
+src/engine/    inp.ts (compile) · epanet.ts (steady engine) · gas.ts (gas engine) · channel.ts (open-channel engine)
                transient.ts (water-hammer engine) · thermal.ts (heat layer)
                worker.ts + client.ts (threading)
                analysis.ts (curves, grade line)
@@ -137,4 +153,4 @@ src/store.ts   zustand store, solve scheduling, tank time-stepping, persistence
 src/ui/        nodes, animated pipe edge, inspector, charts, top bar, sidebar
 ```
 
-`HydraulicEngine` is the seam for future solvers (water hammer / MOC, gas networks).
+`HydraulicEngine` is the seam solvers plug into: EPANET, the gas engine and the open-channel engine all sit behind it today; steam and transient heat transfer are still to come.

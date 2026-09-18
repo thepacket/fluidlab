@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { EXPERIMENTS } from '../experiments'
 import { DISCHARGE_DEVICES, LOSS_DEVICES, PUMP_PRESETS, VALVE_PRESETS } from '../model/catalog'
+import { WEIR_TYPES } from '../model/openchannel'
 import { KIND_META, type Kind } from '../model/types'
 import { useLab } from '../store'
 import { KindIcon } from './icons'
@@ -36,6 +37,10 @@ const GROUPS: { name: string; items: PaletteItem[] }[] = [
       ...(['manual', 'timer', 'schedule', 'switch', 'pid', 'stager', 'logic', 'lamp'] as Kind[]).map(item),
       { key: 'manual:estop', kind: 'manual' as Kind, name: 'Emergency stop', blurb: 'Healthy until hit — wire it through an AND gate' },
     ],
+  },
+  {
+    name: 'Open channel',
+    items: [item('inflow'), ...WEIR_TYPES.map((w): PaletteItem => ({ key: `weir:${w.id}`, kind: 'weir', name: w.name, blurb: w.blurb })), item('gate'), item('outfall')],
   },
   { name: 'Fittings', items: catalogue('Fittings') },
   { name: 'Equipment', items: catalogue('Equipment') },

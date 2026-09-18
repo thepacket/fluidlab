@@ -18,6 +18,7 @@ export const PV_SOURCES: Partial<Record<Kind, { quantity: Quantity; name: string
   vessel: { quantity: 'pressure', name: 'Pressure', tag: 'P' },
   meter: { quantity: 'flow', name: 'Flow', tag: 'F' },
   dpgauge: { quantity: 'pressure', name: 'Differential', tag: 'dP' },
+  weir: { quantity: 'flow', name: 'Flow', tag: 'F' },
 }
 /** controllers that read a measurement */
 export const PV_CONSUMERS: Kind[] = ['switch', 'pid']
@@ -99,6 +100,7 @@ function readPV(src: ModelNode, results?: Results, levels?: Record<string, numbe
   if (src.data.kind === 'tank') return levels?.[src.id] ?? src.data.props.initLevel
   if (!results?.ok) return undefined
   if (src.data.kind === 'gauge' || src.data.kind === 'vessel') return results.nodes[src.id]?.pressure
+  if (src.data.kind === 'weir') return results.nodes[src.id]?.extra?.flow
   const d = results.devices[src.id]
   if (!d) return undefined
   return src.data.kind === 'meter' ? Math.abs(d.flow) : d.pIn - d.pOut

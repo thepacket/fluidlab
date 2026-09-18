@@ -5,6 +5,7 @@
 //   k      Δh = K · v²/2g on the part's bore — fittings. Goes to the solver as a minor-loss coefficient.
 //   rated  Δp = Δp_rated · (Q/Q_rated)ⁿ / (1 − fouling)² — equipment sized from a datasheet point. n = 2 is
 //          turbulent; packed beds and membranes sit nearer 1. Goes to the solver as a head-loss curve (GPV).
+import { weirType } from './openchannel'
 import type { Props } from './types'
 
 export type Glyph = 'elbow' | 'elbow45' | 'tee' | 'reducer' | 'expander' | 'entrance' | 'exit' | 'strainer' | 'filter' | 'plate' | 'shell' | 'coil' | 'mixer' | 'membrane' | 'uv' | 'generic'
@@ -384,6 +385,10 @@ export function catalogueSpec(kind: string, variant?: string): { prefix: string;
   if (kind === 'fitting') {
     const d = lossDevice(variant)
     return { prefix: d.prefix, defaults: { variant: d.id, ...d.defaults } }
+  }
+  if (kind === 'weir') {
+    const w = weirType(variant)
+    return { prefix: w.prefix, defaults: { variant: w.id, ...w.defaults } }
   }
   if (kind === 'leak' && variant === 'burst') return { prefix: 'BR', defaults: { variant: 'burst', holeDiameter: 0.04, active: false } }
   if (kind === 'manual' && variant === 'estop') return { prefix: 'ES', defaults: { on: true, style: 'estop' } }
