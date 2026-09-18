@@ -1,7 +1,7 @@
 // EPANET adapter, part 1: translate a FluidLab model into an EPANET .inp file.
 // Units: LPS / SI  →  flow L/s, length m, diameter mm, roughness mm (D-W), pressure m.
-import { demandFactor, lossDevice } from '../model/catalog'
-import { G, area, elementK, fittingK, ratedDp, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
+import { demandFactor, dischargeDevice, lossDevice } from '../model/catalog'
+import { G, area, pumpShape, elementK, fittingK, ratedDp, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
 import { isControl, isInline, type Model, type Warning } from '../model/types'
 
 export interface Compiled {
@@ -169,11 +169,14 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
     } else if (k === 'junction' || k === 'gauge') {
       J.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n((p.demand ?? 0) * demandFactor(p.pattern, model.time ?? 0) * 1000)}`)
     } else if (k === 'outlet') {
-      if (off(nd.id)) J.push(`${nodeIds[nd.id]} ${n(p.elevation)} 0`)
+      // a sprinkler head is a plugged hole until its bulb breaks
+      const sealed = dischargeDevice(p.variant)?.glyph === 'sprinkler' && !p.fused
+      if (off(nd.id) || sealed) J.push(`${nodeIds[nd.id]} ${n(p.elevation)} 0`)
       else if (p.mode === 'demand') J.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n(p.demand * demandFactor(p.pattern, model.time ?? 0) * 1000)}`)
       else {
         J.push(`${nodeIds[nd.id]} ${n(p.elevation)} 0`)
-        const c = p.cd * area(p.nozzleDiameter) * Math.sqrt(2 * G) * 1000
+        // Q = K·√p is the emitter law; a plain nozzle is the same thing with K = Cd·A·√(2/ρ)
+        const c = p.mode === 'kfactor' ? p.kFactor * Math.sqrt(rhoG) * 1000 : p.cd * area(p.nozzleDiameter) * Math.sqrt(2 * G) * 1000
         EM.push(`${nodeIds[nd.id]} ${n(Math.max(c, 1e-6))}`)
       }
     } else {
@@ -181,7 +184,9 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
       J.push(`${d.a} ${n(p.elevation)} 0`, `${d.b} ${n(p.elevation)} 0`)
       if (k === 'pump') {
         const speed = overrides.pumpSpeed?.[nd.id] ?? p.speed * command(model, nd.id)
-        CU.push(`C${d.link} ${n(p.designFlow * 1000)} ${n(p.designHead)}`)
+        // shut-off, duty and run-out: EPANET fits H = H₀ − B·Qᶜ through them, the same form pumpHead() uses
+        const { r0, rMax } = pumpShape(p)
+        CU.push(`C${d.link} 0 ${n(p.designHead * r0)}`, `C${d.link} ${n(p.designFlow * 1000)} ${n(p.designHead)}`, `C${d.link} ${n(p.designFlow * rMax * 1000)} 0`)
         PU.push(`${d.link} ${d.a} ${d.b} HEAD C${d.link} SPEED ${n(Math.max(speed, 0.01))}`)
         if (!p.on || speed < 0.01) ST.push(`${d.link} CLOSED`)
       } else if (k === 'meter') {

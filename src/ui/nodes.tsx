@@ -1,7 +1,7 @@
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
 import { memo, useEffect, type ReactNode } from 'react'
 import { NODE_SIZE, PORT_Y, type LabNode } from '../experiments'
-import { lossDevice, type Glyph } from '../model/catalog'
+import { dischargeDevice, lossDevice, type Glyph } from '../model/catalog'
 import { PV_CONSUMERS, PV_SOURCES, fmtClock, timerState } from '../model/control'
 import { beta, fittingK, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
 import { CONTROLLABLE, ROTATABLE, isControl, type Kind } from '../model/types'
@@ -320,24 +320,64 @@ export const OutletNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const q = r?.outflow ?? 0
   const on = q > 1e-8
   const held = useLab((s) => (s.controls[id] ?? 1) < 0.5)
+  const glyph = dischargeDevice(data.props.variant)?.glyph ?? 'nozzle'
+  const sealed = glyph === 'sprinkler' && !data.props.fused
   const vigor = Math.min(1, Math.sqrt(Math.max(0, r?.pressure ?? 0) / 150000))
   const droop = rotOf(data) % 180 === 90 ? 0 : 10 + (1 - vigor) * 14 // a vertical jet doesn't sag sideways
+  const anim = (k: number, base = 0.9) => ({ animationDuration: `${base - vigor * 0.5}s`, animationDelay: `${-k * 0.13}s`, animationPlayState: paused ? 'paused' : 'running' }) as const
   return (
-    <Shell id={id} kind="outlet" rot={rotOf(data)} selected={selected} label={data.label} sub={held ? 'SHUT · held' : r ? fmtU(Math.abs(q), 'flow', units) : undefined}>
+    <Shell id={id} kind="outlet" rot={rotOf(data)} selected={selected} label={data.label} sub={held ? 'SHUT · held' : sealed ? 'sealed' : r ? fmtU(Math.abs(q), 'flow', units) : undefined}>
       <svg width="76" height="64" viewBox="0 0 76 64" style={{ overflow: 'visible' }}>
-        <path d="M0,24 H24 L40,28 V36 L24,40 H0 Z" fill="#04070d" />
-        <path d="M0,27 H24 L38,29.5 V34.5 L24,37 H0 Z" fill={c} style={{ filter: `drop-shadow(0 0 4px ${c})` }} />
-        <rect x="20" y="21" width="5" height="22" rx="1.5" fill="#5a7099" />
-        <rect x="38" y="26" width="4" height="12" rx="1.5" fill="#8aa0c6" />
-        {on &&
-          [-2, -1, 0, 1, 2].map((k) => (
-            <path
-              key={k}
-              className="spray"
-              d={`M43,32 Q${58 + vigor * 10},${32 + k * 3} ${62 + vigor * 34},${32 + k * (5 + vigor * 5) + droop}`}
-              style={{ animationDuration: `${0.9 - vigor * 0.5}s`, animationDelay: `${-k * 0.13}s`, animationPlayState: paused ? 'paused' : 'running' }}
-            />
-          ))}
+        {glyph === 'sprinkler' ? (
+          <>
+            <path d="M0,27 H26 V37 H0 Z" fill={c} stroke="#04070d" strokeWidth="3" />
+            <path d="M26,24 H34 V40 H26 Z" fill="#8aa0c6" />
+            {/* frame arms, deflector, and the glass bulb that holds it shut */}
+            <path d="M34,26 Q48,22 54,32 Q48,42 34,38" fill="none" stroke="#8aa0c6" strokeWidth="2.5" />
+            <path d="M56,20 V44" stroke="#cfd9ec" strokeWidth="3.500" strokeLinecap="round" />
+            {sealed && <rect x="35" y="29.500" width="18" height="5" rx="2.500" fill="#ff5d7a" style={{ filter: 'drop-shadow(0 0 3px #ff5d7a)' }} />}
+            {on &&
+              [-3, -2, -1, 1, 2, 3].map((k) => (
+                <path key={k} className="spray" d={`M58,${32 + k * 3} Q${70 + vigor * 8},${32 + k * 10} ${72 + vigor * 22},${32 + k * (13 + vigor * 6)}`} style={anim(k)} />
+              ))}
+          </>
+        ) : glyph === 'hydrant' ? (
+          <>
+            <path d="M0,24 H22 V40 H0 Z" fill="#04070d" />
+            <path d="M0,27 H22 V37 H0 Z" fill={c} />
+            <path d="M22,12 H40 Q46,12 46,18 V46 Q46,52 40,52 H22 Z" fill="#c0392b" stroke="#ff8f80" strokeWidth="2" />
+            <path d="M28,8 H40 M34,8 V12" stroke="#ff8f80" strokeWidth="3" strokeLinecap="round" />
+            <rect x="46" y="25" width="9" height="14" rx="2" fill="#8aa0c6" />
+            {on &&
+              [-2, -1, 0, 1, 2].map((k) => (
+                <path key={k} className="spray" d={`M56,32 Q${72 + vigor * 12},${32 + k * 2} ${80 + vigor * 40},${32 + k * 6 + droop}`} style={{ ...anim(k), strokeWidth: 3.2 }} />
+              ))}
+          </>
+        ) : glyph === 'drip' ? (
+          <>
+            <path d="M0,27 H24 V37 H0 Z" fill={c} stroke="#04070d" strokeWidth="3" />
+            <rect x="24" y="22" width="16" height="20" rx="5" fill="#1b2a44" stroke="#5a7099" strokeWidth="2" />
+            <circle cx="40" cy="32" r="2.500" fill="#8aa0c6" />
+            {on && <path className="spray" d="M44,32 H74" style={{ animationDuration: '1.6s', strokeDasharray: '2 12', animationPlayState: paused ? 'paused' : 'running' }} />}
+          </>
+        ) : glyph === 'rotor' ? (
+          <>
+            <path d="M0,27 H22 V37 H0 Z" fill={c} stroke="#04070d" strokeWidth="3" />
+            <rect x="22" y="20" width="18" height="24" rx="4" fill="#1b2a44" stroke="#5a7099" strokeWidth="2" />
+            <rect x="40" y="27" width="8" height="10" rx="2" fill="#8aa0c6" />
+            {on && [-2, -1, 0, 1, 2].map((k) => <path key={k} className="spray" d={`M49,32 Q${66 + vigor * 12},${32 + k * 7} ${78 + vigor * 30},${32 + k * 16 + droop * 0.5}`} style={anim(k)} />)}
+          </>
+        ) : (
+          <>
+            <path d="M0,24 H24 L40,28 V36 L24,40 H0 Z" fill="#04070d" />
+            <path d="M0,27 H24 L38,29.5 V34.5 L24,37 H0 Z" fill={c} style={{ filter: `drop-shadow(0 0 4px ${c})` }} />
+            <rect x="20" y="21" width="5" height="22" rx="1.5" fill="#5a7099" />
+            <rect x="38" y="26" width="4" height="12" rx="1.5" fill="#8aa0c6" />
+            {glyph === 'hose' && <circle cx="14" cy="32" r="12" fill="none" stroke="#c0392b" strokeWidth="4" strokeDasharray="5 3" />}
+            {on &&
+              [-2, -1, 0, 1, 2].map((k) => <path key={k} className="spray" d={`M43,32 Q${58 + vigor * 10},${32 + k * 3} ${62 + vigor * 34},${32 + k * (5 + vigor * 5) + droop}`} style={anim(k)} />)}
+          </>
+        )}
       </svg>
     </Shell>
   )

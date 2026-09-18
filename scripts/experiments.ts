@@ -75,5 +75,26 @@ for (const ex of EXPERIMENTS) {
       prop('rv').setPressure = set
       again(`open ${o} set ${set / 1000}`)
     }
+  if (ex.id === 'sprinklers')
+    for (const d of [0.0351, 0.0409]) {
+      for (const e of edges) if (e.data?.label.startsWith('Branch')) e.data.props.diameter = d
+      again('branch ' + d * 1000 + ' mm')
+    }
+  if (ex.id === 'fire-pump')
+    for (const [type, o] of [['standard', 0.2], ['standard', 0.24], ['standard', 0.27], ['fire', 0.2], ['fire', 0.22], ['fire', 0.24]] as const) {
+      Object.assign(prop('p'), type === 'fire' ? { pumpType: 'fire', shutoffRatio: 1.2, runoutRatio: 2.2 } : {})
+      prop('v').opening = o
+      again(`${type} valve ${o}`)
+    }
+  if (ex.id === 'lateral')
+    for (const d of [0.0171, 0.0219]) {
+      for (const e of edges) if (e.data?.label.startsWith('Lateral')) e.data.props.diameter = d
+      again('lateral ' + d * 1000 + ' mm')
+    }
+  if (ex.id === 'hydronic')
+    for (const o of [0.2, 0.15, 0.12, 0.1, 0.08]) {
+      prop('bv1').opening = o
+      again('BV1 ' + o)
+    }
   if (ex.id === 'prv') console.log('  p2', r.nodes.g2.pressure, r.devices.v.status)
 }

@@ -1,6 +1,6 @@
 // Units engine: SI internally → conversion → display. Never store display units.
 
-export type Quantity = 'length' | 'diameter' | 'roughness' | 'pressure' | 'flow' | 'head' | 'velocity' | 'power' | 'time' | 'volume' | 'none' | 'percent'
+export type Quantity = 'length' | 'diameter' | 'roughness' | 'pressure' | 'flow' | 'head' | 'velocity' | 'power' | 'time' | 'volume' | 'kfactor' | 'none' | 'percent'
 
 interface UnitDef {
   id: string
@@ -48,6 +48,10 @@ export const UNITS: Record<Exclude<Quantity, 'none' | 'percent'>, UnitDef[]> = {
     { id: 'm/s', label: 'm/s', factor: 1 },
     { id: 'ft/s', label: 'ft/s', factor: 0.3048 },
   ],
+  kfactor: [
+    { id: 'lpm', label: 'L/min/√bar', factor: 1 / 60000 / Math.sqrt(1e5) },
+    { id: 'gpm', label: 'gpm/√psi', factor: 6.30902e-5 / Math.sqrt(6894.757) },
+  ],
   volume: [
     { id: 'L', label: 'L', factor: 1e-3 },
     { id: 'm3', label: 'm³', factor: 1 },
@@ -78,6 +82,7 @@ export const METRIC: UnitPrefs = {
   power: 'W',
   time: 'min',
   volume: 'L',
+  kfactor: 'lpm',
 }
 export const US: UnitPrefs = {
   length: 'ft',
@@ -90,6 +95,7 @@ export const US: UnitPrefs = {
   power: 'hp',
   time: 'min',
   volume: 'gal',
+  kfactor: 'gpm',
 }
 
 function def(q: Quantity, prefs: UnitPrefs): UnitDef {

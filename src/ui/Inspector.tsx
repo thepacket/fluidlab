@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { gradeLine, pipeCurve, pumpCurve, type XY } from '../engine/analysis'
 import { solver } from '../engine/client'
-import { DEMAND_PATTERNS, demandFactor, LOSS_DEVICES, PIPE_STANDARDS, TRIMS, VALVE_BODIES, lossDevice } from '../model/catalog'
+import { DEMAND_PATTERNS, demandFactor, dischargeDevice, LOSS_DEVICES, PUMP_TYPES, PIPE_STANDARDS, TRIMS, VALVE_BODIES, lossDevice } from '../model/catalog'
 import { PV_SOURCES, fmtClock, timerState } from '../model/control'
-import { TANK_SHAPES, beta, elementLossFraction, tankHeight, tankVolume, vesselPressure, vesselWater } from '../model/physics'
+import { TANK_SHAPES, pumpHead, beta, elementLossFraction, tankHeight, tankVolume, vesselPressure, vesselWater } from '../model/physics'
 import { ELEMENT_TYPES, FLUIDS, KIND_META, MATERIALS, ROTATABLE, VALVE_TYPES, isControl, type Kind, type Props } from '../model/types'
 import { fmt, fmtNum, fmtU, toDisplay, toSI, unitLabel, type Quantity } from '../model/units'
 import { model, selectedId, useLab } from '../store'
@@ -52,9 +52,12 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
       type: 'select',
       options: [
         { id: 'nozzle', name: 'Open nozzle (pressure-driven)' },
+        { id: 'kfactor', name: 'K-factor device (Q = K·√p)' },
         { id: 'demand', name: 'Fixed demand' },
       ],
     },
+    { key: 'fused', label: 'Bulb broken (head open)', q: 'none', type: 'toggle', show: (p) => dischargeDevice(p.variant)?.glyph === 'sprinkler' },
+    { key: 'kFactor', label: 'K-factor', q: 'kfactor', show: (p) => p.mode === 'kfactor' },
     { key: 'nozzleDiameter', label: 'Nozzle bore', q: 'diameter', show: (p) => p.mode === 'nozzle' },
     { key: 'cd', label: 'Discharge coeff. Cd', q: 'none', show: (p) => p.mode === 'nozzle' },
     { key: 'demand', label: 'Base demand', q: 'flow', show: (p) => p.mode === 'demand' },
@@ -64,6 +67,7 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
   pump: [
     { key: 'on', label: 'Power', q: 'none', type: 'toggle' },
     { key: 'speed', label: 'Speed (VFD)', q: 'percent', type: 'slider', max: 1.5 },
+    { key: 'pumpType', label: 'Curve shape', q: 'none', type: 'select', options: PUMP_TYPES },
     { key: 'designFlow', label: 'Design flow', q: 'flow' },
     { key: 'designHead', label: 'Design head', q: 'head' },
     { key: 'bepEfficiency', label: 'Best efficiency', q: 'percent' },
@@ -265,6 +269,7 @@ function FieldRow({ f, props, pvq, onChange }: { f: Field; props: Props; pvq: Qu
           onChange={(e) => {
             const raw = e.target.value
             const patch: Props = { [f.key]: raw === 'true' ? true : raw === 'false' ? false : raw }
+            if (f.key === 'pumpType') Object.assign(patch, (({ shutoffRatio, runoutRatio }) => ({ shutoffRatio, runoutRatio }))(PUMP_TYPES.find((t) => t.id === raw)!))
             if (f.key === 'body') Object.assign(patch, (({ kOpen, trim }) => ({ kOpen, trim }))(VALVE_BODIES.find((b) => b.id === raw)!))
             if (f.key === 'variant') Object.assign(patch, lossDevice(raw).defaults) // a different part brings its own datasheet numbers
             if (f.key === 'elementType') patch.cd = e.target.value === 'orifice' ? 0.61 : 0.98
@@ -675,6 +680,20 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
           tone={d.efficiency && d.efficiency > 0.85 * node!.data.props.bepEfficiency ? 'good' : 'warn'}
         />
         <Row label="Hydraulic power" value={fmtU(d.hydraulicPower, 'power', u)} />
+        {node!.data.props.pumpType === 'fire' &&
+          (() => {
+            // NFPA 20 acceptance shape: shut-off ≤ 140 % of rated head, and ≥ 65 % of it still there at 150 % flow
+            const pp = node!.data.props
+            const churn = pumpHead(0, pp, 1) / pp.designHead
+            const overload = pumpHead(1.5 * pp.designFlow, pp, 1) / pp.designHead
+            return (
+              <>
+                <Row label="Churn (shut-off) head" value={`${(churn * 100).toFixed(0)} % of rated — limit 140 %`} tone={churn <= 1.4 ? 'good' : 'bad'} />
+                <Row label="Head at 150 % flow" value={`${(overload * 100).toFixed(0)} % of rated — needs ≥ 65 %`} tone={overload >= 0.65 ? 'good' : 'bad'} />
+                <Row label="Load now" value={`${((d.flow / pp.designFlow) * 100).toFixed(0)} % of rated flow`} />
+              </>
+            )
+          })()}
         <Row label="NPSH available" value={fmtU(d.npsha, 'head', u)} tone={d.npsha !== undefined && d.npsha < npshr ? 'bad' : 'good'} />
       </>
     )
@@ -866,7 +885,7 @@ export function Inspector() {
         </div>
         <div>
           <input className="insp-name" value={label} onChange={(e) => rename(id, e.target.value)} />
-          <span>{kind === 'pipe' ? 'Pipe' : kind === 'fitting' ? lossDevice(props.variant).name : KIND_META[kind].name}</span>
+          <span>{kind === 'pipe' ? 'Pipe' : kind === 'fitting' ? lossDevice(props.variant).name : (kind === 'outlet' && dischargeDevice(props.variant)?.name) || KIND_META[kind].name}</span>
         </div>
         {node && ROTATABLE.includes(node.data.kind) && (
           <button className="icon-btn" title="Rotate 90° (R)" onClick={() => rotate(id)}>

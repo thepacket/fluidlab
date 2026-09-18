@@ -22,6 +22,7 @@ const UNIT_NAMES: Record<keyof UnitPrefs, string> = {
   power: 'Power',
   time: 'Time',
   volume: 'Volume',
+  kfactor: 'K-factor',
 }
 
 export function TopBar() {

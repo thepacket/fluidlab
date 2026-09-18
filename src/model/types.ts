@@ -153,9 +153,9 @@ export function defaultProps(kind: Kind): Props {
     case 'gauge':
       return { elevation: 0 }
     case 'outlet':
-      return { elevation: 0, mode: 'nozzle', nozzleDiameter: 0.012, cd: 0.9, demand: 0.0005, pattern: 'constant' }
+      return { elevation: 0, mode: 'nozzle', nozzleDiameter: 0.012, cd: 0.9, demand: 0.0005, pattern: 'constant', variant: 'nozzle', kFactor: 80 / 60000 / Math.sqrt(1e5), fused: true }
     case 'pump':
-      return { elevation: 0, on: true, speed: 1, designFlow: 0.001, designHead: 20, bepEfficiency: 0.68, npshr: 2.5 }
+      return { elevation: 0, on: true, speed: 1, designFlow: 0.001, designHead: 20, bepEfficiency: 0.68, npshr: 2.5, pumpType: 'standard', shutoffRatio: 4 / 3, runoutRatio: 2 }
     case 'valve':
       return { closeLevel: 2, band: 0.3, elevation: 0, valveType: 'throttle', diameter: 0.04, opening: 1, kOpen: 2.5, pressureSetting: 150000, flowSetting: 0.0005, strokeTime: 0 }
     case 'meter':

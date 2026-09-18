@@ -51,12 +51,20 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   gas law each tick. **Float valve**: a self-acting valve type that finds the tank on its outlet side and closes as
   it fills. **Demand patterns**: 24 h residential / commercial / industrial multipliers on the lab clock (re-solved
   per lab-minute). **Leaky joint**: a junction with an emitter, reporting loss per day.
+- **Domain kits** — still data, not new component types. *Discharge devices* preset the outlet: K-factor
+  sprinklers (sealed until their bulb breaks), hose reel, hydrant, drip emitters (plain and pressure-compensating),
+  spray heads and rotors; Q = K·√p is exactly the solver's emitter. *Pump types* set the curve shape as shut-off and
+  run-out ratios — EPANET fits H = H₀ − B·Qᶜ through three points and `pumpHead()` uses the same form — giving a
+  fire pump (with the NFPA 20 churn / 150 % checks in the inspector), a steep multistage and a flat circulator.
+  Hydronics adds boiler, radiator and a balancing-valve body; closed loops solve with the expansion vessel as the
+  pressure reference.
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **26 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **30 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
-  valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve). `scripts/control-sim.ts` runs the loops closed
+  valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
+  balancing a heating loop). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli

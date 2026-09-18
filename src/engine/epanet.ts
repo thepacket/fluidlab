@@ -145,6 +145,7 @@ class EpanetEngine implements HydraulicEngine {
         }
       }
 
+      const fast: { id: string; label: string; v: number }[] = []
       for (const e of model.edges) {
         if (!live.has(e.id) || !e.data) continue
         const p = e.data.props
@@ -167,9 +168,18 @@ class EpanetEngine implements HydraulicEngine {
           pStart: (hA - zA) * rhoG,
           pEnd: (hB - zB) * rhoG,
         }
-        if (v > 3) warnings.push({ id: e.id, level: 'info', text: `${e.data.label}: high velocity (${v.toFixed(1)} m/s) — noise and erosion territory` })
+        if (v > 3) fast.push({ id: e.id, label: e.data.label, v })
       }
 
+      if (fast.length) {
+        // one note for the lot — a sprinkler branch can have a dozen fast pipes
+        const worst = fast.reduce((m, x) => (x.v > m.v ? x : m))
+        warnings.push({
+          id: worst.id,
+          level: 'info',
+          text: `${fast.length > 1 ? `${fast.length} pipes run above 3 m/s; fastest is ${worst.label}` : `${worst.label}: high velocity`} (${worst.v.toFixed(1)} m/s) — noise and erosion territory`,
+        })
+      }
       const ps = [...Object.values(res.nodes).map((x) => x.pressure), ...Object.values(res.devices).flatMap((x) => [x.pIn, x.pOut])]
       res.pMin = Math.min(0, ...ps)
       res.pMax = Math.max(1000, ...ps)

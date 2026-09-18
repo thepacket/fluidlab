@@ -74,13 +74,20 @@ export function ratedDp(q: number, p: Props) {
   return clean / (1 - Math.min(0.95, Math.max(0, p.fouling ?? 0))) ** 2
 }
 
-// Pump curve from a single design point, identical to EPANET's 1-point curve:
-// H = s²·(4/3)·Hd − (Hd/3)·(Q/Qd)²
+// Pump curve through three points — shut-off (0, r₀·Hd), duty (Qd, Hd) and run-out (r_max·Qd, 0) — in EPANET's
+// own form H = H₀ − B·Qᶜ, scaled by the affinity laws. The default ratios (4/3 and 2) give the classic parabola.
+export function pumpShape(p: Props) {
+  const r0 = Math.max(1.02, p.shutoffRatio ?? 4 / 3)
+  const rMax = Math.max(1.05, p.runoutRatio ?? 2)
+  return { r0, rMax, c: Math.log(r0 / (r0 - 1)) / Math.log(rMax) }
+}
 export function pumpHead(q: number, p: Props, speed = p.speed): number {
-  return speed * speed * (4 / 3) * p.designHead - (p.designHead / 3) * (q / p.designFlow) ** 2
+  const { r0, c } = pumpShape(p)
+  const s = Math.max(1e-6, speed)
+  return p.designHead * (s * s * r0 - (r0 - 1) * Math.pow(s, 2 - c) * Math.pow(Math.max(0, q) / p.designFlow, c))
 }
 export function pumpMaxFlow(p: Props, speed = p.speed): number {
-  return 2 * p.designFlow * speed
+  return pumpShape(p).rMax * p.designFlow * speed
 }
 /** Parabolic efficiency curve peaking at the (speed-scaled) design flow. */
 export function pumpEfficiency(q: number, p: Props, speed = p.speed): number {

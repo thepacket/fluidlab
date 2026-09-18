@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { EXPERIMENTS } from '../experiments'
-import { LOSS_DEVICES } from '../model/catalog'
+import { DISCHARGE_DEVICES, LOSS_DEVICES } from '../model/catalog'
 import { KIND_META, type Kind } from '../model/types'
 import { useLab } from '../store'
 import { KindIcon } from './icons'
@@ -16,6 +16,8 @@ interface PaletteItem {
 const item = (kind: Kind): PaletteItem => ({ key: kind, kind, name: KIND_META[kind].name, blurb: KIND_META[kind].blurb })
 const catalogue = (group: string) => LOSS_DEVICES.filter((d) => d.group === group).map((d): PaletteItem => ({ key: `fitting:${d.id}`, kind: 'fitting', name: d.name, blurb: d.blurb }))
 
+const discharge = (group: string) => DISCHARGE_DEVICES.filter((d) => d.group === group).map((d): PaletteItem => ({ key: `outlet:${d.id}`, kind: 'outlet', name: d.name, blurb: d.blurb }))
+
 const GROUPS: { name: string; items: PaletteItem[] }[] = [
   { name: 'Sources & storage', items: (['reservoir', 'tank', 'vessel'] as Kind[]).map(item) },
   { name: 'Pumps & valves', items: (['pump', 'valve', 'relief'] as Kind[]).map(item) },
@@ -24,12 +26,14 @@ const GROUPS: { name: string; items: PaletteItem[] }[] = [
   { name: 'Control', items: (['manual', 'timer', 'switch', 'pid', 'logic', 'lamp'] as Kind[]).map(item) },
   { name: 'Fittings', items: catalogue('Fittings') },
   { name: 'Equipment', items: catalogue('Equipment') },
+  { name: 'Fire protection', items: discharge('Fire protection') },
+  { name: 'Irrigation', items: discharge('Irrigation') },
 ]
 
 export function Sidebar() {
   const [tab, setTab] = useState<'build' | 'lab'>('lab')
   const [query, setQuery] = useState('')
-  const [closed, setClosed] = useState<Record<string, boolean>>({ Fittings: true, Equipment: true })
+  const [closed, setClosed] = useState<Record<string, boolean>>({ Fittings: true, Equipment: true, 'Fire protection': true, Irrigation: true })
   const experimentId = useLab((s) => s.experimentId)
   const load = useLab((s) => s.loadExperiment)
   const set = useLab((s) => s.set)

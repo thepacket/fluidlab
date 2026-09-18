@@ -993,4 +993,183 @@ export const EXPERIMENTS: Experiment[] = [
         .pipe('t', 'out', { length: 12, diameter: 0.032 }, ['r', 'l'])
         .done(),
   },
+  {
+    id: 'sprinklers',
+    no: '27',
+    title: 'Sprinkler branch line',
+    concept: 'K-factor hydraulics · the remote head',
+    formula: 'Q = K · √p',
+    brief:
+      'Four K80 heads on one branch line, all open. Every head obeys Q = K·√p, so the head furthest from the riser — the one with the least pressure left — decides whether the design passes. Fire codes are written around that most remote head.',
+    steps: [
+      'Compare the four heads: flow falls away along the branch.',
+      'Click the branch pipes: at these velocities a 1″ line eats most of the pump’s pressure.',
+      'Pick a bigger nominal size for the branch (pipe standard → nominal size) until the last head is fed.',
+    ],
+    goal: {
+      text: 'Get at least 57 L/min (0.5 bar on a K80) out of every head, including the most remote one',
+      check: (r) => {
+        const flows = ['h1', 'h2', 'h3', 'h4'].map((h) => (r.nodes[h]?.outflow ?? 0) / LPM)
+        return { done: Math.min(...flows) >= 57, readout: `remote head ${flows[3].toFixed(0)} L/min · nearest ${flows[0].toFixed(0)}` }
+      },
+    },
+    select: 'h4',
+    build: () => {
+      const branch = { length: 3.5, std: 'steel40', size: 'DN25 · 1″', diameter: 0.0266, material: 'steel', roughness: 0.045e-3 }
+      const head = { variant: 'spk80', mode: 'kfactor', kFactor: 80 / 60000 / Math.sqrt(1e5), fused: true, elevation: 4 }
+      const rig = new Rig()
+        .add('src', 'reservoir', 90, 480, { head: 2 }, 'Fire tank')
+        .add('p', 'pump', 270, 480, { pumpType: 'fire', shutoffRatio: 1.2, runoutRatio: 2.2, designFlow: 250 * LPM, designHead: 24 }, 'Fire pump')
+        .add('j0', 'junction', 430, 250, { elevation: 4 }, 'Riser')
+        .pipe('src', 'p', { length: 3, diameter: 0.08 })
+        .pipe('p', 'j0', { length: 8, diameter: 0.0525, material: 'steel', roughness: 0.045e-3 }, ['out', 'b'], 'Riser DN50')
+      let prev = 'j0'
+      for (let i = 1; i <= 4; i++) {
+        const j = `j${i}`
+        rig
+          .add(j, 'junction', 430 + i * 150, 250, { elevation: 4 }, `T${i}`)
+          .add(`h${i}`, 'outlet', 430 + i * 150, 400, head, `SP${i}`)
+          .turn(`h${i}`, 90)
+          .pipe(prev, j, branch, ['r', 'l'], `Branch ${i}`)
+          .pipe(j, `h${i}`, { length: 0.3, diameter: 0.0266 }, ['b', 'l'], `Drop ${i}`)
+        prev = j
+      }
+      return rig.done()
+    },
+  },
+  {
+    id: 'fire-pump',
+    no: '28',
+    title: 'Fire pump acceptance test',
+    concept: 'The NFPA 20 three-point curve',
+    formula: 'churn ≤ 140 % · ≥ 65 % head at 150 % flow',
+    brief:
+      'A fire pump must never run out of breath when the system demands more than its rating. The acceptance test flows it through a test header at 0 %, 100 % and 150 % of rated flow; at 150 % it must still make 65 % of its rated head. Somebody installed an ordinary end-suction pump here.',
+    steps: [
+      'Open the test valve until the meter reads 150 % of the pump’s rating (1125 L/min).',
+      'Select the pump: how much of its rated head is left? An ordinary curve droops too fast.',
+      'Change the pump’s curve shape to a listed fire pump and repeat the test.',
+    ],
+    goal: {
+      text: 'At 150 % of rated flow (1125 ± 35 L/min) the pump must still deliver at least 65 % of its rated head',
+      check: (r, nodes) => {
+        const d = r.devices['p']
+        const pp = nodes.find((n) => n.id === 'p')?.data.props
+        if (!d || !pp) return { done: false, readout: '—' }
+        const load = d.flow / pp.designFlow
+        const head = d.dH / pp.designHead
+        return { done: Math.abs(d.flow / LPM - 1125) <= 35 && head >= 0.65, readout: `${(load * 100).toFixed(0)} % flow · ${(head * 100).toFixed(0)} % head` }
+      },
+    },
+    select: 'v',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 90, 440, { head: 3 }, 'Fire tank')
+        .add('p', 'pump', 290, 440, { designFlow: 750 * LPM, designHead: 60, npshr: 4 }, 'Fire pump')
+        .add('g', 'gauge', 470, 440, {}, 'Discharge')
+        .add('m', 'meter', 640, 440, { diameter: 0.1 }, 'Test meter')
+        .add('v', 'valve', 820, 440, { diameter: 0.1, body: 'globe', kOpen: 6, trim: 'linear', opening: 0.15 }, 'Test valve')
+        .add('out', 'outlet', 1010, 440, { variant: 'hydrant', mode: 'kfactor', kFactor: 1500 / 60000 / Math.sqrt(1e5) }, 'Test header')
+        .pipe('src', 'p', { length: 3, diameter: 0.15 })
+        .pipe('p', 'g', { length: 2, diameter: 0.1 })
+        .pipe('g', 'm', { length: 2, diameter: 0.1 })
+        .pipe('m', 'v', { length: 2, diameter: 0.1 })
+        .pipe('v', 'out', { length: 3, diameter: 0.1 })
+        .done(),
+  },
+  {
+    id: 'lateral',
+    no: '29',
+    title: 'Irrigation lateral',
+    concept: 'Distribution uniformity',
+    formula: 'DU = Q_min / Q_max',
+    brief:
+      'Five spray heads along one lateral. Water is used up as it goes, so flow — and friction — is highest at the inlet and the pressure sags towards the far end. Heads that obey Q = K·√p then water the near end of the lawn more than the far end. Designers keep the variation inside 10 %.',
+    steps: ['Compare the first and last head.', 'Click the lateral sections: where is the pressure being lost?', 'Upsize the lateral (it is ½″ PEX) or lower the inlet flow until the heads even out.'],
+    goal: {
+      text: 'Bring the uniformity (smallest ÷ largest head flow) up to 90 %',
+      check: (r) => {
+        const q = ['s1', 's2', 's3', 's4', 's5'].map((h) => r.nodes[h]?.outflow ?? 0)
+        const du = Math.max(...q) > 0 ? Math.min(...q) / Math.max(...q) : 0
+        return { done: du >= 0.9, readout: `DU ${(du * 100).toFixed(0)} %` }
+      },
+    },
+    select: 's5',
+    build: () => {
+      const lat = { length: 8, std: 'pex', size: '½″', diameter: 0.0121, material: 'pex', roughness: 0.007e-3 }
+      const spray = { variant: 'spray', mode: 'kfactor', kFactor: 5 / 60000 / Math.sqrt(1e5) }
+      const rig = new Rig()
+        .add('src', 'reservoir', 90, 300, { head: 25 }, 'Supply')
+        .add('f', 'fitting', 270, 300, { variant: 'filter', ratedDp: 25e3, ratedFlow: 40 * LPM, exponent: 1.4, fouling: 0, diameter: 0.025 }, 'Filter')
+        .pipe('src', 'f', { length: 5, diameter: 0.025 })
+      let prev = 'f'
+      for (let i = 1; i <= 5; i++) {
+        rig
+          .add(`t${i}`, 'junction', 300 + i * 140, 300, {}, `T${i}`)
+          .add(`s${i}`, 'outlet', 300 + i * 140, 450, spray, `SH${i}`)
+          .turn(`s${i}`, 90)
+          .pipe(prev, `t${i}`, lat, [prev === 'f' ? 'out' : 'r', 'l'], `Lateral ${i}`)
+          .pipe(`t${i}`, `s${i}`, { length: 0.3, diameter: 0.0121 }, ['b', 'l'], `Riser ${i}`)
+        prev = `t${i}`
+      }
+      return rig.done()
+    },
+  },
+  {
+    id: 'hydronic',
+    no: '30',
+    title: 'Balancing a heating loop',
+    concept: 'Closed loops · the path of least resistance',
+    formula: 'Σ Δp around any loop = 0',
+    brief:
+      'A closed heating circuit: the circulator only has to beat friction, and the expansion vessel pins the pressure. Two identical radiators hang off the same pipes, but the near one has a far shorter path — so it hogs the flow while the far room stays cold. Balancing valves exist to waste a little head on purpose.',
+    steps: ['Compare the two branch meters.', 'Select the near branch’s balancing valve and throttle it.', 'Watch flow migrate to the far radiator. The pump’s total barely changes.'],
+    goal: {
+      text: 'Balance the radiators to within 10 % of each other, with at least 3 L/min through each',
+      check: (r) => {
+        const a = Math.abs(r.devices['m1']?.flow ?? 0) / LPM
+        const b = Math.abs(r.devices['m2']?.flow ?? 0) / LPM
+        return { done: Math.min(a, b) >= 3 && Math.abs(a - b) / Math.max(a, b, 1e-9) <= 0.1, readout: `near ${a.toFixed(1)} · far ${b.toFixed(1)} L/min` }
+      },
+    },
+    select: 'bv1',
+    build: () => {
+      const cu = { diameter: 0.0199, std: 'copperL', size: '¾″', material: 'copper', roughness: 0.0015e-3 }
+      const bv = { diameter: 0.015, body: 'balancing', kOpen: 4, trim: 'linear' }
+      const rad = { variant: 'radiator', ratedDp: 6e3, ratedFlow: 3 * LPM, exponent: 1.9, fouling: 0, diameter: 0.015 }
+      return new Rig()
+        .add('ev', 'vessel', 120, 330, { volume: 0.018, precharge: 100e3, initPressure: 150e3 }, 'Expansion')
+        .add('p', 'pump', 260, 520, { pumpType: 'circulator', shutoffRatio: 1.15, runoutRatio: 2.5, designFlow: 12 * LPM, designHead: 4, npshr: 1 }, 'Circulator')
+        .add('b', 'fitting', 430, 520, { variant: 'boiler', ratedDp: 10e3, ratedFlow: 30 * LPM, exponent: 2, fouling: 0, diameter: 0.02 }, 'Boiler')
+        .add('s1', 'junction', 600, 520, {}, 'S1')
+        .add('s2', 'junction', 960, 520, {}, 'S2')
+        .add('r1', 'fitting', 600, 380, rad, 'RA1')
+        .turn('r1', 270)
+        .add('bv1', 'valve', 600, 250, bv, 'BV1')
+        .turn('bv1', 270)
+        .add('m1', 'meter', 600, 120, { diameter: 0.015 }, 'Near')
+        .turn('m1', 270)
+        .add('r2', 'fitting', 960, 380, rad, 'RA2')
+        .turn('r2', 270)
+        .add('bv2', 'valve', 960, 250, bv, 'BV2')
+        .turn('bv2', 270)
+        .add('m2', 'meter', 960, 120, { diameter: 0.015 }, 'Far')
+        .turn('m2', 270)
+        .add('ret', 'junction', 260, 30, {}, 'Return')
+        .pipe('ev', 'p', { length: 1, ...cu }, ['b', 'in'])
+        .pipe('p', 'b', { length: 2, ...cu })
+        .pipe('b', 's1', { length: 3, ...cu })
+        .pipe('s1', 's2', { length: 30, ...cu, diameter: 0.0138, size: '½″' }, ['r', 'l'], 'Supply main')
+        .pipe('s1', 'r1', { length: 1, ...cu }, ['t', 'in'])
+        .pipe('r1', 'bv1', { length: 0.5, ...cu })
+        .pipe('bv1', 'm1', { length: 0.5, ...cu })
+        .pipe('s2', 'r2', { length: 1, ...cu }, ['t', 'in'])
+        .pipe('r2', 'bv2', { length: 0.5, ...cu })
+        .pipe('bv2', 'm2', { length: 0.5, ...cu })
+        .pipe('m1', 'ret', { length: 4, ...cu }, ['out', 'r'], 'Return near')
+        .pipe('m2', 'ret', { length: 34, ...cu, diameter: 0.0138, size: '½″' }, ['out', 't'], 'Return far')
+        .pipe('ret', 'ev', { length: 4, ...cu }, ['b', 'l'], 'Return')
+        .done()
+    },
+  },
 ]

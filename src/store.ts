@@ -3,7 +3,7 @@ import { create } from 'zustand'
 import { solver } from './engine/client'
 import { EXPERIMENTS, NODE_SIZE, PORT_Y, type LabEdge, type LabNode } from './experiments'
 import { EMPTY_CONTROL, PV_CONSUMERS, PV_SOURCES, SIGNAL_CONSUMERS, sameControl, stepControl, type ControlState } from './model/control'
-import { lossDevice } from './model/catalog'
+import { catalogueSpec } from './model/catalog'
 import { VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from './model/physics'
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
 import { METRIC, type UnitPrefs } from './model/units'
@@ -202,7 +202,7 @@ export const useLab = create<State>((set, get) => ({
   },
   addNode: (kind, x, y, variant) => {
     get().checkpoint()
-    const spec = kind === 'fitting' && variant ? lossDevice(variant) : undefined
+    const spec = catalogueSpec(kind, variant)
     const [w, h] = NODE_SIZE[kind]
     const nodes = get().nodes.map((n) => ({ ...n, selected: false }))
     const node: LabNode = {
@@ -210,7 +210,7 @@ export const useLab = create<State>((set, get) => ({
       type: kind,
       position: { x: x - w / 2, y: y - h * PORT_Y[kind] },
       selected: true,
-      data: { kind, label: nextLabel(nodes, kind, spec?.prefix), props: spec ? { ...defaultProps(kind), variant: spec.id, ...spec.defaults } : defaultProps(kind) },
+      data: { kind, label: nextLabel(nodes, kind, spec?.prefix), props: { ...defaultProps(kind), ...spec?.defaults }, ...(spec?.rot ? { rot: spec.rot } : {}) },
     }
     set({ nodes: [...nodes, node], edges: get().edges.map((e) => ({ ...e, selected: false })) })
   },

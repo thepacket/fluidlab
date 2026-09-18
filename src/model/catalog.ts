@@ -80,6 +80,8 @@ export const LOSS_DEVICES: LossDevice[] = [
   rated('mixer', 'Static mixer', 'MX', 'mixer', 30e3, 60, 2, 'Blending elements in the bore'),
   rated('membrane', 'Membrane / packed bed', 'MB', 'membrane', 150e3, 20, 1.05, 'Near-laminar: Δp ∝ Q', true),
   rated('uv', 'UV reactor', 'UV', 'uv', 5e3, 60, 2, 'Low-loss treatment chamber'),
+  rated('boiler', 'Boiler / chiller', 'BL', 'shell', 10e3, 30, 2, 'Heat source — hydraulically a pressure drop'),
+  rated('radiator', 'Radiator', 'RA', 'coil', 6e3, 3, 1.9, 'Panel radiator with its lockshield'),
   rated('custom-rated', 'Custom rated device', 'DV', 'generic', 20e3, 50, 2, 'Anything with a datasheet Δp @ Q'),
 ]
 
@@ -98,6 +100,7 @@ export const VALVE_BODIES: { id: string; name: string; kOpen: number; trim: Trim
   { id: 'plug', name: 'Plug', kOpen: 0.4, trim: 'equal' },
   { id: 'needle', name: 'Needle', kOpen: 9, trim: 'linear' },
   { id: 'diaphragm', name: 'Diaphragm', kOpen: 2.3, trim: 'quick' },
+  { id: 'balancing', name: 'Balancing (double-regulating)', kOpen: 4, trim: 'linear' },
 ]
 export const TRIMS: { id: Trim; name: string }[] = [
   { id: 'equal', name: 'Equal percentage' },
@@ -193,4 +196,114 @@ export function demandFactor(patternId: string | undefined, t: number): number {
   const h = (((t / 3600) % 24) + 24) % 24
   const i = Math.floor(h)
   return f[i] + (f[(i + 1) % 24] - f[i]) * (h - i)
+}
+
+// ---- pump types ----------------------------------------------------------------------------
+// Curve shapes as ratios of the duty point: shut-off head / duty head, and run-out flow / duty flow.
+
+export const PUMP_TYPES: { id: string; name: string; shutoffRatio: number; runoutRatio: number }[] = [
+  { id: 'standard', name: 'End-suction centrifugal', shutoffRatio: 4 / 3, runoutRatio: 2 },
+  { id: 'fire', name: 'Fire pump (NFPA 20 shape)', shutoffRatio: 1.2, runoutRatio: 2.2 },
+  { id: 'multistage', name: 'Multistage (steep)', shutoffRatio: 1.6, runoutRatio: 1.6 },
+  { id: 'circulator', name: 'Circulator (flat)', shutoffRatio: 1.15, runoutRatio: 2.5 },
+]
+
+// ---- discharge devices ---------------------------------------------------------------------
+// Everything that lets water out to atmosphere is an `outlet`; these entries preset it. K-factor devices obey
+// Q = K·√p, which is exactly the solver's emitter — sprinkler hydraulics need no new physics at all.
+
+const K = (lpmPerRootBar: number) => lpmPerRootBar / 60000 / Math.sqrt(1e5) // → m³/s per √Pa
+
+export type DischargeGlyph = 'nozzle' | 'sprinkler' | 'hydrant' | 'hose' | 'drip' | 'rotor'
+export interface DischargeDevice {
+  id: string
+  name: string
+  group: 'Fire protection' | 'Irrigation'
+  blurb: string
+  prefix: string
+  glyph: DischargeGlyph
+  /** bench rotation it is dropped with — sprinklers hang, so their inlet is on top */
+  rot?: number
+  defaults: Props
+}
+export const DISCHARGE_DEVICES: DischargeDevice[] = [
+  {
+    id: 'spk57',
+    name: 'Sprinkler K57 (½″, K 4.0)',
+    group: 'Fire protection',
+    blurb: 'Light hazard · closed until it fuses',
+    prefix: 'SP',
+    glyph: 'sprinkler',
+    rot: 90,
+    defaults: { mode: 'kfactor', kFactor: K(57), fused: false },
+  },
+  {
+    id: 'spk80',
+    name: 'Sprinkler K80 (½″, K 5.6)',
+    group: 'Fire protection',
+    blurb: 'The standard spray head',
+    prefix: 'SP',
+    glyph: 'sprinkler',
+    rot: 90,
+    defaults: { mode: 'kfactor', kFactor: K(80), fused: false },
+  },
+  {
+    id: 'spk115',
+    name: 'Sprinkler K115 (¾″, K 8.0)',
+    group: 'Fire protection',
+    blurb: 'Ordinary / extra hazard',
+    prefix: 'SP',
+    glyph: 'sprinkler',
+    rot: 90,
+    defaults: { mode: 'kfactor', kFactor: K(115), fused: false },
+  },
+  {
+    id: 'spk200',
+    name: 'Sprinkler K200 (K 14 ESFR)',
+    group: 'Fire protection',
+    blurb: 'Storage — huge flow per head',
+    prefix: 'SP',
+    glyph: 'sprinkler',
+    rot: 90,
+    defaults: { mode: 'kfactor', kFactor: K(200), fused: false },
+  },
+  { id: 'hosereel', name: 'Hose reel', group: 'Fire protection', blurb: 'First-aid hose · K ≈ 28', prefix: 'HR', glyph: 'hose', defaults: { mode: 'kfactor', kFactor: K(28) } },
+  { id: 'hydrant', name: 'Hydrant outlet 65 mm', group: 'Fire protection', blurb: 'Open butt · K ≈ 1500', prefix: 'HY', glyph: 'hydrant', defaults: { mode: 'kfactor', kFactor: K(1500) } },
+  {
+    id: 'drip',
+    name: 'Drip emitter 4 L/h',
+    group: 'Irrigation',
+    blurb: 'Simple orifice dripper — flow follows pressure',
+    prefix: 'DR',
+    glyph: 'drip',
+    rot: 90,
+    defaults: { mode: 'kfactor', kFactor: K(4 / 60) },
+  },
+  {
+    id: 'drip-pc',
+    name: 'Drip emitter 4 L/h, compensating',
+    group: 'Irrigation',
+    blurb: 'Diaphragm holds the flow constant',
+    prefix: 'DR',
+    glyph: 'drip',
+    rot: 90,
+    defaults: { mode: 'demand', demand: 4 / 3.6e6 },
+  },
+  { id: 'spray', name: 'Spray head', group: 'Irrigation', blurb: 'Fixed fan · K ≈ 5', prefix: 'SH', glyph: 'rotor', defaults: { mode: 'kfactor', kFactor: K(5) } },
+  { id: 'rotor', name: 'Rotor sprinkler', group: 'Irrigation', blurb: 'Gear-driven, long throw · K ≈ 12', prefix: 'RT', glyph: 'rotor', defaults: { mode: 'kfactor', kFactor: K(12) } },
+]
+export const dischargeDevice = (variant?: string) => DISCHARGE_DEVICES.find((d) => d.id === variant)
+
+/** What a catalogue-backed kind should be dropped with: label prefix, preset props, initial rotation. */
+export function catalogueSpec(kind: string, variant?: string): { prefix: string; defaults: Props; rot?: number } | undefined {
+  if (!variant) return undefined
+  if (kind === 'fitting') {
+    const d = lossDevice(variant)
+    return { prefix: d.prefix, defaults: { variant: d.id, ...d.defaults } }
+  }
+  if (kind === 'outlet') {
+    const d = dischargeDevice(variant)
+    return d && { prefix: d.prefix, defaults: { variant: d.id, ...d.defaults }, rot: d.rot }
+  }
+  return undefined
 }
