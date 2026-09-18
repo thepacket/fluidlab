@@ -1,6 +1,7 @@
 import { addEdge, applyEdgeChanges, applyNodeChanges, type Connection, type EdgeChange, type NodeChange } from '@xyflow/react'
 import { create } from 'zustand'
 import { solver } from './engine/client'
+import type { TransientEvent, TransientResult } from './engine/transient'
 import { EXPERIMENTS, NODE_SIZE, PORT_Y, type LabEdge, type LabNode } from './experiments'
 import { EMPTY_CONTROL, PV_CONSUMERS, PV_SOURCES, SIGNAL_CONSUMERS, sameControl, stepControl, type ControlState } from './model/control'
 import { catalogueSpec } from './model/catalog'
@@ -47,6 +48,10 @@ interface State {
   sheet: 'none' | 'parts' | 'insp'
   past: Snapshot[]
   future: Snapshot[]
+  /** last water-hammer run, and the replay cursor while it is being played back on the bench (−1 = not playing) */
+  surge: TransientResult | null
+  surgeBusy: boolean
+  surgeFrame: number
 
   onNodesChange: (c: NodeChange<LabNode>[]) => void
   onEdgesChange: (c: EdgeChange<LabEdge>[]) => void
@@ -70,9 +75,14 @@ interface State {
   exportProject: () => string
   resetSim: () => void
   tick: (dtReal: number) => void
+  runSurge: (event: TransientEvent) => void
+  /** Play the last run back through the bench: gauges, pipe colours and flow all follow the pressure wave. */
+  replaySurge: () => void
+  stopSurge: () => void
   solve: () => void
 }
 
+let steadyBeforeReplay: Results | null = null
 const STORAGE_KEY = 'fluidlab.project.v1'
 let lastTag: string | undefined
 let lastTagAt = 0
@@ -161,6 +171,9 @@ export const useLab = create<State>((set, get) => ({
   sheet: 'none',
   past: [],
   future: [],
+  surge: null,
+  surgeBusy: false,
+  surgeFrame: -1,
 
   onNodesChange: (c) => {
     if (c.some((x) => x.type === 'remove')) get().checkpoint('delete')
@@ -340,6 +353,28 @@ export const useLab = create<State>((set, get) => ({
   /** Quasi-steady time stepping: solve → integrate tank volumes → solve again. */
   tick: (dtReal) => {
     const s = get()
+    if (s.surgeFrame >= 0 && s.surge) {
+      // replay: paint the recorded wave over the steady results, one frame per tick
+      const f = s.surge.frames[s.surgeFrame]
+      if (!f || !steadyBeforeReplay) return get().stopSurge()
+      const base = steadyBeforeReplay
+      const results: Results = { ...base, nodes: { ...base.nodes }, devices: { ...base.devices }, links: { ...base.links } }
+      for (const [id, p] of Object.entries(f.nodes)) if (results.nodes[id]) results.nodes[id] = { ...results.nodes[id], pressure: p }
+      for (const [id, d] of Object.entries(f.devices)) if (results.devices[id]) results.devices[id] = { ...results.devices[id], flow: d.flow, pIn: d.pIn, pOut: d.pOut }
+      for (const [id, l] of Object.entries(f.links))
+        if (results.links[id])
+          results.links[id] = {
+            ...results.links[id],
+            flow: l.flow,
+            pStart: l.pStart,
+            pEnd: l.pEnd,
+            velocity: Math.abs(l.flow) / Math.max(1e-9, (Math.PI * (s.edges.find((e) => e.id === id)?.data?.props.diameter ?? 0.04) ** 2) / 4),
+          }
+      results.pMax = Math.max(base.pMax, s.surge.peak.pressure)
+      results.pMin = Math.min(base.pMin, s.surge.trough.pressure)
+      set({ results, surgeFrame: s.surgeFrame + 1 })
+      return
+    }
     if (!s.running || !s.results.ok) return
     // tanks and timers live on the accelerated lab clock; a purely steady rig just counts real seconds
     const clocked = s.nodes.some(usesClock)
@@ -384,6 +419,26 @@ export const useLab = create<State>((set, get) => ({
     set(moved ? { levels, simTime, history, ctrl, controls: ctrl.commands } : { simTime, history, ctrl, controls: ctrl.commands })
   },
 
+  runSurge: (event) => {
+    const s = get()
+    if (!s.engineReady || s.surgeBusy) return
+    get().stopSurge()
+    set({ surgeBusy: true })
+    solver.transient(model(s), event).then((surge) => set(surge ? { surge, surgeBusy: false } : { surgeBusy: false }))
+  },
+  replaySurge: () => {
+    const { surge } = get()
+    if (!surge?.ok || !surge.frames.length) return
+    steadyBeforeReplay = get().results
+    set({ surgeFrame: 0, running: false })
+  },
+  stopSurge: () => {
+    if (get().surgeFrame < 0) return
+    set({ surgeFrame: -1, results: steadyBeforeReplay ?? get().results })
+    steadyBeforeReplay = null
+    get().solve()
+  },
+
   solve: () => {
     const s = get()
     if (!s.engineReady) return
@@ -395,6 +450,7 @@ export const useLab = create<State>((set, get) => ({
 // ---- wiring: boot the solver, re-solve on hydraulic change, autosave ------
 
 let lastSig = ''
+let lastStruct = ''
 let queued = false
 function scheduleSolve() {
   if (queued) return
@@ -430,6 +486,13 @@ export function bootLab() {
     const sig = signature(s)
     if (sig !== lastSig && s.engineReady) {
       lastSig = sig
+      // a surge run describes one particular rig: forget it once the rig itself is edited (tank levels moving is fine)
+      const struct = JSON.stringify([s.nodes.map((n) => [n.id, n.data.props]), s.edges.map((e) => [e.id, e.source, e.target, e.data?.props]), s.fluidId])
+      if (struct !== lastStruct) {
+        lastStruct = struct
+        if (s.surgeFrame >= 0) steadyBeforeReplay = null
+        if (s.surge || s.surgeFrame >= 0) useLab.setState({ surge: null, surgeFrame: -1 })
+      }
       scheduleSolve()
     }
   })

@@ -94,15 +94,16 @@ export const FLUIDS: Fluid[] = [
   { id: 'oil', name: 'Light oil · ISO 32', density: 870, dynamicViscosity: 28e-3, vaporPressure: 10 },
 ]
 
-export const MATERIALS: { id: string; name: string; roughness: number }[] = [
-  { id: 'pvc', name: 'PVC', roughness: 0.0015e-3 },
-  { id: 'copper', name: 'Copper', roughness: 0.0015e-3 },
-  { id: 'pex', name: 'PEX', roughness: 0.007e-3 },
-  { id: 'stainless', name: 'Stainless steel', roughness: 0.015e-3 },
-  { id: 'steel', name: 'Commercial steel', roughness: 0.045e-3 },
-  { id: 'castiron', name: 'Cast iron', roughness: 0.26e-3 },
-  { id: 'concrete', name: 'Concrete', roughness: 1.0e-3 },
-  { id: 'custom', name: 'Custom', roughness: 0.05e-3 },
+/** roughness in m; waveSpeed = pressure-wave celerity in a water-filled pipe of that material, m/s */
+export const MATERIALS: { id: string; name: string; roughness: number; waveSpeed: number }[] = [
+  { id: 'pvc', name: 'PVC', roughness: 0.0015e-3, waveSpeed: 420 },
+  { id: 'copper', name: 'Copper', roughness: 0.0015e-3, waveSpeed: 1150 },
+  { id: 'pex', name: 'PEX', roughness: 0.007e-3, waveSpeed: 320 },
+  { id: 'stainless', name: 'Stainless steel', roughness: 0.015e-3, waveSpeed: 1250 },
+  { id: 'steel', name: 'Commercial steel', roughness: 0.045e-3, waveSpeed: 1250 },
+  { id: 'castiron', name: 'Cast iron', roughness: 0.26e-3, waveSpeed: 1150 },
+  { id: 'concrete', name: 'Concrete', roughness: 1.0e-3, waveSpeed: 1050 },
+  { id: 'custom', name: 'Custom', roughness: 0.05e-3, waveSpeed: 1000 },
 ]
 
 export const ELEMENT_TYPES = [

@@ -4,12 +4,14 @@
 import type { Model, Results } from '../model/types'
 import { systemCurve as systemCurveSync, type XY } from './analysis'
 import type { HydraulicEngine } from './epanet'
+import { runTransient, type TransientEvent, type TransientResult } from './transient'
 
-export type Request = { seq: number; type: 'solve'; model: Model } | { seq: number; type: 'systemCurve'; model: Model; pumpId: string }
-export type Response = { seq: number; type: 'solve'; results: Results } | { seq: number; type: 'systemCurve'; points: XY[] }
+export type Request =
+  { seq: number; type: 'transient'; model: Model; event: TransientEvent } | { seq: number; type: 'solve'; model: Model } | { seq: number; type: 'systemCurve'; model: Model; pumpId: string }
+export type Response = { seq: number; type: 'transient'; result: TransientResult } | { seq: number; type: 'solve'; results: Results } | { seq: number; type: 'systemCurve'; points: XY[] }
 
-type Payload = { type: 'solve'; model: Model } | { type: 'systemCurve'; model: Model; pumpId: string }
-type Value = Results | XY[] | null
+type Payload = { type: 'transient'; model: Model; event: TransientEvent } | { type: 'solve'; model: Model } | { type: 'systemCurve'; model: Model; pumpId: string }
+type Value = Results | XY[] | TransientResult | null
 interface Job {
   payload: Payload
   resolve: (v: Value) => void
@@ -55,6 +57,10 @@ class SolverClient {
   solve(model: Model) {
     return this.request({ type: 'solve', model: slim(model) }) as Promise<Results | null>
   }
+  /** Water-hammer run: steady solve + Method of Characteristics, both off the main thread. */
+  transient(model: Model, event: TransientEvent) {
+    return this.request({ type: 'transient', model: slim(model), event }) as Promise<TransientResult | null>
+  }
   systemCurve(model: Model, pumpId: string) {
     return this.request({ type: 'systemCurve', model: slim(model), pumpId }) as Promise<XY[] | null>
   }
@@ -77,7 +83,8 @@ class SolverClient {
       setTimeout(() => {
         const p = job.payload
         const local = this.local!
-        this.settle(p.type === 'solve' ? { seq, type: 'solve', results: local.solve(p.model) } : { seq, type: 'systemCurve', points: systemCurveSync(local, p.model, p.pumpId) })
+        if (p.type === 'transient') this.settle({ seq, type: 'transient', result: runTransient(p.model, local.solve(p.model), p.event) })
+        else this.settle(p.type === 'solve' ? { seq, type: 'solve', results: local.solve(p.model) } : { seq, type: 'systemCurve', points: systemCurveSync(local, p.model, p.pumpId) })
       }, 0)
   }
 
@@ -85,7 +92,7 @@ class SolverClient {
     const cur = this.inflight.get(res.type)
     if (!cur || cur.seq !== res.seq) return
     this.inflight.delete(res.type)
-    cur.job.resolve(res.type === 'solve' ? res.results : res.points)
+    cur.job.resolve(res.type === 'solve' ? res.results : res.type === 'transient' ? res.result : res.points)
     const next = this.waiting.get(res.type)
     if (next) {
       this.waiting.delete(res.type)

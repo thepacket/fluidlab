@@ -23,11 +23,12 @@ function ExperimentCard() {
   const nodes = useLab((s) => s.nodes)
   const levels = useLab((s) => s.levels)
   const history = useLab((s) => s.history)
+  const surge = useLab((s) => s.surge)
   const close = useLab((s) => s.set)
   const mobile = useIsMobile()
   const [open, setOpen] = useState(!mobile)
   const ex = EXPERIMENTS.find((e) => e.id === id)
-  const goal = useMemo(() => (ex?.goal && results.ok ? ex.goal.check(results, nodes, levels, history) : null), [ex, results, nodes, levels, history])
+  const goal = useMemo(() => (ex?.goal && results.ok ? ex.goal.check(results, nodes, levels, history, surge) : null), [ex, results, nodes, levels, history, surge])
   if (!ex) return null
   return (
     <div className={`exp-card ${goal?.done ? 'done' : ''}`}>

@@ -1,5 +1,6 @@
 // The "Lab" part of FluidLab: ready-made rigs with something to discover.
 import type { Edge, Node } from '@xyflow/react'
+import type { TransientResult } from './engine/transient'
 import { KIND_META, defaultPipeProps, defaultProps, isInline, type Kind, type NodeData, type PipeData, type Props, type Results } from './model/types'
 
 export const NODE_SIZE: Record<Kind, [number, number]> = {
@@ -64,7 +65,7 @@ export interface Experiment {
   formula?: string
   brief: string
   steps: string[]
-  goal?: { text: string; check: (r: Results, nodes: LabNode[], levels: Record<string, number>, history: { t: number; v: Record<string, number> }[]) => GoalState }
+  goal?: { text: string; check: (r: Results, nodes: LabNode[], levels: Record<string, number>, history: { t: number; v: Record<string, number> }[], surge?: TransientResult | null) => GoalState }
   fluidId?: string
   timeScale?: number
   autoRun?: boolean
@@ -1171,5 +1172,110 @@ export const EXPERIMENTS: Experiment[] = [
         .pipe('ret', 'ev', { length: 4, ...cu }, ['b', 'l'], 'Return')
         .done()
     },
+  },
+  {
+    id: 'water-hammer',
+    no: '31',
+    title: 'Water hammer',
+    concept: 'Joukowsky · the critical time 2L/a',
+    formula: 'Δp = ρ · a · Δv',
+    brief:
+      'Stop a moving column of water and its momentum has to go somewhere: a pressure wave runs up the pipe at the speed of sound in the water-filled pipe, about 1250 m/s in steel. If the valve shuts before that wave has been to the reservoir and back (2L/a), the pipe sees the full Joukowsky pressure — many times its working pressure. This engine is a separate solver: the method of characteristics, started from the steady solution.',
+    steps: [
+      'Select the valve, scroll to “Water hammer” and stroke it shut in 0.5 s. Then replay it on the bench.',
+      'Compare the peak with Joukowsky’s estimate, and the stroke time with 2L/a.',
+      'Find a stroke time the pipe can live with. Notice that most of a valve’s travel does almost nothing.',
+    ],
+    goal: {
+      text: 'Shut the valve completely without the line ever exceeding 1000 kPa',
+      check: (_r, _n, _l, _h, surge) => {
+        if (!surge?.ok || surge.event.id !== 'v') return { done: false, readout: 'no run yet' }
+        return { done: surge.event.to <= 0.001 && surge.peak.pressure <= 1000e3, readout: `peak ${(surge.peak.pressure / 1000).toFixed(0)} kPa in ${surge.event.duration} s` }
+      },
+    },
+    select: 'v',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 90, 400, { head: 40 }, 'Reservoir')
+        .add('g1', 'gauge', 420, 400, {}, 'Mid-line')
+        .add('g2', 'gauge', 700, 400, {}, 'At valve')
+        .add('v', 'valve', 850, 400, { diameter: 0.05, body: 'globe', kOpen: 6, trim: 'linear' }, 'Line valve')
+        .add('out', 'outlet', 1030, 400, { nozzleDiameter: 0.03 })
+        .pipe('src', 'g1', { length: 300, diameter: 0.0525, material: 'steel', roughness: 0.045e-3, std: 'steel40', size: 'DN50 · 2″' }, [], 'Main A')
+        .pipe('g1', 'g2', { length: 300, diameter: 0.0525, material: 'steel', roughness: 0.045e-3, std: 'steel40', size: 'DN50 · 2″' }, [], 'Main B')
+        .pipe('g2', 'v', { length: 1, diameter: 0.0525, material: 'steel', roughness: 0.045e-3 })
+        .pipe('v', 'out', { length: 2, diameter: 0.0525, material: 'steel', roughness: 0.045e-3 })
+        .done(),
+  },
+  {
+    id: 'surge-vessel',
+    no: '32',
+    title: 'Surge vessel',
+    concept: 'Giving the wave somewhere to go',
+    formula: 'p · V_gasⁿ = constant',
+    brief:
+      'Sometimes the valve has to slam — an emergency shut-off, a solenoid. Then the cure is a gas cushion next to it: the arriving water compresses the gas instead of the pipe wall, and the sharp spike becomes a slow, gentle swing. The vessel fitted here is the size of a lunch box.',
+    steps: [
+      'Stroke the valve shut in 0.1 s and look at the peak.',
+      'Select the surge vessel and make it bigger (its pre-charge should sit a little under line pressure).',
+      'Run the closure again — and replay both to see the difference.',
+    ],
+    goal: {
+      text: 'Shut the valve in 0.1 s or less and keep the peak below 800 kPa',
+      check: (_r, _n, _l, _h, surge) => {
+        if (!surge?.ok || surge.event.id !== 'v') return { done: false, readout: 'no run yet' }
+        return {
+          done: surge.event.to <= 0.001 && surge.event.duration <= 0.1 && surge.peak.pressure <= 800e3,
+          readout: `peak ${(surge.peak.pressure / 1000).toFixed(0)} kPa in ${surge.event.duration} s`,
+        }
+      },
+    },
+    select: 'v',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 90, 440, { head: 40 }, 'Reservoir')
+        .add('j', 'gauge', 640, 440, {}, 'At valve')
+        .add('sv', 'vessel', 640, 230, { volume: 0.002, precharge: 200e3, initPressure: 300e3 }, 'Surge vessel')
+        .add('v', 'valve', 820, 440, { diameter: 0.05, body: 'ball', kOpen: 0.3, trim: 'equal' }, 'Shut-off')
+        .add('out', 'outlet', 1000, 440, { nozzleDiameter: 0.02 })
+        .pipe('src', 'j', { length: 500, diameter: 0.0525, material: 'steel', roughness: 0.045e-3 }, [], 'Main')
+        .pipe('j', 'sv', { length: 0.5, diameter: 0.05, material: 'steel' }, ['t', 'b'])
+        .pipe('j', 'v', { length: 1, diameter: 0.0525, material: 'steel' })
+        .pipe('v', 'out', { length: 2, diameter: 0.0525, material: 'steel' })
+        .done(),
+  },
+  {
+    id: 'pump-trip',
+    no: '33',
+    title: 'Pump trip',
+    concept: 'Down-surge and column separation',
+    formula: 'Δp = −ρ · a · Δv',
+    brief:
+      'A power cut is a valve closure in reverse: the pump stops pushing, the column keeps going, and a wave of low pressure runs up the rising main. At a high point the pressure can reach the vapour pressure — the column parts, and slams back together when the flow reverses. The check valve at the pump then sees the returning surge.',
+    steps: [
+      'Select the pump, scroll to “Water hammer” and trip it.',
+      'Look at the pressure at the high point: does it reach vapour pressure?',
+      'Give the pump a heavier rotor (a longer coast-down) and trip it again — flywheels are a real surge cure.',
+    ],
+    goal: {
+      text: 'Trip the pump without the column separating anywhere',
+      check: (_r, _n, _l, _h, surge) => {
+        if (!surge?.ok || surge.event.id !== 'p') return { done: false, readout: 'no run yet' }
+        return { done: !surge.cavitated, readout: `lowest ${(surge.trough.pressure / 1000).toFixed(0)} kPa${surge.cavitated ? ' · column parted' : ''}` }
+      },
+    },
+    select: 'p',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 90, 520, { head: 2 }, 'Sump')
+        .add('p', 'pump', 270, 520, { designFlow: 400 * LPM, designHead: 55 }, 'Duty pump')
+        .add('g', 'gauge', 440, 520, {}, 'Pump outlet')
+        .add('hp', 'gauge', 720, 260, { elevation: 32 }, 'High point')
+        .add('dst', 'reservoir', 1010, 330, { head: 38 }, 'Hill tank')
+        .pipe('src', 'p', { length: 3, diameter: 0.15 })
+        .pipe('p', 'g', { length: 2, diameter: 0.1, material: 'steel' })
+        .pipe('g', 'hp', { length: 700, diameter: 0.1023, material: 'steel', roughness: 0.045e-3 }, ['r', 'l'], 'Rising main')
+        .pipe('hp', 'dst', { length: 500, diameter: 0.1023, material: 'steel', roughness: 0.045e-3 }, ['r', 'l'], 'Gravity leg')
+        .done(),
   },
 ]

@@ -669,6 +669,16 @@ input[type='range']::-webkit-slider-thumb {
   background: var(--good);
   box-shadow: 0 0 10px var(--good);
 }
+.surge-actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 12px;
+  flex-wrap: wrap;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .tip {
   padding: 14px 16px;
 }

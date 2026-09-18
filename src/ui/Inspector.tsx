@@ -603,6 +603,130 @@ function PatternChart({ pattern, base }: { pattern: string; base: number }) {
   )
 }
 
+/** Water-hammer test on the selected valve, pump or outlet: operate it, watch the pressure wave. */
+function SurgePanel({ id, kind }: { id: string; kind: Kind }) {
+  const s = useLab()
+  const [stroke, setStroke] = useState(0.5)
+  const [to, setTo] = useState(0)
+  const [inertia, setInertia] = useState(1)
+  const [runFor, setRunFor] = useState(10)
+  const [where, setWhere] = useState('')
+  const r = s.surge?.event.id === id ? s.surge : null
+  const u = s.units
+
+  const open = kind === 'outlet' ? (s.results.nodes[id]?.outflow ?? 0) > 1e-8 : true
+  const run = () => s.runSurge({ id, start: 0.5, duration: kind === 'pump' ? 0 : stroke, to: kind === 'outlet' ? (open ? 0 : 1) : to, inertia, runFor })
+
+  // where to look: the operated part first, then every instrumented point
+  const places = useMemo(() => {
+    const label = (nid: string) => s.nodes.find((n) => n.id === nid)?.data.label ?? nid
+    const keys = Object.keys(r?.series ?? {})
+    const named = keys.map((k) => ({ key: k, name: k.includes(':') ? `${label(k.split(':')[0])} · ${k.endsWith(':in') ? 'inlet' : 'outlet'}` : label(k) }))
+    const mine = kind === 'outlet' ? id : `${id}:${kind === 'pump' ? 'out' : 'in'}`
+    return named.sort((a, b) => Number(b.key === mine) - Number(a.key === mine))
+  }, [r, s.nodes, id, kind])
+  const at = places.find((p) => p.key === where)?.key ?? places[0]?.key
+  const replaying = s.surgeFrame >= 0
+
+  return (
+    <>
+      {kind === 'valve' && (
+        <>
+          <div className="field field-slider">
+            <span>Stroke to</span>
+            <b>{Math.round(to * 100)} %</b>
+            <input type="range" min={0} max={100} value={Math.round(to * 100)} style={{ '--fill': `${to * 100}%` } as React.CSSProperties} onChange={(e) => setTo(Number(e.target.value) / 100)} />
+          </div>
+          <div className="field">
+            <span>Stroke time (s)</span>
+            <NumberField value={stroke} q="none" onCommit={(v) => setStroke(Math.max(0, v))} />
+          </div>
+        </>
+      )}
+      {kind === 'pump' && (
+        <div className="field">
+          <span>Rotor coast-down: speed halves in (s)</span>
+          <NumberField value={inertia} q="none" onCommit={(v) => setInertia(Math.max(0.05, v))} />
+        </div>
+      )}
+      {kind === 'outlet' && (
+        <div className="field">
+          <span>{open ? 'Shut it' : 'Open it'} in (s)</span>
+          <NumberField value={stroke} q="none" onCommit={(v) => setStroke(Math.max(0, v))} />
+        </div>
+      )}
+      <div className="field">
+        <span>Simulate for (s)</span>
+        <NumberField value={runFor} q="none" onCommit={(v) => setRunFor(Math.min(120, Math.max(1, v)))} />
+      </div>
+      <div className="surge-actions">
+        <button className="btn primary" disabled={s.surgeBusy || !s.results.ok} onClick={run}>
+          {s.surgeBusy ? 'Solving…' : kind === 'pump' ? '⚡ Trip the pump' : kind === 'outlet' ? `⚡ ${open ? 'Shut' : 'Open'} it` : '⚡ Stroke the valve'}
+        </button>
+        {r?.ok && (
+          <button className="btn" onClick={replaying ? s.stopSurge : s.replaySurge}>
+            {replaying ? `■ Stop · ${r.frames[Math.min(s.surgeFrame, r.frames.length - 1)]?.t.toFixed(2)} s` : '▶ Replay on the bench'}
+          </button>
+        )}
+      </div>
+      {r && !r.ok && <p className="muted">{r.error}</p>}
+      {r?.ok && at && (
+        <>
+          <div className="hero">
+            <div>
+              <b>{fmt(r.peak.pressure, 'pressure', u)}</b>
+              <span>peak {unitLabel('pressure', u)}</span>
+            </div>
+            <div>
+              <b>{fmt(r.trough.pressure, 'pressure', u)}</b>
+              <span>lowest {unitLabel('pressure', u)}</span>
+            </div>
+            <div>
+              <b>{fmt(r.joukowsky, 'pressure', u)}</b>
+              <span>Joukowsky Δp</span>
+            </div>
+          </div>
+          <Row label="Peak occurs at" value={places.find((p) => p.key === r.peak.key)?.name ?? '—'} />
+          <Row label="Wave speed a" value={`${r.waveSpeed.toFixed(0)} m/s`} />
+          <Row label="Critical time 2L/a" value={`${r.criticalTime.toFixed(2)} s`} tone={kind === 'valve' && stroke < r.criticalTime ? 'warn' : 'good'} />
+          {r.cavitated && <Row label="Column separation" value="pressure hit vapour pressure" tone="bad" />}
+          <div className="field">
+            <span>Pressure at</span>
+            <select value={at} onChange={(e) => setWhere(e.target.value)}>
+              {places.map((p) => (
+                <option key={p.key} value={p.key}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <Chart
+            series={[{ name: 'Pressure', color: SERIES.blue, points: r.times.map((t, i) => ({ x: t, y: toDisplay(r.series[at][i], 'pressure', u) })), area: true }]}
+            xLabel="Time (s)"
+            yLabel={`Pressure (${unitLabel('pressure', u)})`}
+            height={180}
+            yMinZero={false}
+          />
+          <Chart
+            series={[{ name: 'Flow', color: SERIES.aqua, points: r.times.map((t, i) => ({ x: t, y: toDisplay(r.eventFlow[i], 'flow', u) })), area: true }]}
+            xLabel="Time (s)"
+            yLabel={`Flow (${unitLabel('flow', u)})`}
+            height={110}
+          />
+          <p className="muted">
+            Method of characteristics · {r.reaches} reaches · Δt {(r.dt * 1000).toFixed(2)} ms · solved in {r.solveMs.toFixed(0)} ms
+          </p>
+        </>
+      )}
+      {!r && (
+        <p className="muted">
+          Operates this component on the network as it stands and follows the pressure wave it sends out. {kind === 'valve' ? 'Close faster than 2L/a and you get the full Joukowsky surge.' : ''}
+        </p>
+      )}
+    </>
+  )
+}
+
 function GradeChart({ id }: { id?: string }) {
   const s = useLab()
   const pts = useMemo(() => gradeLine(model(s), s.results, id), [s.results, id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -923,6 +1047,12 @@ export function Inspector() {
         {active === 'grade' && <GradeChart id={id} />}
       </section>
 
+      {node && (kind === 'pump' || kind === 'outlet' || (kind === 'valve' && (props.valveType === 'throttle' || props.valveType === 'float'))) && (
+        <section>
+          <h4>Water hammer</h4>
+          <SurgePanel key={id} id={id} kind={kind as Kind} />
+        </section>
+      )}
       <section>
         <h4>Properties</h4>
         {kind === 'pipe' && <PipeSizePicker props={props} onChange={(patch) => updateEdge(id, patch)} />}

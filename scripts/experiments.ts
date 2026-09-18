@@ -81,7 +81,14 @@ for (const ex of EXPERIMENTS) {
       again('branch ' + d * 1000 + ' mm')
     }
   if (ex.id === 'fire-pump')
-    for (const [type, o] of [['standard', 0.2], ['standard', 0.24], ['standard', 0.27], ['fire', 0.2], ['fire', 0.22], ['fire', 0.24]] as const) {
+    for (const [type, o] of [
+      ['standard', 0.2],
+      ['standard', 0.24],
+      ['standard', 0.27],
+      ['fire', 0.2],
+      ['fire', 0.22],
+      ['fire', 0.24],
+    ] as const) {
       Object.assign(prop('p'), type === 'fire' ? { pumpType: 'fire', shutoffRatio: 1.2, runoutRatio: 2.2 } : {})
       prop('v').opening = o
       again(`${type} valve ${o}`)
