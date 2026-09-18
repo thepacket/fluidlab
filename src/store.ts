@@ -222,7 +222,8 @@ export const useLab = create<State>((set, get) => ({
       const touching = edges.filter((e) => e.type !== 'signal' && (e.source === id || e.target === id))
       return touching.length > 0 && touching.every(isChannel)
     }
-    const open = ends.some((x) => isChannelKind(x.data.kind)) || ends.some((x) => ['junction', 'gauge'].includes(x.data.kind) && wet(x.id))
+    const spill = ends.some((x, i) => x.data.kind === 'outlet' && (i === 0 ? c.sourceHandle : c.targetHandle) === 'o')
+    const open = spill || ends.some((x) => isChannelKind(x.data.kind)) || ends.some((x) => ['junction', 'gauge'].includes(x.data.kind) && wet(x.id))
     const word = open ? 'Reach' : 'Pipe'
     const n = edges.length + 1
     let label = `${word} ${n}`

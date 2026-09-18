@@ -17,6 +17,7 @@ import {
   gateDepth,
   hydraulicRadius,
   isChannel,
+  lakeSill,
   lining,
   normalDepth,
   sectionTop,
@@ -80,7 +81,8 @@ interface Structure {
   submerged: boolean
 }
 
-export function solveChannel(model: Model): Results | null {
+/** `feeds`: discharge (m³/s) arriving from the pipework at outlets that empty into a channel. */
+export function solveChannel(model: Model, feeds: Record<string, number> = {}): Results | null {
   const edges = model.edges.filter((e) => isChannel(e))
   if (!edges.length) return null
   const t0 = performance.now()
@@ -89,8 +91,18 @@ export function solveChannel(model: Model): Results | null {
   if (model.fluid.gas) return { ...res, ok: false, error: 'Open channels need a liquid — pick one in the fluid menu' }
   const rhoG = model.fluid.density * G
   const byId = new Map(model.nodes.map((n) => [n.id, n]))
-  const z = (id: string) => byId.get(id)?.data.props.elevation ?? 0
   const kindOf = (id: string) => byId.get(id)?.data.kind
+  // A tank or an open reservoir is a lake to the channel: a water level, and a sill the channel leaves (or enters) over.
+  const isLake = (id: string) => kindOf(id) === 'tank' || (kindOf(id) === 'reservoir' && (byId.get(id)!.data.props.sourceType ?? 'surface') === 'surface')
+  const lakeLevel = (id: string) => {
+    const p = byId.get(id)!.data.props
+    return kindOf(id) === 'tank' ? p.elevation + (model.levels?.[id] ?? p.initLevel) : p.head
+  }
+  const z = (id: string): number => {
+    const p = byId.get(id)?.data.props
+    if (!p) return 0
+    return isLake(id) ? lakeSill(kindOf(id)!, p) : (p.elevation ?? 0)
+  }
 
   // ---- 1. orientation -----------------------------------------------------------------------------
   const adj = new Map<string, string[]>()
@@ -104,7 +116,9 @@ export function solveChannel(model: Model): Results | null {
     }
   }
   const ids = [...adj.keys()]
-  const terminal = (id: string) => kindOf(id) === 'outfall' || (adj.get(id)!.length === 1 && kindOf(id) !== 'inflow')
+  // a lake is where water ends up if every reach at it runs downhill towards it; otherwise it is a source
+  const lakeSink = (id: string) => isLake(id) && adj.get(id)!.every((m) => z(m) > z(id))
+  const terminal = (id: string) => kindOf(id) === 'outfall' || lakeSink(id) || (adj.get(id)!.length === 1 && kindOf(id) !== 'inflow' && kindOf(id) !== 'outlet' && !isLake(id))
   const dist = new Map<string, number>()
   const queue = ids.filter(terminal)
   queue.forEach((id) => dist.set(id, 0))
@@ -136,12 +150,15 @@ export function solveChannel(model: Model): Results | null {
   const share = new Map<string, number>() // at a fork: fraction taken by the first branch
   const bracket = new Map<string, [number, number]>()
   const outflow = new Map<string, number>()
+  const lakeQ = new Map<string, number>() // what each source lake is giving, found by iteration below
   const route = () => {
     for (const id of order) {
       const nd = byId.get(id)!
       const p = nd.data.props
       let total = entering(id).reduce((s, r) => s + r.q, 0)
       if (nd.data.kind === 'inflow') total += Math.max(0, p.flow * command(model, id))
+      if (nd.data.kind === 'outlet') total += Math.max(0, feeds[id] ?? 0)
+      total += lakeQ.get(id) ?? 0
       if (nd.data.kind === 'junction') total -= p.demand ?? 0
       total = Math.max(0, total)
       const outs = leaving(id)
@@ -205,7 +222,10 @@ export function solveChannel(model: Model): Results | null {
     const nd = byId.get(id)!
     const p = nd.data.props
     const outs = leaving(id)
-    if (!outs.length) return nd.data.kind === 'outfall' && p.mode === 'level' ? p.level : null
+    if (!outs.length) {
+      if (isLake(id)) return lakeLevel(id) > z(id) ? lakeLevel(id) : null
+      return nd.data.kind === 'outfall' && p.mode === 'level' ? p.level : null
+    }
     const total = outs.reduce((s, r) => s + r.q, 0)
     const tail = total > 0 ? outs.reduce((s, r) => s + (r.zu + r.sub[0]) * r.q, 0) / total : Math.max(...outs.map((r) => r.zu + r.sub[0]))
     if (nd.data.kind !== 'weir' && nd.data.kind !== 'gate') return tail
@@ -227,7 +247,7 @@ export function solveChannel(model: Model): Results | null {
       st.headOver = h
       st.yUp = crest + h
       st.toe = st.submerged ? null : toe
-      return zs + st.yUp
+      return zs + crest + h
     }
     const a = Math.max(1e-4, p.opening * command(model, id))
     const b = Math.max(0.01, p.width)
@@ -267,36 +287,68 @@ export function solveChannel(model: Model): Results | null {
     }
   }
 
-  for (let pass = 0; pass < 40; pass++) {
-    route()
-    subPass()
-    let moved = 0
-    for (const [id, [lo, hi]] of bracket) {
-      const [a, b] = leaving(id)
-      const diff = a.zu + a.sub[0] - (b.zu + b.sub[0]) // branch a backs up higher → it is being given too much
-      const next: [number, number] = diff > 0 ? [lo, share.get(id)!] : [share.get(id)!, hi]
-      bracket.set(id, next)
-      const mid = (next[0] + next[1]) / 2
-      moved = Math.max(moved, Math.abs(mid - share.get(id)!))
-      share.set(id, mid)
+  const core = () => {
+    for (const id of bracket.keys()) (share.set(id, 0.5), bracket.set(id, [0, 1]))
+    for (let pass = 0; pass < 40; pass++) {
+      route()
+      subPass()
+      let moved = 0
+      for (const [id, [lo, hi]] of bracket) {
+        const [a, b] = leaving(id)
+        const diff = a.zu + a.sub[0] - (b.zu + b.sub[0]) // branch a backs up higher → it is being given too much
+        const next: [number, number] = diff > 0 ? [lo, share.get(id)!] : [share.get(id)!, hi]
+        bracket.set(id, next)
+        const mid = (next[0] + next[1]) / 2
+        moved = Math.max(moved, Math.abs(mid - share.get(id)!))
+        share.set(id, mid)
+      }
+      if (moved < 1e-5) break
     }
-    if (moved < 1e-5) break
+
+    // ---- 4. supercritical pass, and the choice between the two ------------------------------------------
+    for (const id of order) {
+      const st = structures.get(id)
+      const feeder = main(entering(id))
+      for (const r of leaving(id)) {
+        if (r.q <= 0) {
+          r.y = new Array(STATIONS + 1).fill(0)
+          continue
+        }
+        let start = r.yc
+        if (st?.yUp != null) start = st.toe ?? r.yc
+        else if (feeder && feeder.q > 0 && feeder.y[STATIONS] < feeder.yc * 0.99) start = superDepth(r.q, r.p, specificEnergy(feeder.q, feeder.p, feeder.y[STATIONS]))
+        r.sup = stationsDown(r, start)
+        r.y = r.sub.map((ys, i) => (r.sup[i] < r.yc * 0.999 && specificForce(r.q, r.p, r.sup[i]) > specificForce(r.q, r.p, ys) * (1 + 1e-9) ? r.sup[i] : ys))
+      }
+    }
   }
 
-  // ---- 4. supercritical pass, and the choice between the two ------------------------------------------
-  for (const id of order) {
-    const st = structures.get(id)
-    const feeder = main(entering(id))
-    for (const r of leaving(id)) {
-      if (r.q <= 0) {
-        r.y = new Array(STATIONS + 1).fill(0)
-        continue
+  // ---- lakes: a tank or reservoir gives whatever flow makes the energy at the head of its channel equal its level ----
+  const lakes = order.filter((id) => isLake(id) && !lakeSink(id) && leaving(id).length > 0)
+  if (!lakes.length) core()
+  for (let sweep = 0; sweep < (lakes.length > 1 ? 2 : 1); sweep++) {
+    for (const id of lakes) {
+      const H = lakeLevel(id) - z(id)
+      const energy = () => {
+        const r = main(leaving(id))!
+        return r.q > 0 ? specificEnergy(r.q, r.p, r.y[0]) : 0
       }
-      let start = r.yc
-      if (st?.yUp != null) start = st.toe ?? r.yc
-      else if (feeder && feeder.q > 0 && feeder.y[STATIONS] < feeder.yc * 0.99) start = superDepth(r.q, r.p, specificEnergy(feeder.q, feeder.p, feeder.y[STATIONS]))
-      r.sup = stationsDown(r, start)
-      r.y = r.sub.map((ys, i) => (r.sup[i] < r.yc * 0.999 && specificForce(r.q, r.p, r.sup[i]) > specificForce(r.q, r.p, ys) * (1 + 1e-9) ? r.sup[i] : ys))
+      // no channel can take more than critical flow under this much energy
+      let qMax = 0
+      for (const r of leaving(id)) {
+        let best = 0
+        for (let i = 1; i < 60; i++) best = Math.max(best, area(r.p, (H * i) / 60) * Math.sqrt(2 * G * Math.max(0, H - (H * i) / 60)))
+        qMax += best
+      }
+      let [lo, hi] = [0, H > 1e-4 ? qMax * 1.02 : 0]
+      for (let i = 0; i < 22 && hi > 0; i++) {
+        lakeQ.set(id, (lo + hi) / 2)
+        core()
+        if (energy() > H) hi = (lo + hi) / 2
+        else lo = (lo + hi) / 2
+      }
+      lakeQ.set(id, lo)
+      core()
     }
   }
 
@@ -315,7 +367,7 @@ export function solveChannel(model: Model): Results | null {
       const zones: string[] = []
       // a jump can also stand exactly where a fast reach hands over to a slow one
       const feeder = structures.get(r.up)?.yUp != null ? undefined : main(entering(r.up))
-      if (feeder && feeder.q > 0 && feeder.y[STATIONS] < feeder.yc * 0.999 && r.y[0] > r.yc * 1.001) {
+      if (feeder && feeder.q > 0 && feeder.y[STATIONS] < feeder.yc * 0.999 && r.y[0] > r.yc * 1.001 && r.y[0] > feeder.y[STATIONS] * 1.1) {
         const [y1, y2] = [feeder.y[STATIONS], r.y[0]]
         const loss = Math.max(0, specificEnergy(feeder.q, feeder.p, y1) - specificEnergy(r.q, r.p, y2))
         out.jump = { x: 0, y1, y2, loss, power: rhoG * r.q * loss }
@@ -323,7 +375,8 @@ export function solveChannel(model: Model): Results | null {
       }
       for (let i = 0; i <= STATIONS; i++) {
         const isJump = i > 0 && r.y[i - 1] < r.yc * 0.999 && r.y[i] > r.yc * 1.001 && r.y[i] === r.sub[i] && r.y[i - 1] === r.sup[i - 1]
-        if (isJump && !out.jump) {
+        // a step of a few per cent either side of critical depth is an undular ripple, not a jump worth reporting
+        if (isJump && !out.jump && r.y[i] > r.y[i - 1] * 1.1) {
           const [y1, y2] = [r.y[i - 1], r.y[i]]
           const loss = Math.max(0, specificEnergy(r.q, r.p, y1) - specificEnergy(r.q, r.p, y2) + r.s0 * r.dx)
           out.jump = { x: (i - 0.5) * r.dx, y1, y2, loss, power: rhoG * r.q * loss }
@@ -381,6 +434,17 @@ export function solveChannel(model: Model): Results | null {
     const q = (before ? ins : outs).reduce((s, r) => s + r.q, 0)
     const depth = nd.data.kind === 'weir' || nd.data.kind === 'gate' ? yUp : after ? yDn : yUp
     const ref = after ?? before
+    if (isLake(id)) {
+      // positive = the lake is gaining water, the same convention tanks and reservoirs use in the pipe engine
+      const p = nd.data.props
+      res.nodes[id] = {
+        head: lakeLevel(id),
+        pressure: nd.data.kind === 'tank' ? (lakeLevel(id) - p.elevation) * rhoG : 0,
+        elevation: nd.data.kind === 'tank' ? p.elevation : lakeLevel(id),
+        outflow: ins.reduce((s, r) => s + r.q, 0) - outs.reduce((s, r) => s + r.q, 0),
+      }
+      continue
+    }
     res.nodes[id] = {
       head: z(id) + depth,
       pressure: depth * rhoG,
@@ -399,7 +463,16 @@ export function solveChannel(model: Model): Results | null {
     }
     if (st?.submerged) warnings.push({ id, level: 'info', text: `${nd.data.label}: drowned by the tailwater — it no longer measures flow on its own` })
     if (nd.data.kind === 'gate' && st && st.yUp === null && q > 0) warnings.push({ id, level: 'info', text: `${nd.data.label}: the gate lip is clear of the water — it is not controlling anything` })
-    if (nd.data.kind !== 'junction' && nd.data.kind !== 'gauge' && nd.data.kind !== 'inflow' && nd.data.kind !== 'outfall' && nd.data.kind !== 'weir' && nd.data.kind !== 'gate')
+    if (
+      nd.data.kind !== 'junction' &&
+      nd.data.kind !== 'gauge' &&
+      nd.data.kind !== 'thermo' &&
+      nd.data.kind !== 'outlet' &&
+      nd.data.kind !== 'inflow' &&
+      nd.data.kind !== 'outfall' &&
+      nd.data.kind !== 'weir' &&
+      nd.data.kind !== 'gate'
+    )
       warnings.push({ id, level: 'warn', text: `${nd.data.label}: channels only join channel parts, junctions and gauges — this is treated as a plain joint` })
   }
 

@@ -1362,12 +1362,6 @@ input[type='range']::-webkit-slider-thumb {
 .react-flow__controls-button:hover {
   background: var(--panel-3);
 }
-.react-flow__minimap {
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  overflow: hidden;
-}
-
 @keyframes halo {
   50% {
     opacity: 0.06;

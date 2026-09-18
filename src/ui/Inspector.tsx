@@ -41,7 +41,7 @@ interface Field {
   options?: { id: string; name: string }[]
   max?: number
   /** `gas` = the working fluid is a gas, which changes what several parts mean */
-  show?: (p: Props, gas: boolean, steam: boolean, thermal: boolean) => boolean
+  show?: (p: Props, gas: boolean, steam: boolean, thermal: boolean, wet: boolean) => boolean
   hint?: string
 }
 
@@ -55,6 +55,7 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'staticLevel', label: 'Static water level', q: 'head', show: (p) => p.sourceType === 'well' },
     { key: 'ratedDrawdown', label: 'Drawdown', q: 'head', show: (p) => p.sourceType === 'well' },
     { key: 'ratedYield', label: '… when yielding', q: 'flow', show: (p) => p.sourceType === 'well' },
+    { key: 'channelInvert', label: 'Channel sill level (elevation)', q: 'length', hint: 'Bed of the open channel where it meets the water', show: (_p, _g, _s, _t, wet) => wet },
     { key: 'temp', label: 'Water temperature (°C)', q: 'none', show: (_p, gas) => !gas },
     { key: 'feedTemp', label: 'Feedwater temperature (°C)', q: 'none', show: (_p, _g, steam) => steam },
     { key: 'boilerEfficiency', label: 'Boiler efficiency', q: 'percent', show: (_p, _g, steam) => steam },
@@ -63,6 +64,7 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
   tank: [
     { key: 'shape', label: 'Shape', q: 'none', type: 'select', options: TANK_SHAPES },
     { key: 'overflow', label: 'Overflow at the rim', q: 'none', type: 'toggle' },
+    { key: 'channelInvert', label: 'Channel sill level (elevation)', q: 'length', hint: 'Bed of the open channel where it meets the tank', show: (_p, _g, _s, _t, wet) => wet },
     { key: 'initTemp', label: 'Water temperature at the start (°C)', q: 'none' },
     { key: 'heaterPower', label: 'Immersion heater', q: 'power', hint: 'Zero = no heater. Switch “live heat” on in the top bar to watch it work' },
     { key: 'heaterSetpoint', label: 'Heater thermostat (°C)', q: 'none', show: (p) => p.heaterPower > 0 },
@@ -1561,6 +1563,7 @@ export function Inspector() {
   const gasMode = useLab((s) => !!FLUIDS.find((f) => f.id === s.fluidId)?.gas)
   const steamMode = useLab((s) => !!FLUIDS.find((f) => f.id === s.fluidId)?.steam)
   const results = useLab((s) => s.results)
+  const wet = useLab((s) => s.edges.some((e) => oc.isChannel(e) && (e.source === id || e.target === id)))
 
   if (!id || (!node && !edge)) return <Overview />
   if (edge?.type === 'signal') {
@@ -1709,12 +1712,17 @@ export function Inspector() {
         {kind === 'valve' && props.valveType === 'throttle' && <KvField props={props} onChange={(patch) => updateNode(id, patch)} />}
         {kind === 'pipe' && !channelPart && <PipeSizePicker props={props} onChange={(patch) => updateEdge(id, patch)} />}
         {FIELDS[kind]
-          .filter((f) => !f.show || f.show(props, gasMode, steamMode, !!results.thermal))
+          .filter((f) => !f.show || f.show(props, gasMode, steamMode, !!results.thermal, wet))
           .map((f) => (
             <FieldRow
               key={f.key}
               f={f}
-              props={{ conduit: 'pipe', ...props, insulation: String(props.insulation ?? (steamMode ? 0 : 'none')) }}
+              props={{
+                conduit: 'pipe',
+                ...(wet && (kind === 'tank' || kind === 'reservoir') ? { channelInvert: oc.lakeSill(kind, props) } : {}),
+                ...props,
+                insulation: String(props.insulation ?? (steamMode ? 0 : 'none')),
+              }}
               pvq={pvq}
               onChange={(patch) => (node ? updateNode(id, reshape(kind, patch)) : updateEdge(id, reconduit(props, patch)))}
             />

@@ -26,7 +26,7 @@ import { EMPTY_RESULTS, isControl, type Model, type Results, type Warning } from
 import { solveGas } from './gas'
 import { solveChannel } from './channel'
 import { solveSteam } from './steam'
-import { stripChannels } from '../model/openchannel'
+import { isChannel, stripChannels } from '../model/openchannel'
 import { solveThermal } from './thermal'
 import { command, commandedOff, compile, floatTank, valvePosition, type JetState, type Overrides } from './inp'
 
@@ -96,20 +96,28 @@ class EpanetEngine implements HydraulicEngine {
   }
 
   solve(full: Model, overrides: Overrides = {}): Results {
-    const open = solveChannel(full)
-    if (!open) return this.solvePressurised(full, overrides)
-    // open channels and pipework share a bench but not (yet) any water: solve each, then lay one over the other
+    if (!full.edges.some(isChannel)) return this.solvePressurised(full, overrides)
+    // Pipework first, then the channels it feeds: an outlet that empties into a channel hands over its discharge, and a
+    // tank or reservoir is a lake whose level the channel engine reads. Tanks add up what both sides take and give.
     const model = stripChannels(full)
     const piped = model.edges.some((e) => e.type !== 'signal')
     const press = piped ? this.solvePressurised(model, overrides) : { ...EMPTY_RESULTS, ok: true }
+    const feeds: Record<string, number> = {}
+    for (const nd of full.nodes) if (nd.data.kind === 'outlet' && press.ok) feeds[nd.id] = press.nodes[nd.id]?.outflow ?? 0
+    const open = solveChannel(full, feeds)!
+    const nodes = { ...press.nodes }
+    for (const [id, n] of Object.entries(open.nodes)) {
+      const mine = press.nodes[id]
+      nodes[id] = !mine ? n : { ...mine, outflow: full.nodes.find((x) => x.id === id)?.data.kind === 'outlet' ? mine.outflow : mine.outflow + n.outflow }
+    }
     return {
       ...press,
       ok: open.ok || (piped && press.ok),
       error: open.error ?? (piped ? press.error : undefined),
       warnings: [...open.warnings, ...press.warnings],
-      nodes: { ...press.nodes, ...open.nodes },
+      nodes,
       links: { ...press.links, ...open.links },
-      excluded: [...press.excluded, ...open.excluded],
+      excluded: [...press.excluded.filter((id) => !open.nodes[id]), ...open.excluded],
       channel: open.channel,
       solveMs: press.solveMs + open.solveMs,
       pMin: Math.min(press.pMin, open.pMin),

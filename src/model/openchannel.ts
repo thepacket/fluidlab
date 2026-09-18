@@ -22,6 +22,9 @@ export function stripChannels(model: Model): Model {
   return { ...model, nodes: model.nodes.filter((n) => !dropped.has(n.id)), edges: model.edges.filter((e) => !isChannel(e) && !dropped.has(e.source) && !dropped.has(e.target)) }
 }
 
+/** Bed level of a channel where it meets a tank (its base, unless told otherwise) or a reservoir (half a metre under the surface). */
+export const lakeSill = (kind: Kind, p: Props): number => p.channelInvert ?? (kind === 'tank' ? p.elevation : p.head - 0.5)
+
 // ---- linings -------------------------------------------------------------------------
 
 /** Manning's n, and the velocity above which the lining starts to scour (m/s). */

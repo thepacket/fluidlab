@@ -143,7 +143,7 @@ class Rig {
       type: 'pipe',
       source,
       target,
-      sourceHandle: handles[0] ?? (two(source) ? 'out' : 'r'),
+      sourceHandle: handles[0] ?? (two(source) ? 'out' : this.nodes.find((n) => n.id === source)!.data.kind === 'outlet' ? 'o' : 'r'),
       targetHandle: handles[1] ?? (two(target) ? 'in' : 'l'),
       data: { label: label ?? `Reach ${count}`, props: { ...defaultChannelProps(), ...props } },
     })
@@ -1937,6 +1937,69 @@ export const EXPERIMENTS: Experiment[] = [
         .add('use', 'outlet', 960, 300, { mode: 'demand', demand: 30 * LPM }, 'Substation')
         .pipe('src', 'tt', { length: 400, diameter: 0.0525, material: 'steel', roughness: 0.045e-3, insulation: 0 }, [], 'Buried main')
         .pipe('tt', 'use', { length: 2, diameter: 0.0525, material: 'steel', roughness: 0.045e-3 })
+        .done(),
+  },
+  {
+    id: 'pump-to-canal',
+    no: '50',
+    title: 'Pumping into a canal',
+    concept: 'Pipework feeding an open channel',
+    formula: 'Q_canal = Q_outlet    ·    Q = 1.37 · H^2.5',
+    brief:
+      'A river pump lifts water up a rising main and lets it fall into the head of an irrigation canal. From there on nothing is under pressure: the canal carries exactly what the pipe delivers, and the V-notch at its end reads that flow as a head. The pipe side is solved first; its discharge becomes the channel’s inflow.',
+    steps: [
+      'Select the canal: its flow is the pump’s flow. Select the V-notch for the head it produces.',
+      'Slow the pump and watch the canal depth and the notch head follow.',
+      'The farmer’s licence is 30 L/s. Trim the pump to match.',
+    ],
+    goal: {
+      text: 'Deliver 30 L/s (± 1) over the V-notch',
+      check: (r) => {
+        const q = r.nodes.vn?.extra?.flow ?? 0
+        return { done: Math.abs(q - 0.03) <= 0.001, readout: `${(q * 1000).toFixed(1)} L/s · head ${((r.nodes.vn?.extra?.headOver ?? 0) * 1000).toFixed(0)} mm` }
+      },
+    },
+    select: 'p',
+    build: () =>
+      new Rig()
+        .add('river', 'reservoir', 120, 460, { head: 0 }, 'River')
+        .add('p', 'pump', 320, 430, { designFlow: 0.04, designHead: 15, npshr: 3 }, 'River pump')
+        .add('out', 'outlet', 560, 250, { elevation: 8, mode: 'nozzle', nozzleDiameter: 0.15, cd: 0.9 }, 'Pipe end')
+        .add('vn', 'weir', 860, 250, { elevation: 7.9, variant: 'vnotch', crestHeight: 0.2, notchAngle: 90 }, 'V-notch')
+        .add('end', 'outfall', 1080, 250, { elevation: 7.85 }, 'To the fields')
+        .pipe('river', 'p', { length: 5, diameter: 0.2, material: 'steel', roughness: 0.045e-3 })
+        .pipe('p', 'out', { length: 200, diameter: 0.15, material: 'pvc' }, ['out', 'l'], 'Rising main')
+        .channel('out', 'vn', { length: 120, width: 0.6, bankHeight: 0.8 }, [], 'Canal')
+        .channel('vn', 'end', { length: 10, width: 0.6, bankHeight: 0.8 })
+        .done(),
+  },
+  {
+    id: 'lake-canal',
+    no: '51',
+    title: 'A canal out of a lake',
+    concept: 'The lake-discharge problem',
+    formula: 'H = y + v² / 2g   at the head of the channel',
+    brief:
+      'Nobody sets the flow in a canal that leaves a lake: the lake offers a fixed energy — its level above the canal’s sill — and the channel takes what it can carry with it. On a mild slope that is the uniform flow whose depth plus velocity head equals that energy; on a steep one the flow goes critical at the lip and the channel downstream no longer matters.',
+    steps: [
+      'Select the canal: its flow was found, not given. Depth + v²/2g at its head equals the lake’s 0.5 m over the sill.',
+      'Widen the canal, or change its lining, and the lake gives more.',
+      'Lower the sill (select the lake): more energy, yet the flow may fall — a lower sill also flattens the canal. Lower the downstream end too and it pays off.',
+    ],
+    goal: {
+      text: 'Draw 1.0 m³/s (± 5 %) from the lake without the canal overtopping',
+      check: (r) => {
+        const c = r.channel?.reaches.e1
+        const top = Math.max(0, ...(c?.depth ?? []))
+        return { done: !!c && Math.abs(c.flow - 1) <= 0.05 && top <= 1.2, readout: c ? `${(c.flow * 1000).toFixed(0)} L/s · ${c.slopeClass} · deepest ${top.toFixed(2)} m` : '—' }
+      },
+    },
+    select: 'e1',
+    build: () =>
+      new Rig()
+        .add('lake', 'reservoir', 180, 300, { head: 10 }, 'Lake')
+        .add('end', 'outfall', 900, 300, { elevation: 9, mode: 'normal' }, 'Downstream')
+        .channel('lake', 'end', { length: 800, width: 1.5, bankHeight: 1.2 }, [], 'Canal')
         .done(),
   },
 ]

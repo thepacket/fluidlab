@@ -1,4 +1,4 @@
-import { Background, BackgroundVariant, ConnectionMode, Controls, MiniMap, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow } from '@xyflow/react'
+import { Background, BackgroundVariant, ConnectionMode, Controls, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { EXPERIMENTS } from './experiments'
@@ -151,15 +151,18 @@ function Bench() {
   }, [fitView])
   useEffect(() => {
     const px = (n: number) => `${n}px` as const
-    const padding = mobile
-      ? { top: px(useLab.getState().experimentId ? 150 : 24), bottom: px(sheetOpen ? Math.round(window.innerHeight * 0.5) + 24 : 100), left: px(18), right: px(18) }
-      : { top: px(useLab.getState().experimentId ? 290 : 70), bottom: px(110), left: px(60), right: px(70) }
+    // leave room for the experiment card as it actually is — a long brief makes a tall card
+    const card = () => Math.round(document.querySelector('.exp-card')?.getBoundingClientRect().height ?? 0)
+    const padding = () =>
+      mobile
+        ? { top: px(useLab.getState().experimentId ? 150 : 24), bottom: px(sheetOpen ? Math.round(window.innerHeight * 0.5) + 24 : 100), left: px(18), right: px(18) }
+        : { top: px(useLab.getState().experimentId ? Math.min(Math.max(290, card() + 40), Math.round(window.innerHeight * 0.55)) : 70), bottom: px(110), left: px(60), right: px(70) }
     for (const [ms, duration] of [
       [60, 350],
       [450, 350],
       [1000, 0],
     ])
-      setTimeout(() => fitRef.current({ padding, duration, maxZoom: 1.2 }), ms)
+      setTimeout(() => fitRef.current({ padding: padding(), duration, maxZoom: 1.2 }), ms)
   }, [initialized, loadCount, mobile, sheetOpen])
 
   useEffect(() => {
@@ -210,18 +213,6 @@ function Bench() {
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="#1d2a42" />
         <Background id="major" variant={BackgroundVariant.Lines} gap={200} color="#101a2b" />
         {!mobile && <Controls position="bottom-right" showInteractive={false} />}
-        {!mobile && (
-          <MiniMap
-            position="bottom-right"
-            pannable
-            zoomable
-            nodeColor="#2a9dff"
-            maskColor="rgba(4,7,13,.72)"
-            bgColor="#0a111d"
-            nodeStrokeWidth={0}
-            style={{ marginBottom: 118, width: 150, height: 96 }}
-          />
-        )}
       </ReactFlow>
       <ExperimentCard />
       {mobile && (

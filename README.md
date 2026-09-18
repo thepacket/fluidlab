@@ -13,7 +13,7 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 
 ## What's in it
 
-- **Network editor** (React Flow): 26 components plus the catalogue, loose port-to-port pipes, snap grid, minimap, 90° rotation (`R`),
+- **Network editor** (React Flow): 26 components plus the catalogue, loose port-to-port pipes, snap grid, 90° rotation (`R`),
   undo/redo (`⌘Z` / `⇧⌘Z`, 100 steps, slider drags and typing coalesce into one step).
 - **Runs off the main thread**: EPANET lives in a Web Worker behind a latest-wins client (no backlog while dragging a
   slider); falls back to the main thread if workers are unavailable.
@@ -112,7 +112,13 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   takes a controller's command), **outfall**. Readings give yₙ, y꜀, slope class, Froude range, the profile name
   (M1, S2, "M3 → jump → M1" …), jump depths and the power it dissipates; the inspector draws the water surface against
   bed, normal and critical depth along the main stem; warnings cover overtopping, scour and pipes running full.
-  Channels and pipework share a bench but exchange no water: each is solved by its own engine and the results merged.
+  **Pipework and channels exchange water**: the pipe side is solved first, then the channels. An **outlet** has a
+  second, discharge-side port — run a reach from it and the channel carries whatever the outlet delivers. A **tank**
+  or open **reservoir** is a lake to the channel engine: upstream, it gives the flow that makes the specific energy at
+  the head of its channel equal its level above the sill (critical at the lip on a steep channel, uniform flow on a
+  long mild one — found by bisection around the whole channel solve); downstream, its level is the tailwater. The sill
+  level is a property of the tank or reservoir. Tanks add up what pipes and channels give and take, so the lab clock
+  fills and drains them correctly.
   Steady only (no flood routing), one bed level per node (no drops), more than two branches split equally.
   `scripts/channel-check.ts` checks it against hand calculations.
 - **Jet pump (ejector)**: three ports, and both of its internal links depend on heads elsewhere in the network — the
@@ -147,10 +153,10 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **49 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **51 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
   valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
-  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap → waiting for hot water, warming up a heating loop, lagging a hot-water main). `scripts/control-sim.ts` runs the loops closed
+  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap → waiting for hot water, warming up a heating loop, lagging a hot-water main → pumping into a canal, a canal out of a lake). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli

@@ -84,7 +84,15 @@ function Ports({ kind, rot }: { kind: Kind; rot: number }) {
   }
   if (kind === 'dpgauge' || ROTATABLE.includes(kind)) {
     const y = kind === 'dpgauge' ? { top: `${PORT_Y[kind] * 100}%` } : undefined
-    if (kind === 'outlet' || kind === 'relief') return <Handle id="l" type="source" position={side(Position.Left, rot)} className="port" />
+    if (kind === 'relief') return <Handle id="l" type="source" position={side(Position.Left, rot)} className="port" />
+    if (kind === 'outlet')
+      return (
+        <>
+          <Handle id="l" type="source" position={side(Position.Left, rot)} className="port" />
+          {/* where the water lands: run an open channel from here and it carries the discharge away */}
+          <Handle id="o" type="source" position={side(Position.Right, rot)} className="port port-out port-spill" />
+        </>
+      )
     return (
       <>
         <Handle id="in" type="source" position={side(Position.Left, rot)} className="port port-in" style={y} />
