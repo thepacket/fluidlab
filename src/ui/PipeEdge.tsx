@@ -90,7 +90,9 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
             }}
           >
             <span className="pipe-name">{data?.label}</span>
-            {live ? (
+            {live && !flowing ? (
+              <em>static</em>
+            ) : live ? (
               <>
                 <b>{fmt(Math.abs(r.flow), 'flow', units)}</b>
                 <em>{unitLabel('flow', units)}</em>

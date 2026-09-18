@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { gradeLine, pipeCurve, pumpCurve, systemCurve } from '../engine/analysis'
-import { engine } from '../engine/epanet'
-import { FLUIDS, KIND_META, MATERIALS, VALVE_TYPES, type Kind, type Props } from '../model/types'
+import { gradeLine, pipeCurve, pumpCurve, type XY } from '../engine/analysis'
+import { solver } from '../engine/client'
+import { fmtClock, timerState } from '../model/control'
+import { beta, elementLossFraction } from '../model/physics'
+import { ELEMENT_TYPES, FLUIDS, KIND_META, MATERIALS, ROTATABLE, VALVE_TYPES, type Kind, type Props } from '../model/types'
 import { fmt, fmtNum, fmtU, toDisplay, toSI, unitLabel, type Quantity } from '../model/units'
 import { model, selectedId, useLab } from '../store'
 import { Chart, SERIES, type Marker, type Series } from './Chart'
@@ -65,6 +67,42 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     elevation,
   ],
   meter: [{ key: 'diameter', label: 'Bore', q: 'diameter' }, elevation],
+  element: [
+    { key: 'elementType', label: 'Type', q: 'none', type: 'select', options: ELEMENT_TYPES },
+    { key: 'diameter', label: 'Pipe bore D', q: 'diameter' },
+    { key: 'throat', label: 'Throat / orifice d', q: 'diameter' },
+    { key: 'cd', label: 'Discharge coeff. Cd', q: 'none' },
+    elevation,
+  ],
+  dpgauge: [elevation],
+  timer: [
+    { key: 'enabled', label: 'Enabled', q: 'none', type: 'toggle' },
+    {
+      key: 'mode',
+      label: 'Mode',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 'cycle', name: 'Repeating cycle' },
+        { id: 'once', name: 'One-shot after a delay' },
+      ],
+    },
+    { key: 'onTime', label: 'On for', q: 'time', show: (p) => p.mode === 'cycle' },
+    { key: 'offTime', label: 'Off for', q: 'time', show: (p) => p.mode === 'cycle' },
+    { key: 'startOn', label: 'Cycle starts', q: 'none', type: 'toggle', show: (p) => p.mode === 'cycle' },
+    { key: 'delay', label: 'Delay', q: 'time', show: (p) => p.mode === 'once' },
+    {
+      key: 'action',
+      label: 'Then switch',
+      q: 'none',
+      type: 'select',
+      show: (p) => p.mode === 'once',
+      options: [
+        { id: 'on', name: 'ON  (off until then)' },
+        { id: 'off', name: 'OFF  (on until then)' },
+      ],
+    },
+  ],
   pipe: [
     { key: 'length', label: 'Length', q: 'length' },
     { key: 'diameter', label: 'Inside diameter', q: 'diameter' },
@@ -133,6 +171,7 @@ function FieldRow({ f, props, onChange }: { f: Field; props: Props; onChange: (p
           value={v}
           onChange={(e) => {
             const patch: Props = { [f.key]: e.target.value }
+            if (f.key === 'elementType') patch.cd = e.target.value === 'orifice' ? 0.61 : 0.98
             if (f.key === 'material' && e.target.value !== 'custom') patch.roughness = MATERIALS.find((m) => m.id === e.target.value)!.roughness
             onChange(patch)
           }}
@@ -191,11 +230,16 @@ function PumpChart({ id }: { id: string }) {
   const s = useLab()
   const node = s.nodes.find((n) => n.id === id)!
   const d = s.results.devices[id]
-  const system = useMemo(
-    () => (s.engineReady ? systemCurve(engine, model(s), id) : []),
+  const [system, setSystem] = useState<XY[]>([])
+  useEffect(() => {
+    let stale = false
+    // traced in the solver worker; null means a newer request superseded this one
+    if (s.engineReady) solver.systemCurve(model(s), id).then((pts) => !stale && pts && setSystem(pts))
+    return () => {
+      stale = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [s.results, id],
-  )
+  }, [s.results, id])
   const p = node.data.props
   const cv = (pts: { x: number; y: number }[]) => pts.map((pt) => ({ x: toDisplay(pt.x, 'flow', s.units), y: toDisplay(pt.y, 'head', s.units) }))
   const series: Series[] = [{ name: `Pump @ ${Math.round(p.speed * 100)} %`, color: SERIES.blue, points: cv(pumpCurve(p, Math.max(0.05, p.speed))), area: true }]
@@ -228,8 +272,10 @@ function PipeChart({ id }: { id: string }) {
 }
 
 function trendQuantity(kind: Kind | 'pipe'): [Quantity, string] {
+  if (kind === 'timer') return ['none', 'Output']
   if (kind === 'tank') return ['length', 'Level']
   if (kind === 'junction' || kind === 'gauge') return ['pressure', 'Pressure']
+  if (kind === 'dpgauge' || kind === 'element') return ['pressure', 'Differential']
   return ['flow', 'Flow']
 }
 
@@ -239,6 +285,70 @@ function TrendChart({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
   const [q, name] = trendQuantity(kind)
   const pts = history.filter((h) => h.v[id] !== undefined).map((h) => ({ x: h.t / 60, y: toDisplay(Math.abs(h.v[id]), q, units) }))
   return <Chart series={[{ name, color: SERIES.aqua, points: pts, area: true }]} xLabel="Lab time (min)" yLabel={`${name} (${unitLabel(q, units)})`} empty="Press play to record a trend" />
+}
+
+/** The timer's output drawn ahead of the lab clock, with a marker at "now". */
+function ScheduleChart({ id }: { id: string }) {
+  const t = useLab((s) => s.simTime)
+  const node = useLab((s) => s.nodes.find((n) => n.id === id))
+  const units = useLab((s) => s.units)
+  const p = node?.data.props
+  // quantise the window so the curve isn't rebuilt on every clock tick
+  const span = p ? (p.mode === 'once' ? Math.max(60, p.delay * 2) : Math.max(60, (p.onTime + p.offTime) * 2.5)) : 60
+  const from = Math.floor(t / span) * span
+  const points = useMemo(() => {
+    if (!p) return []
+    const pts: { x: number; y: number }[] = []
+    let cur = from
+    // walk from switch to switch rather than sampling, so edges land exactly
+    for (let i = 0; i < 400 && cur <= from + span; i++) {
+      const st = timerState(p, cur)
+      pts.push({ x: toDisplay(cur, 'time', units), y: st.on ? 1 : 0 })
+      if (st.next === null) break
+      cur += Math.max(st.next, 1e-6)
+    }
+    pts.push({ x: toDisplay(from + span, 'time', units), y: timerState(p, from + span - 1e-6).on ? 1 : 0 })
+    return pts
+  }, [p, from, span, units])
+  if (!p) return null
+  return (
+    <Chart
+      series={[{ name: 'Output', color: '#9085e9', points, step: true, area: true }]}
+      markers={[{ x: toDisplay(t, 'time', units), y: timerState(p, t).on ? 1 : 0, label: 'now', color: '#ffffff' }]}
+      xLabel={`Lab time (${unitLabel('time', units)})`}
+      yLabel="Output (0 = off · 1 = on)"
+      height={150}
+    />
+  )
+}
+
+function TimerResults({ id }: { id: string }) {
+  const s = useLab()
+  const node = s.nodes.find((n) => n.id === id)!
+  const st = timerState(node.data.props, s.simTime)
+  const targets = s.edges.filter((e) => e.type === 'signal' && e.source === id).map((e) => s.nodes.find((n) => n.id === e.target)?.data.label ?? '?')
+  const live = node.data.props.enabled
+  return (
+    <>
+      <div className="hero">
+        <div>
+          <b>{!live ? '—' : st.on ? 'ON' : 'OFF'}</b>
+          <span>output</span>
+        </div>
+        <div>
+          <b>{live && st.next !== null ? fmtClock(st.next) : '∞'}</b>
+          <span>until it switches</span>
+        </div>
+        <div>
+          <b>{fmtClock(s.simTime)}</b>
+          <span>lab clock</span>
+        </div>
+      </div>
+      <Row label="Switching" value={targets.length ? targets.join(', ') : 'nothing yet'} tone={targets.length ? undefined : 'warn'} />
+      {!targets.length && <p className="muted">Pull a wire from the timer’s violet port to the violet port on a pump, valve or outlet.</p>}
+      {!s.running && <p className="muted">The lab clock is paused — press play for the timer to advance.</p>}
+    </>
+  )
 }
 
 function GradeChart({ id }: { id?: string }) {
@@ -322,6 +432,50 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
       </>
     )
   }
+  if (d && kind === 'dpgauge')
+    return (
+      <>
+        <div className="hero">
+          <div>
+            <b>{fmt(d.pIn - d.pOut, 'pressure', u)}</b>
+            <span>ΔP {unitLabel('pressure', u)}</span>
+          </div>
+          <div>
+            <b>{fmt(d.headIn - d.headOut, 'head', u)}</b>
+            <span>Δ head {unitLabel('head', u)}</span>
+          </div>
+        </div>
+        <Row label="HI port" value={fmtU(d.pIn, 'pressure', u)} />
+        <Row label="LO port" value={fmtU(d.pOut, 'pressure', u)} />
+        <p className="muted">Sensing lines carry no flow, so each port reads the pressure at its tapping point.</p>
+      </>
+    )
+  if (d && kind === 'element') {
+    const p = node!.data.props
+    return (
+      <>
+        <div className="hero">
+          <div>
+            <b>{fmt(d.tapDp, 'pressure', u)}</b>
+            <span>tap Δp {unitLabel('pressure', u)}</span>
+          </div>
+          <div>
+            <b>{fmt(d.inferredFlow, 'flow', u)}</b>
+            <span>inferred {unitLabel('flow', u)}</span>
+          </div>
+          <div>
+            <b>{fmt(d.permanentLoss, 'pressure', u)}</b>
+            <span>lost {unitLabel('pressure', u)}</span>
+          </div>
+        </div>
+        <Row label="Actual flow" value={fmtU(Math.abs(d.flow), 'flow', u)} />
+        <Row label="Beta ratio β = d/D" value={beta(p).toFixed(3)} />
+        <Row label="Throat velocity" value={fmtU(d.throatVelocity, 'velocity', u)} />
+        <Row label="Pressure recovered" value={`${((1 - elementLossFraction(p)) * 100).toFixed(0)} %`} tone={elementLossFraction(p) < 0.3 ? 'good' : 'warn'} />
+        <Row label="Pressure in → out" value={`${fmt(d.pIn, 'pressure', u)} → ${fmtU(d.pOut, 'pressure', u)}`} />
+      </>
+    )
+  }
   if (d)
     return (
       <>
@@ -378,13 +532,44 @@ export function Inspector() {
   const updateEdge = useLab((s) => s.updateEdge)
   const rename = useLab((s) => s.rename)
   const remove = useLab((s) => s.remove)
+  const rotate = useLab((s) => s.rotate)
   const [tab, setTab] = useState('main')
 
   if (!id || (!node && !edge)) return <Overview />
+  if (edge?.type === 'signal') {
+    const name = (nid: string) => useLab.getState().nodes.find((n) => n.id === nid)?.data.label ?? '?'
+    return (
+      <aside className="inspector">
+        <header className="insp-head">
+          <div className="insp-icon">
+            <KindIcon kind="timer" />
+          </div>
+          <div>
+            <b className="insp-name">Signal wire</b>
+            <span>
+              {name(edge.source)} → {name(edge.target)}
+            </span>
+          </div>
+          <button className="icon-btn danger" title="Delete (⌫)" onClick={() => remove(id)}>
+            ✕
+          </button>
+        </header>
+        <p className="muted tip">
+          Carries the controller’s on/off command. While the command is OFF the device is held off or shut, whatever its own settings say; while ON it runs on its own settings.
+        </p>
+      </aside>
+    )
+  }
   const kind: Kind | 'pipe' = node ? node.data.kind : 'pipe'
   const props = node ? node.data.props : edge!.data!.props
   const label = node ? node.data.label : edge!.data!.label
-  const tabs = [...(kind === 'pump' ? [['main', 'Pump curve']] : kind === 'pipe' ? [['main', 'ΔP (Q)']] : []), ['trend', 'Trend'], ['grade', 'Grade line']]
+  const tabs =
+    kind === 'timer'
+      ? [
+          ['main', 'Schedule'],
+          ['trend', 'Trend'],
+        ]
+      : [...(kind === 'pump' ? [['main', 'Pump curve']] : kind === 'pipe' ? [['main', 'ΔP (Q)']] : []), ['trend', 'Trend'], ['grade', 'Grade line']]
   const active = tabs.find((t) => t[0] === tab) ? tab : tabs[0][0]
 
   return (
@@ -397,6 +582,13 @@ export function Inspector() {
           <input className="insp-name" value={label} onChange={(e) => rename(id, e.target.value)} />
           <span>{kind === 'pipe' ? 'Pipe' : KIND_META[kind].name}</span>
         </div>
+        {node && ROTATABLE.includes(node.data.kind) && (
+          <button className="icon-btn" title="Rotate 90° (R)" onClick={() => rotate(id)}>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5" />
+            </svg>
+          </button>
+        )}
         <button className="icon-btn danger" title="Delete (⌫)" onClick={() => remove(id)}>
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
@@ -406,7 +598,7 @@ export function Inspector() {
 
       <section>
         <h4>Live readings</h4>
-        <Results id={id} kind={kind} />
+        {kind === 'timer' ? <TimerResults id={id} /> : <Results id={id} kind={kind} />}
       </section>
 
       <section>
@@ -420,6 +612,7 @@ export function Inspector() {
         {active === 'main' && kind === 'pump' && <PumpChart id={id} />}
         {active === 'main' && kind === 'pipe' && <PipeChart id={id} />}
         {active === 'trend' && <TrendChart id={id} kind={kind} />}
+        {active === 'main' && kind === 'timer' && <ScheduleChart id={id} />}
         {active === 'grade' && <GradeChart id={id} />}
       </section>
 
@@ -481,7 +674,7 @@ function Overview() {
         <h4>Fluid</h4>
         <div className="field">
           <span>Working fluid</span>
-          <select value={s.fluidId} onChange={(e) => s.set({ fluidId: e.target.value })}>
+          <select value={s.fluidId} onChange={(e) => (s.checkpoint(), s.set({ fluidId: e.target.value }))}>
             {FLUIDS.map((f) => (
               <option key={f.id} value={f.id}>
                 {f.name}

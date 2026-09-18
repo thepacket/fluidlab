@@ -1,9 +1,9 @@
 // EPANET adapter, part 2: run the WebAssembly solver and lift raw results
 // back into FluidLab's vocabulary (SI, element ids, educational extras).
 import { LinkProperty, NodeProperty, Project, Workspace } from 'epanet-js'
-import { G, P_ATM, area, frictionFactor, pumpEfficiency, pumpMaxFlow, regimeOf, reynolds, valveK } from '../model/physics'
-import { EMPTY_RESULTS, type Model, type Results, type Warning } from '../model/types'
-import { compile, type Overrides } from './inp'
+import { G, P_ATM, area, elementInferredFlow, elementTapDp, frictionFactor, pumpEfficiency, pumpMaxFlow, regimeOf, reynolds, valveK } from '../model/physics'
+import { EMPTY_RESULTS, isControl, type Model, type Results, type Warning } from '../model/types'
+import { commandedOff, compile, type Overrides } from './inp'
 
 /** Any solver FluidLab can plug in (EPANET today; water-hammer / gas later). */
 export interface HydraulicEngine {
@@ -50,12 +50,16 @@ class EpanetEngine implements HydraulicEngine {
       const { fluid } = model
       const rhoG = fluid.density * G
       const head = (id: string) => project.getNodeValue(project.getNodeIndex(id), NodeProperty.Head)
-      const flowOf = (id: string) => project.getLinkValue(project.getLinkIndex(id), LinkProperty.Flow) / 1000
+      // below a nanolitre-ish per second is solver noise (dead legs, sensing lines): call it still
+      const flowOf = (id: string) => {
+        const q = project.getLinkValue(project.getLinkIndex(id), LinkProperty.Flow) / 1000
+        return Math.abs(q) < 1e-9 ? 0 : q
+      }
       const live = new Set(Object.keys(c.pipeIds))
       const excluded = new Set(c.excluded)
 
       for (const nd of model.nodes) {
-        if (excluded.has(nd.id)) continue
+        if (excluded.has(nd.id) || isControl(nd.data.kind)) continue
         const p = nd.data.props
         const kind = nd.data.kind
         if (c.nodeIds[nd.id]) {
@@ -78,7 +82,7 @@ class EpanetEngine implements HydraulicEngine {
           const pOut = (hOut - p.elevation) * rhoG
           const dev: Results['devices'][string] = { flow: q, headIn: hIn, headOut: hOut, pIn, pOut, dH: hOut - hIn, status: 'open' }
           if (kind === 'pump') {
-            const running = p.on && p.speed >= 0.01
+            const running = p.on && p.speed >= 0.01 && !commandedOff(model, nd.id)
             dev.status = running ? 'open' : 'closed'
             if (running) {
               dev.efficiency = pumpEfficiency(q, p)
@@ -89,9 +93,20 @@ class EpanetEngine implements HydraulicEngine {
               if (q >= pumpMaxFlow(p) * 0.98) warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: running off the end of its curve` })
               else if (q < 1e-7) warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: dead-headed — no flow` })
             } else dev.dH = 0
+          } else if (kind === 'dpgauge') {
+            dev.flow = 0
           } else {
             dev.velocity = Math.abs(q) / area(p.diameter)
-            if (kind === 'valve') {
+            if (kind === 'element') {
+              dev.tapDp = elementTapDp(q, p, fluid)
+              dev.permanentLoss = Math.abs(pIn - pOut)
+              dev.throatVelocity = Math.abs(q) / area(Math.min(p.throat, p.diameter))
+              dev.inferredFlow = elementInferredFlow(dev.tapDp, p, fluid)
+              const pThroat = Math.min(pIn, pOut) + dev.permanentLoss - dev.tapDp
+              if (pThroat + P_ATM < fluid.vaporPressure) warnings.push({ id: nd.id, level: 'error', text: `${nd.data.label}: throat pressure below vapour pressure — it would cavitate` })
+            }
+            if (kind === 'valve' && commandedOff(model, nd.id)) dev.status = 'closed'
+            else if (kind === 'valve') {
               if (p.valveType === 'throttle') {
                 dev.K = valveK(p.opening, p.kOpen)
                 dev.status = isFinite(dev.K) ? 'open' : 'closed'

@@ -82,7 +82,7 @@ export function Chart({ series, markers = [], xLabel, yLabel, height = 190, yMin
     return null
   }
 
-  const onMove = (e: React.MouseEvent) => {
+  const onMove = (e: React.PointerEvent) => {
     const r = ref.current!.getBoundingClientRect()
     const px = ((e.clientX - r.left) / r.width) * W
     const x = g.x0 + ((px - M.l) / (W - M.l - M.r)) * (g.x1 - g.x0)
@@ -103,7 +103,7 @@ export function Chart({ series, markers = [], xLabel, yLabel, height = 190, yMin
           ))}
         </div>
       )}
-      <svg ref={ref} viewBox={`0 0 ${W} ${H}`} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+      <svg ref={ref} viewBox={`0 0 ${W} ${H}`} onPointerMove={onMove} onPointerDown={onMove} onPointerLeave={() => setHover(null)} style={{ touchAction: 'pan-y' }}>
         {g.yt.map((t) => (
           <g key={`y${t}`}>
             <line x1={M.l} x2={W - M.r} y1={sy(t)} y2={sy(t)} className="grid" />

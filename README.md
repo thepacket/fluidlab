@@ -13,7 +13,12 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 
 ## What's in it
 
-- **Network editor** (React Flow): 8 components, loose port-to-port pipes, snap grid, minimap, delete key.
+- **Network editor** (React Flow): 11 components, loose port-to-port pipes, snap grid, minimap, 90° rotation (`R`),
+  undo/redo (`⌘Z` / `⇧⌘Z`, 100 steps, slider drags and typing coalesce into one step).
+- **Runs off the main thread**: EPANET lives in a Web Worker behind a latest-wins client (no backlog while dragging a
+  slider); falls back to the main thread if workers are unavailable.
+- **Phone / touch layout**: below 860 px the side panels become slide-over sheets, parts are added by tap, ports grow
+  for fingers, and the rig re-frames above the open details sheet.
 - **Solver adapter**: FluidLab model → `.inp` → EPANET (Darcy–Weisbach) → SI results. Pumps/valves/meters are
   canvas nodes that compile to EPANET links between two hidden junctions. Parts not connected to a
   reservoir/tank are greyed out instead of breaking the solve.
@@ -23,7 +28,13 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   fill and drain while you turn valves (1× – 1200×).
 - **Charts**: pump curve × system curve with live operating point (system curve traced by sweeping pump
   speed), pipe ΔP(Q), hydraulic grade line, per-element trends.
-- **12 experiments** with briefs and auto-checked goals (gravity feed → PRV regulation).
+- **Control layer**: a Timer (repeating cycle or one-shot) switches pumps, valves and outlets over violet *signal
+  wires* — a second, non-hydraulic edge type (`sig` → `ctl` ports) resolved into per-device commands each tick
+  (`src/model/control.ts`) and applied when the network is compiled. Built to take more controllers later.
+- **16 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters, timed pumping).
+- **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
+  Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli
+  in the educational layer and only the *permanent* loss is handed to the solver as a minor-loss K.
 - **Units engine**: SI stored, anything displayed (kPa/bar/psi/m H₂O, L/min/GPM/m³/h, mm/in, W/hp …).
 - **Fluids**: water at 20/60/90 °C, glycol mix, diesel, light oil.
 - Autosave to localStorage, JSON project save/open.
@@ -42,7 +53,8 @@ fly deploy                             # build remotely and ship
 
 ```
 src/model/     types + defaults, units, physics (pure, SI)
-src/engine/    inp.ts (compile) · epanet.ts (HydraulicEngine impl) · analysis.ts (curves, grade line)
+src/engine/    inp.ts (compile) · epanet.ts (HydraulicEngine impl) · worker.ts + client.ts (threading)
+               analysis.ts (curves, grade line)
 src/experiments.ts   rig builder + the experiment catalogue
 src/store.ts   zustand store, solve scheduling, tank time-stepping, persistence
 src/ui/        nodes, animated pipe edge, inspector, charts, top bar, sidebar

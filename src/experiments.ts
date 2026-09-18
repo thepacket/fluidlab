@@ -11,10 +11,13 @@ export const NODE_SIZE: Record<Kind, [number, number]> = {
   pump: [100, 100],
   valve: [92, 76],
   meter: [104, 56],
+  element: [120, 64],
+  dpgauge: [96, 96],
+  timer: [96, 104],
 }
 
 /** vertical position (fraction of height) of the side ports for each kind */
-export const PORT_Y: Record<Kind, number> = { reservoir: 0.7, tank: 0.86, junction: 0.5, outlet: 0.5, gauge: 0.5, pump: 0.5, valve: 0.5, meter: 0.5 }
+export const PORT_Y: Record<Kind, number> = { reservoir: 0.7, tank: 0.86, junction: 0.5, outlet: 0.5, gauge: 0.5, pump: 0.5, valve: 0.5, meter: 0.5, element: 0.5, dpgauge: 0.8, timer: 0.54 }
 
 export type LabNode = Node<NodeData>
 export type LabEdge = Edge<PipeData>
@@ -31,7 +34,7 @@ export interface Experiment {
   formula?: string
   brief: string
   steps: string[]
-  goal?: { text: string; check: (r: Results, nodes: LabNode[], levels: Record<string, number>) => GoalState }
+  goal?: { text: string; check: (r: Results, nodes: LabNode[], levels: Record<string, number>, history: { t: number; v: Record<string, number> }[]) => GoalState }
   fluidId?: string
   timeScale?: number
   autoRun?: boolean
@@ -390,5 +393,160 @@ export const EXPERIMENTS: Experiment[] = [
         .pipe('v', 'g2', { length: 0.5, diameter: 0.025 })
         .pipe('g2', 'out', { length: 8, diameter: 0.02 })
         .done(),
+  },
+  {
+    id: 'siphon',
+    no: '13',
+    title: 'Siphon',
+    concept: 'Flow over a crest, below atmospheric',
+    formula: 'p_crest = ρg · (H − z_crest)',
+    brief:
+      'Water climbs over a crest higher than its own source because the falling leg pulls it along. The price is pressure: the crest runs below atmospheric, and if its absolute pressure reaches the vapour pressure the column boils apart and the siphon breaks.',
+    steps: [
+      'Select the crest gauge: its pressure is already negative (magenta pipes).',
+      'Raise the crest elevation a metre at a time and watch the pressure fall ≈ 9.8 kPa per metre.',
+      'Find the limit — around 10 m above the source surface for cold water. Try 60 °C water.',
+    ],
+    goal: {
+      text: 'Raise the crest until its pressure sits between −70 and −85 kPa — without breaking the siphon',
+      check: (r) => {
+        const p = (r.nodes['crest']?.pressure ?? 0) / 1000
+        return { done: p <= -70 && p >= -85 && (r.nodes['out']?.outflow ?? 0) > 1e-6, readout: `${p.toFixed(1)} kPa` }
+      },
+    },
+    select: 'crest',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 120, 360, { head: 3 }, 'Upper pond')
+        .add('crest', 'gauge', 480, 140, { elevation: 4.5 }, 'Crest')
+        .add('v', 'valve', 760, 470, { diameter: 0.032, kOpen: 1 })
+        .add('out', 'outlet', 960, 470, { nozzleDiameter: 0.02, elevation: 0 }, 'Outfall')
+        .pipe('src', 'crest', { length: 8, diameter: 0.032 }, ['r', 'l'], 'Rising leg')
+        .pipe('crest', 'v', { length: 12, diameter: 0.032 }, ['r', 'in'], 'Falling leg')
+        .pipe('v', 'out', { length: 1, diameter: 0.032 })
+        .done(),
+  },
+  {
+    id: 'venturi',
+    no: '14',
+    title: 'Venturi meter',
+    concept: 'Bernoulli as a flow meter',
+    formula: 'Q = Cd · A_t · √( 2Δp / ρ(1 − β⁴) )',
+    brief:
+      'Squeeze the flow through a throat and it must speed up; Bernoulli says its pressure drops. Read that differential and you know the flow — and because the long diffuser recovers almost all of it, the meter costs very little head. (Network solvers only track piezometric head, so FluidLab computes the throat differential from Bernoulli and hands the solver only the permanent loss.)',
+    steps: [
+      'Select the Venturi: compare its inferred flow with the turbine meter downstream.',
+      'Halve the flow with the valve — the differential falls to a quarter.',
+      'Shrink the throat: a bigger signal, but watch for throat cavitation.',
+    ],
+    goal: {
+      text: 'Throttle the valve until the Venturi differential reads 10 kPa',
+      check: (r) => {
+        const dp = (r.devices['fe']?.tapDp ?? 0) / 1000
+        return { done: Math.abs(dp - 10) <= 0.5, readout: `Δp ${dp.toFixed(1)} kPa` }
+      },
+    },
+    select: 'fe',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 100, 300, { head: 8 }, 'Supply')
+        .add('fe', 'element', 360, 300, { elementType: 'venturi', diameter: 0.04, throat: 0.02, cd: 0.98 }, 'Venturi')
+        .add('m', 'meter', 580, 300, { diameter: 0.04 })
+        .add('v', 'valve', 770, 300, { diameter: 0.04, kOpen: 2 })
+        .add('out', 'outlet', 980, 300, { nozzleDiameter: 0.018 })
+        .pipe('src', 'fe', { length: 6, diameter: 0.04 })
+        .pipe('fe', 'm', { length: 2, diameter: 0.04 })
+        .pipe('m', 'v', { length: 2, diameter: 0.04 })
+        .pipe('v', 'out', { length: 4, diameter: 0.04 })
+        .done(),
+  },
+  {
+    id: 'orifice',
+    no: '15',
+    title: 'Orifice meter',
+    concept: 'Cheap to buy, expensive to run',
+    formula: 'Δp_permanent ≈ Δp_taps · (1 − β¹·⁹)',
+    brief:
+      'An orifice plate gives the same kind of differential as a Venturi, but the jet leaving the hole dissipates in turbulence instead of being recovered. The element shows its tap differential; the differential gauge DP1, tapped well upstream and downstream, shows what is lost for good.',
+    steps: [
+      'Compare the plate’s tap Δp with the permanent loss on DP1.',
+      'Select the element and switch its type to “Venturi tube” (Cd ≈ 0.98).',
+      'Same signal principle, a fraction of the pumping cost.',
+    ],
+    goal: {
+      text: 'Get the permanent loss on DP1 below 3 kPa while still passing at least 70 L/min',
+      check: (r) => {
+        const d = r.devices['dp']
+        const loss = d ? (d.pIn - d.pOut) / 1000 : 0
+        const q = (r.devices['fe']?.flow ?? 0) / LPM
+        return { done: !!d && loss < 3 && q >= 70, readout: `${loss.toFixed(1)} kPa · ${q.toFixed(0)} L/min` }
+      },
+    },
+    select: 'fe',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 90, 420, { head: 10 }, 'Supply')
+        .add('a', 'junction', 300, 420, {}, 'Tap A')
+        .add('fe', 'element', 500, 420, { elementType: 'orifice', diameter: 0.04, throat: 0.024, cd: 0.61 }, 'Orifice')
+        .add('b', 'junction', 700, 420, {}, 'Tap B')
+        .add('dp', 'dpgauge', 500, 215, {}, 'DP1')
+        .add('out', 'outlet', 940, 420, { nozzleDiameter: 0.015 })
+        .pipe('src', 'a', { length: 5, diameter: 0.04 })
+        .pipe('a', 'fe', { length: 0.5, diameter: 0.04 })
+        .pipe('fe', 'b', { length: 0.5, diameter: 0.04 })
+        .pipe('b', 'out', { length: 5, diameter: 0.04 })
+        .pipe('a', 'dp', { length: 1, diameter: 0.006 }, ['t', 'in'], 'Sense HI')
+        .pipe('b', 'dp', { length: 1, diameter: 0.006 }, ['t', 'out'], 'Sense LO')
+        .done(),
+  },
+  {
+    id: 'timer',
+    no: '16',
+    title: 'Timed pumping',
+    concept: 'Duty cycling with a timer',
+    formula: 'duty = t_on / (t_on + t_off)',
+    brief:
+      'Nobody stands by the pump: a timer switches it over a violet signal wire. The tower fills while the pump runs and drains while it rests, so the level saw-tooths. The duty cycle sets where the level settles on average; the cycle length sets how far it swings.',
+    steps: [
+      'Select the timer and watch its schedule and the pump follow it.',
+      'The default 20 min cycle swings the level too far. Shorten it.',
+      'Then trim the on/off ratio until the average sits mid-tank. Select the tower to watch its trend.',
+    ],
+    goal: {
+      text: 'Tune the timer so the tower stays between 35 % and 65 % for 20 lab-minutes',
+      check: (_r, nodes, levels, history) => {
+        const tank = nodes.find((n) => n.id === 't')
+        if (!tank || !history.length) return { done: false, readout: '—' }
+        const max = tank.data.props.maxLevel
+        const now = history[history.length - 1].t
+        // how long has the level been inside the band, counting back from now?
+        let since = now
+        for (let i = history.length - 1; i >= 0; i--) {
+          const f = (history[i].v['t'] ?? 0) / max
+          if (f < 0.35 || f > 0.65) break
+          since = history[i].t
+        }
+        const held = (now - since) / 60
+        const pct = ((levels['t'] ?? tank.data.props.initLevel) / max) * 100
+        return { done: held >= 20, readout: `${pct.toFixed(0)} % · ${Math.min(20, held).toFixed(0)}/20 min` }
+      },
+    },
+    timeScale: 60,
+    select: 'tm',
+    build: () => {
+      const rig = new Rig()
+        .add('src', 'reservoir', 100, 470, { head: 1 }, 'Well')
+        .add('p', 'pump', 300, 470, { designFlow: 50 * LPM, designHead: 9 })
+        .add('tm', 'timer', 130, 190, { onTime: 600, offTime: 600, startOn: true }, 'Timer')
+        .add('t', 'tank', 560, 230, { elevation: 6, diameter: 1, initLevel: 1.2, maxLevel: 2.4 }, 'Tower')
+        .add('v', 'valve', 780, 470, { diameter: 0.025, opening: 0.45, kOpen: 3 }, 'Demand')
+        .add('out', 'outlet', 980, 470, { nozzleDiameter: 0.016 }, 'Town')
+        .pipe('src', 'p', { length: 3, diameter: 0.04 })
+        .pipe('p', 't', { length: 12, diameter: 0.032 }, ['out', 'l'])
+        .pipe('t', 'v', { length: 10, diameter: 0.025 }, ['r', 'in'])
+        .pipe('v', 'out', { length: 4, diameter: 0.025 })
+      rig.edges.push({ id: 's1', type: 'signal', source: 'tm', sourceHandle: 'sig', target: 'p', targetHandle: 'ctl' })
+      return rig.done()
+    },
   },
 ]

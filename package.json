@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "deploy": "fly deploy",
-    "test:engine": "tsx scripts/smoke.ts && tsx scripts/experiments.ts",
+    "test:engine": "tsx scripts/smoke.ts && tsx scripts/experiments.ts && tsx scripts/timer-sim.ts",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview"

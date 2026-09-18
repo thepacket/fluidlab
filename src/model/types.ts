@@ -1,8 +1,16 @@
 // FluidLab model layer. Everything here is stored in SI (m, m³/s, Pa, kg, s).
 
-export type Kind = 'reservoir' | 'tank' | 'junction' | 'outlet' | 'gauge' | 'pump' | 'valve' | 'meter'
+export type Kind = 'reservoir' | 'tank' | 'junction' | 'outlet' | 'gauge' | 'pump' | 'valve' | 'meter' | 'element' | 'dpgauge' | 'timer'
 
-export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter']
+/** two-port components: compiled to a link between two hidden junctions */
+export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter', 'element', 'dpgauge']
+/** controllers: no fluid passes through them, they switch other components over signal wires */
+export const CONTROL_KINDS: Kind[] = ['timer']
+export const isControl = (k: Kind) => CONTROL_KINDS.includes(k)
+/** components a controller can switch */
+export const CONTROLLABLE: Kind[] = ['pump', 'valve', 'outlet']
+/** components that can be turned in 90° steps on the bench */
+export const ROTATABLE: Kind[] = ['pump', 'valve', 'meter', 'element', 'outlet']
 export const isInline = (k: Kind) => INLINE_KINDS.includes(k)
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -12,6 +20,8 @@ export interface NodeData {
   kind: Kind
   label: string
   props: Props
+  /** bench rotation in degrees (0 | 90 | 180 | 270) — purely visual */
+  rot?: number
   [k: string]: unknown
 }
 
@@ -31,6 +41,8 @@ export interface ModelEdge {
   target: string
   sourceHandle?: string | null
   targetHandle?: string | null
+  /** 'pipe' (default) carries fluid; 'signal' carries a controller's command */
+  type?: string
   data?: PipeData
 }
 export interface Model {
@@ -39,6 +51,8 @@ export interface Model {
   fluid: Fluid
   /** live tank levels (m), keyed by node id; falls back to initLevel */
   levels?: Record<string, number>
+  /** on/off commands from controllers, keyed by device id; absent = uncontrolled */
+  controls?: Record<string, boolean>
 }
 
 export interface Fluid {
@@ -69,6 +83,11 @@ export const MATERIALS: { id: string; name: string; roughness: number }[] = [
   { id: 'custom', name: 'Custom', roughness: 0.05e-3 },
 ]
 
+export const ELEMENT_TYPES = [
+  { id: 'venturi', name: 'Venturi tube' },
+  { id: 'orifice', name: 'Orifice plate' },
+]
+
 export const VALVE_TYPES = [
   { id: 'throttle', name: 'Throttle valve' },
   { id: 'check', name: 'Check valve' },
@@ -86,6 +105,9 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
   pump: { name: 'Pump', prefix: 'P', blurb: 'Centrifugal, with H(Q) curve' },
   valve: { name: 'Valve', prefix: 'V', blurb: 'Throttle · check · PRV · PSV · FCV' },
   meter: { name: 'Flow meter', prefix: 'FM', blurb: 'Inline flow readout' },
+  element: { name: 'Venturi / orifice', prefix: 'FE', blurb: 'Differential-pressure flow element' },
+  dpgauge: { name: 'Differential gauge', prefix: 'DP', blurb: 'ΔP between two tapping points' },
+  timer: { name: 'Timer', prefix: 'TM', blurb: 'Switches pumps, valves and taps on a schedule' },
 }
 
 export function defaultProps(kind: Kind): Props {
@@ -106,6 +128,12 @@ export function defaultProps(kind: Kind): Props {
       return { elevation: 0, valveType: 'throttle', diameter: 0.04, opening: 1, kOpen: 2.5, pressureSetting: 150000, flowSetting: 0.0005 }
     case 'meter':
       return { elevation: 0, diameter: 0.04 }
+    case 'element':
+      return { elevation: 0, elementType: 'venturi', diameter: 0.04, throat: 0.02, cd: 0.98 }
+    case 'dpgauge':
+      return { elevation: 0 }
+    case 'timer':
+      return { enabled: true, mode: 'cycle', onTime: 300, offTime: 300, startOn: true, delay: 600, action: 'on' }
   }
 }
 
@@ -150,6 +178,11 @@ export interface DeviceResult {
   // valve
   K?: number
   velocity?: number
+  // venturi / orifice
+  tapDp?: number
+  permanentLoss?: number
+  throatVelocity?: number
+  inferredFlow?: number
 }
 export interface Warning {
   id?: string

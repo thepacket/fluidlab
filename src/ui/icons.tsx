@@ -57,6 +57,27 @@ export function KindIcon({ kind }: { kind: Kind | 'pipe' | 'network' }) {
           <path d="M10 19v-3M14 19v-6M18 19v-4M22 19v-7" stroke="var(--accent)" />
         </>
       )}
+      {kind === 'element' && (
+        <>
+          <path d="M3 9h6l6 5h2l12-5M3 23h6l6-5h2l12 5" />
+          <path d="M8 16h16" stroke="var(--accent)" strokeWidth="2.4" strokeDasharray="3 3" />
+        </>
+      )}
+      {kind === 'dpgauge' && (
+        <>
+          <rect x="5" y="4" width="22" height="22" rx="5" />
+          <path d="M12 19l4-9 4 9z" stroke="var(--accent)" />
+          <path d="M2 22h3M27 22h3" />
+        </>
+      )}
+      {kind === 'timer' && (
+        <>
+          <circle cx="16" cy="18" r="10.5" />
+          <path d="M13 4h6M16 4v3.500M24 9l2-2" />
+          <path d="M16 18V11.500" stroke="var(--accent)" strokeWidth="2.200" />
+          <path d="M16 18l4.500 2.500" stroke="var(--accent)" strokeWidth="2.200" />
+        </>
+      )}
       {kind === 'pipe' && (
         <>
           <path d="M3 12h26M3 20h26" />
@@ -95,6 +116,21 @@ export const Icon = {
   check: (
     <svg viewBox="0 0 24 24" width="16" height="16" {...S} strokeWidth={3}>
       <path d="M5 12.5l4.5 4.5L19 7.5" />
+    </svg>
+  ),
+  undo: (
+    <svg viewBox="0 0 24 24" width="16" height="16" {...S} strokeWidth={2.2}>
+      <path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3" />
+    </svg>
+  ),
+  redo: (
+    <svg viewBox="0 0 24 24" width="16" height="16" {...S} strokeWidth={2.2}>
+      <path d="M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3" />
+    </svg>
+  ),
+  parts: (
+    <svg viewBox="0 0 24 24" width="18" height="18" {...S} strokeWidth={2.2}>
+      <path d="M12 5v14M5 12h14" />
     </svg>
   ),
   chevron: (

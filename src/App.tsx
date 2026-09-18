@@ -1,29 +1,33 @@
 import { Background, BackgroundVariant, ConnectionMode, Controls, MiniMap, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { EXPERIMENTS } from './experiments'
 import type { Kind } from './model/types'
 import { fmt, unitLabel } from './model/units'
-import { useLab } from './store'
+import { selectedId, signalEnds, useLab } from './store'
 import { Inspector } from './ui/Inspector'
 import { PipeEdge } from './ui/PipeEdge'
+import { SignalEdge } from './ui/SignalEdge'
 import { Sidebar } from './ui/Sidebar'
 import { TopBar } from './ui/TopBar'
 import { rampCss } from './ui/colors'
 import { Icon } from './ui/icons'
 import { nodeTypes } from './ui/nodes'
+import { useIsMobile } from './ui/useIsMobile'
 
-const edgeTypes = { pipe: PipeEdge }
+const edgeTypes = { pipe: PipeEdge, signal: SignalEdge }
 
 function ExperimentCard() {
   const id = useLab((s) => s.experimentId)
   const results = useLab((s) => s.results)
   const nodes = useLab((s) => s.nodes)
   const levels = useLab((s) => s.levels)
+  const history = useLab((s) => s.history)
   const close = useLab((s) => s.set)
-  const [open, setOpen] = useState(true)
+  const mobile = useIsMobile()
+  const [open, setOpen] = useState(!mobile)
   const ex = EXPERIMENTS.find((e) => e.id === id)
-  const goal = useMemo(() => (ex?.goal && results.ok ? ex.goal.check(results, nodes, levels) : null), [ex, results, nodes, levels])
+  const goal = useMemo(() => (ex?.goal && results.ok ? ex.goal.check(results, nodes, levels, history) : null), [ex, results, nodes, levels, history])
   if (!ex) return null
   return (
     <div className={`exp-card ${goal?.done ? 'done' : ''}`}>
@@ -119,13 +123,31 @@ function Bench() {
   const { screenToFlowPosition, fitView } = useReactFlow()
 
   const initialized = useNodesInitialized()
+  const mobile = useIsMobile()
+  const checkpoint = useLab((s) => s.checkpoint)
+  const sheetOpen = useLab((s) => s.sheet === 'insp') && mobile
+  const set = useLab((s) => s.set)
   const loadCount = useLab((s) => s.loadCount)
 
+  // Frame the rig whenever a new one is loaded or the layout around the bench changes. The attempts are
+  // deliberately not cancelled on re-render: nodes are measured a few frames after they mount, and the
+  // last, un-animated pass guarantees the final framing even if an earlier animation was interrupted.
+  const fitRef = useRef(fitView)
   useEffect(() => {
-    if (!initialized) return
-    const t = setTimeout(() => fitView({ padding: { top: useLab.getState().experimentId ? '290px' : '70px', bottom: '110px', left: '60px', right: '70px' }, duration: 500, maxZoom: 1.2 }), 30)
-    return () => clearTimeout(t)
-  }, [initialized, loadCount, fitView])
+    fitRef.current = fitView
+  }, [fitView])
+  useEffect(() => {
+    const px = (n: number) => `${n}px` as const
+    const padding = mobile
+      ? { top: px(useLab.getState().experimentId ? 150 : 24), bottom: px(sheetOpen ? Math.round(window.innerHeight * 0.5) + 24 : 100), left: px(18), right: px(18) }
+      : { top: px(useLab.getState().experimentId ? 290 : 70), bottom: px(110), left: px(60), right: px(70) }
+    for (const [ms, duration] of [
+      [60, 350],
+      [450, 350],
+      [1000, 0],
+    ])
+      setTimeout(() => fitRef.current({ padding, duration, maxZoom: 1.2 }), ms)
+  }, [initialized, loadCount, mobile, sheetOpen])
 
   useEffect(() => {
     const onAdd = (e: Event) => {
@@ -158,6 +180,8 @@ function Bench() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onNodeDragStart={() => checkpoint()}
+        isValidConnection={(c) => c.source !== c.target && signalEnds(c, useLab.getState().nodes) !== 'invalid'}
         connectionMode={ConnectionMode.Loose}
         connectionRadius={34}
         connectionLineStyle={{ stroke: '#35e0ff', strokeWidth: 5, strokeLinecap: 'round', strokeDasharray: '2 10' }}
@@ -171,19 +195,26 @@ function Bench() {
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="#1d2a42" />
         <Background id="major" variant={BackgroundVariant.Lines} gap={200} color="#101a2b" />
-        <Controls position="bottom-right" showInteractive={false} />
-        <MiniMap
-          position="bottom-right"
-          pannable
-          zoomable
-          nodeColor="#2a9dff"
-          maskColor="rgba(4,7,13,.72)"
-          bgColor="#0a111d"
-          nodeStrokeWidth={0}
-          style={{ marginBottom: 118, width: 150, height: 96 }}
-        />
+        {!mobile && <Controls position="bottom-right" showInteractive={false} />}
+        {!mobile && (
+          <MiniMap
+            position="bottom-right"
+            pannable
+            zoomable
+            nodeColor="#2a9dff"
+            maskColor="rgba(4,7,13,.72)"
+            bgColor="#0a111d"
+            nodeStrokeWidth={0}
+            style={{ marginBottom: 118, width: 150, height: 96 }}
+          />
+        )}
       </ReactFlow>
       <ExperimentCard />
+      {mobile && (
+        <button className="fab" onClick={() => set({ sheet: 'parts' })} aria-label="Components and experiments">
+          {Icon.parts}
+        </button>
+      )}
       <Legend />
       <Alerts />
       {nodes.length === 0 && (
@@ -198,6 +229,10 @@ function Bench() {
 
 export default function App() {
   const tick = useLab((s) => s.tick)
+  const sheet = useLab((s) => s.sheet)
+  const set = useLab((s) => s.set)
+  const mobile = useIsMobile()
+
   useEffect(() => {
     let last = performance.now()
     const t = setInterval(() => {
@@ -208,13 +243,40 @@ export default function App() {
     return () => clearInterval(t)
   }, [tick])
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest('input, select, textarea')) return // fields keep their own undo
+      const s = useLab.getState()
+      const mod = e.metaKey || e.ctrlKey
+      if (mod && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        if (e.shiftKey) s.redo()
+        else s.undo()
+      } else if (mod && e.key.toLowerCase() === 'y') {
+        e.preventDefault()
+        s.redo()
+      } else if (!mod && e.key.toLowerCase() === 'r') {
+        const id = selectedId(s)
+        if (id) s.rotate(id)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   return (
     <ReactFlowProvider>
-      <div className="app">
+      <div className={`app ${mobile ? 'is-mobile' : ''} sheet-${sheet}`}>
         <TopBar />
         <Sidebar />
         <Bench />
-        <Inspector />
+        <div className="insp-wrap">
+          <button className="sheet-grab" onClick={() => set({ sheet: sheet === 'insp' ? 'none' : 'insp' })} aria-label="Toggle details">
+            <i />
+          </button>
+          <Inspector />
+        </div>
+        {mobile && sheet === 'parts' && <div className="scrim" onClick={() => set({ sheet: 'none' })} />}
       </div>
     </ReactFlowProvider>
   )

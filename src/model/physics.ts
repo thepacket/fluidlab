@@ -68,3 +68,29 @@ export function pumpEfficiency(q: number, p: Props, speed = p.speed): number {
 }
 
 export const nozzleFlow = (pressureHead: number, d: number, cd: number) => cd * area(d) * Math.sqrt(2 * G * Math.max(0, pressureHead))
+
+// ---- differential-pressure flow elements (venturi, orifice) ------------------
+// A network solver only tracks piezometric head, so the throat's Bernoulli pressure dip is
+// computed here; only the *permanent* loss is handed to the solver as a minor-loss K.
+
+export const beta = (p: Props) => Math.min(0.95, Math.max(0.1, p.throat / p.diameter))
+
+/** Pressure difference between the upstream and throat taps at flow q. */
+export function elementTapDp(q: number, p: Props, fluid: Fluid) {
+  const b = beta(p)
+  const vt = Math.abs(q) / (p.cd * area(b * p.diameter))
+  return (fluid.density / 2) * vt * vt * (1 - b ** 4)
+}
+/** Fraction of the tap differential that is never recovered downstream. */
+export const elementLossFraction = (p: Props) => (p.elementType === 'orifice' ? 1 - beta(p) ** 1.9 : 0.12)
+
+/** Permanent-loss coefficient referred to the pipe-bore velocity. */
+export function elementK(p: Props) {
+  const b = beta(p)
+  return (elementLossFraction(p) * (1 - b ** 4)) / (p.cd * p.cd * b ** 4)
+}
+/** What an operator would infer from the differential: Q = Cd·A_t·√(2Δp / ρ(1−β⁴)) */
+export function elementInferredFlow(dp: number, p: Props, fluid: Fluid) {
+  const b = beta(p)
+  return p.cd * area(b * p.diameter) * Math.sqrt((2 * Math.max(0, dp)) / (fluid.density * (1 - b ** 4)))
+}

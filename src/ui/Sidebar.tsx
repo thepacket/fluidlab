@@ -8,13 +8,19 @@ const GROUPS: { name: string; kinds: Kind[] }[] = [
   { name: 'Sources & storage', kinds: ['reservoir', 'tank'] },
   { name: 'Equipment', kinds: ['pump', 'valve'] },
   { name: 'Nodes', kinds: ['junction', 'outlet'] },
-  { name: 'Instruments', kinds: ['gauge', 'meter'] },
+  { name: 'Control', kinds: ['timer'] },
+  { name: 'Instruments', kinds: ['gauge', 'dpgauge', 'meter', 'element'] },
 ]
 
 export function Sidebar() {
   const [tab, setTab] = useState<'build' | 'lab'>('lab')
   const experimentId = useLab((s) => s.experimentId)
   const load = useLab((s) => s.loadExperiment)
+  const set = useLab((s) => s.set)
+  const add = (k: Kind) => {
+    window.dispatchEvent(new CustomEvent('fluidlab:add', { detail: k }))
+    set({ sheet: 'none' })
+  }
 
   return (
     <aside className="sidebar">
@@ -41,7 +47,7 @@ export function Sidebar() {
                     e.dataTransfer.setData('application/fluidlab', k)
                     e.dataTransfer.effectAllowed = 'move'
                   }}
-                  onDoubleClick={() => window.dispatchEvent(new CustomEvent('fluidlab:add', { detail: k }))}
+                  onClick={() => add(k)}
                 >
                   <div className="palette-icon">
                     <KindIcon kind={k} />
@@ -56,20 +62,20 @@ export function Sidebar() {
           ))}
           <div className="howto">
             <p>
-              <kbd>drag</kbd> a component onto the bench
+              <kbd>click</kbd> or <kbd>drag</kbd> a component onto the bench
             </p>
             <p>
               <kbd>pull</kbd> from a port to lay a pipe
             </p>
             <p>
-              <kbd>⌫</kbd> removes the selection
+              <kbd>R</kbd> rotates · <kbd>⌫</kbd> deletes · <kbd>⌘Z</kbd> undoes
             </p>
           </div>
         </div>
       ) : (
         <div className="scroll">
           {EXPERIMENTS.map((ex) => (
-            <button key={ex.id} className={`exp-item ${experimentId === ex.id ? 'on' : ''}`} onClick={() => load(ex.id)}>
+            <button key={ex.id} className={`exp-item ${experimentId === ex.id ? 'on' : ''}`} onClick={() => (load(ex.id), set({ sheet: 'none' }))}>
               <i>{ex.no}</i>
               <div>
                 <b>{ex.title}</b>

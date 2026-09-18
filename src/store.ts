@@ -1,12 +1,21 @@
 import { addEdge, applyEdgeChanges, applyNodeChanges, type Connection, type EdgeChange, type NodeChange } from '@xyflow/react'
 import { create } from 'zustand'
-import { engine } from './engine/epanet'
+import { solver } from './engine/client'
 import { EXPERIMENTS, NODE_SIZE, PORT_Y, type LabEdge, type LabNode } from './experiments'
+import { computeControls, timerState } from './model/control'
 import { area } from './model/physics'
-import { EMPTY_RESULTS, FLUIDS, KIND_META, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
+import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
 import { METRIC, type UnitPrefs } from './model/units'
 
 export type Overlay = 'pressure' | 'velocity' | 'plain'
+/** Everything undo/redo restores: the rig itself, not the simulation state around it. */
+interface Snapshot {
+  nodes: LabNode[]
+  edges: LabEdge[]
+  fluidId: string
+  experimentId: string | null
+  projectName: string
+}
 export interface Sample {
   t: number
   v: Record<string, number>
@@ -21,6 +30,8 @@ interface State {
   results: Results
   engineReady: boolean
   levels: Record<string, number>
+  /** live on/off commands from controllers, keyed by the device they switch */
+  controls: Record<string, boolean>
   simTime: number
   running: boolean
   timeScale: number
@@ -29,6 +40,10 @@ interface State {
   projectName: string
   /** bumps whenever a whole rig is loaded, so the view can re-fit */
   loadCount: number
+  /** which slide-over panel is open on small screens */
+  sheet: 'none' | 'parts' | 'insp'
+  past: Snapshot[]
+  future: Snapshot[]
 
   onNodesChange: (c: NodeChange<LabNode>[]) => void
   onEdgesChange: (c: EdgeChange<LabEdge>[]) => void
@@ -38,6 +53,11 @@ interface State {
   updateEdge: (id: string, patch: Props) => void
   rename: (id: string, label: string) => void
   remove: (id: string) => void
+  rotate: (id: string) => void
+  /** Save an undo point. Calls sharing a `tag` within a short window collapse into one (slider drags, typing). */
+  checkpoint: (tag?: string) => void
+  undo: () => void
+  redo: () => void
   select: (id: string | null) => void
   set: (patch: Partial<State>) => void
   loadExperiment: (id: string) => void
@@ -50,18 +70,46 @@ interface State {
 }
 
 const STORAGE_KEY = 'fluidlab.project.v1'
+let lastTag: string | undefined
+let lastTagAt = 0
+const snapshot = (s: Snapshot): Snapshot => ({ nodes: s.nodes, edges: s.edges, fluidId: s.fluidId, experimentId: s.experimentId, projectName: s.projectName })
 let uid = Date.now() % 100000
 
-export const model = (s: Pick<State, 'nodes' | 'edges' | 'fluidId' | 'levels'>): Model => ({
+export const model = (s: Pick<State, 'nodes' | 'edges' | 'fluidId' | 'levels' | 'controls'>): Model => ({
   nodes: s.nodes,
   edges: s.edges,
   fluid: FLUIDS.find((f) => f.id === s.fluidId) ?? FLUIDS[0],
   levels: s.levels,
+  controls: s.controls,
 })
+
+/**
+ * Classify a new connection. Signal ports only pair with each other (controller `sig` ↔ device `ctl`),
+ * and fluid ports never accept a signal wire. Returns null for an ordinary pipe.
+ */
+export function signalEnds(c: { source: string | null; target: string | null; sourceHandle?: string | null; targetHandle?: string | null }, nodes: LabNode[]) {
+  const ends = [
+    { id: c.source, h: c.sourceHandle },
+    { id: c.target, h: c.targetHandle },
+  ]
+  const isSignalPort = (h?: string | null) => h === 'sig' || h === 'ctl'
+  if (!ends.some((e) => isSignalPort(e.h))) return null
+  const from = ends.find((e) => e.h === 'sig')
+  const to = ends.find((e) => e.h === 'ctl')
+  const target = nodes.find((n) => n.id === to?.id)
+  if (!from?.id || !to?.id || !target || !CONTROLLABLE.includes(target.data.kind)) return 'invalid' as const
+  return { from: from.id, to: to.id }
+}
 
 /** Only hydraulically meaningful state — dragging a node must not trigger a re-solve. */
 const signature = (s: State) =>
-  JSON.stringify([s.nodes.map((n) => [n.id, n.data.kind, n.data.props]), s.edges.map((e) => [e.id, e.source, e.target, e.sourceHandle, e.targetHandle, e.data?.props]), s.fluidId, s.levels])
+  JSON.stringify([
+    s.nodes.map((n) => [n.id, n.data.kind, n.data.props]),
+    s.edges.map((e) => [e.id, e.source, e.target, e.sourceHandle, e.targetHandle, e.data?.props]),
+    s.fluidId,
+    s.levels,
+    s.controls,
+  ])
 
 function nextLabel(nodes: LabNode[], kind: Kind) {
   const prefix = KIND_META[kind].prefix
@@ -80,6 +128,7 @@ export const useLab = create<State>((set, get) => ({
   results: EMPTY_RESULTS,
   engineReady: false,
   levels: {},
+  controls: {},
   simTime: 0,
   running: true,
   timeScale: 60,
@@ -87,12 +136,31 @@ export const useLab = create<State>((set, get) => ({
   experimentId: null,
   projectName: 'Untitled rig',
   loadCount: 0,
+  sheet: 'none',
+  past: [],
+  future: [],
 
-  onNodesChange: (c) => set({ nodes: applyNodeChanges(c, get().nodes) }),
-  onEdgesChange: (c) => set({ edges: applyEdgeChanges(c, get().edges) }),
+  onNodesChange: (c) => {
+    if (c.some((x) => x.type === 'remove')) get().checkpoint('delete')
+    set({ nodes: applyNodeChanges(c, get().nodes) })
+  },
+  onEdgesChange: (c) => {
+    if (c.some((x) => x.type === 'remove')) get().checkpoint('delete')
+    set({ edges: applyEdgeChanges(c, get().edges) })
+  },
   onConnect: (c) => {
     if (c.source === c.target) return
+    const signal = signalEnds(c, get().nodes)
+    if (signal === 'invalid') return
     const edges = get().edges
+    if (signal && edges.some((e) => e.type === 'signal' && e.source === signal.from && e.target === signal.to)) return
+    get().checkpoint()
+    if (signal) {
+      // stored controller → device, whichever end the user dragged from
+      const wire = { id: `s${++uid}`, type: 'signal', source: signal.from, sourceHandle: 'sig', target: signal.to, targetHandle: 'ctl' }
+      set({ edges: [...edges.map((e) => ({ ...e, selected: false })), wire as LabEdge] })
+      return
+    }
     const n = edges.length + 1
     let label = `Pipe ${n}`
     const used = new Set(edges.map((e) => e.data?.label))
@@ -105,6 +173,7 @@ export const useLab = create<State>((set, get) => ({
     })
   },
   addNode: (kind, x, y) => {
+    get().checkpoint()
     const [w, h] = NODE_SIZE[kind]
     const nodes = get().nodes.map((n) => ({ ...n, selected: false }))
     const node: LabNode = {
@@ -116,18 +185,62 @@ export const useLab = create<State>((set, get) => ({
     }
     set({ nodes: [...nodes, node], edges: get().edges.map((e) => ({ ...e, selected: false })) })
   },
-  updateNode: (id, patch) => set({ nodes: get().nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, props: { ...n.data.props, ...patch } } } : n)) }),
-  updateEdge: (id, patch) => set({ edges: get().edges.map((e) => (e.id === id && e.data ? { ...e, data: { ...e.data, props: { ...e.data.props, ...patch } } } : e)) }),
-  rename: (id, label) =>
+  updateNode: (id, patch) => {
+    get().checkpoint(`edit:${id}:${Object.keys(patch).join()}`)
+    set({ nodes: get().nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, props: { ...n.data.props, ...patch } } } : n)) })
+  },
+  updateEdge: (id, patch) => {
+    get().checkpoint(`edit:${id}:${Object.keys(patch).join()}`)
+    set({ edges: get().edges.map((e) => (e.id === id && e.data ? { ...e, data: { ...e.data, props: { ...e.data.props, ...patch } } } : e)) })
+  },
+  rename: (id, label) => {
+    get().checkpoint(`rename:${id}`)
     set({
       nodes: get().nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, label } } : n)),
       edges: get().edges.map((e) => (e.id === id && e.data ? { ...e, data: { ...e.data, label } } : e)),
-    }),
-  remove: (id) =>
+    })
+  },
+  remove: (id) => {
+    get().checkpoint()
     set({
       nodes: get().nodes.filter((n) => n.id !== id),
       edges: get().edges.filter((e) => e.id !== id && e.source !== id && e.target !== id),
-    }),
+    })
+  },
+  rotate: (id) => {
+    const node = get().nodes.find((n) => n.id === id)
+    if (!node || !ROTATABLE.includes(node.data.kind)) return
+    get().checkpoint()
+    // the footprint of a non-square part swaps width and height: shift so it turns about its centre
+    const [w, h] = NODE_SIZE[node.data.kind]
+    const turned = ((node.data.rot ?? 0) / 90) % 2 === 1
+    const shift = ((turned ? h : w) - (turned ? w : h)) / 2
+    set({
+      nodes: get().nodes.map((n) => (n.id === id ? { ...n, position: { x: n.position.x + shift, y: n.position.y - shift }, data: { ...n.data, rot: ((n.data.rot ?? 0) + 90) % 360 } } : n)),
+    })
+  },
+  checkpoint: (tag) => {
+    const now = Date.now()
+    if (tag && tag === lastTag && now - lastTagAt < 900) {
+      lastTagAt = now
+      return
+    }
+    lastTag = tag
+    lastTagAt = now
+    set({ past: [...get().past.slice(-99), snapshot(get())], future: [] })
+  },
+  undo: () => {
+    const { past, future } = get()
+    if (!past.length) return
+    lastTag = undefined
+    set({ ...past[past.length - 1], past: past.slice(0, -1), future: [snapshot(get()), ...future], levels: {}, history: [] })
+  },
+  redo: () => {
+    const { past, future } = get()
+    if (!future.length) return
+    lastTag = undefined
+    set({ ...future[0], past: [...past, snapshot(get())], future: future.slice(1), levels: {}, history: [] })
+  },
   select: (id) =>
     set({
       nodes: get().nodes.map((n) => (n.selected !== (n.id === id) ? { ...n, selected: n.id === id } : n)),
@@ -138,6 +251,7 @@ export const useLab = create<State>((set, get) => ({
   loadExperiment: (id) => {
     const ex = EXPERIMENTS.find((e) => e.id === id)
     if (!ex) return
+    if (get().nodes.length) get().checkpoint()
     const { nodes, edges } = ex.build()
     set({
       nodes: nodes.map((n) => ({ ...n, selected: n.id === ex.select })),
@@ -153,10 +267,14 @@ export const useLab = create<State>((set, get) => ({
       running: true,
     })
   },
-  newProject: () => set({ nodes: [], edges: [], experimentId: null, projectName: 'Untitled rig', levels: {}, simTime: 0, history: [] }),
+  newProject: () => {
+    if (get().nodes.length) get().checkpoint()
+    set({ nodes: [], edges: [], experimentId: null, projectName: 'Untitled rig', levels: {}, simTime: 0, history: [] })
+  },
   loadProject: (json) => {
     const p = JSON.parse(json)
     if (!Array.isArray(p.nodes) || !Array.isArray(p.edges)) throw new Error('Not a FluidLab project')
+    if (get().nodes.length) get().checkpoint()
     set({
       nodes: p.nodes,
       edges: p.edges,
@@ -194,8 +312,9 @@ export const useLab = create<State>((set, get) => ({
   tick: (dtReal) => {
     const s = get()
     if (!s.running || !s.results.ok) return
-    const hasTanks = s.nodes.some((n) => n.data.kind === 'tank')
-    const dt = dtReal * (hasTanks ? s.timeScale : 1)
+    // tanks and timers live on the accelerated lab clock; a purely steady rig just counts real seconds
+    const clocked = s.nodes.some((n) => n.data.kind === 'tank' || isControl(n.data.kind))
+    const dt = dtReal * (clocked ? s.timeScale : 1)
     const levels = { ...s.levels }
     let moved = false
     for (const n of s.nodes) {
@@ -213,20 +332,22 @@ export const useLab = create<State>((set, get) => ({
       const nr = s.results.nodes[n.id]
       const dr = s.results.devices[n.id]
       if (n.data.kind === 'tank') v[n.id] = levels[n.id] ?? n.data.props.initLevel
+      else if (n.data.kind === 'timer') v[n.id] = timerState(n.data.props, s.simTime).on ? 1 : 0
       else if (n.data.kind === 'outlet' || n.data.kind === 'reservoir') v[n.id] = Math.abs(nr?.outflow ?? 0)
       else if (nr) v[n.id] = nr.pressure
-      else if (dr) v[n.id] = dr.flow
+      else if (dr) v[n.id] = n.data.kind === 'dpgauge' ? dr.pIn - dr.pOut : n.data.kind === 'element' ? (dr.tapDp ?? 0) : dr.flow
     }
     for (const e of s.edges) if (s.results.links[e.id]) v[e.id] = s.results.links[e.id].flow
     const simTime = s.simTime + dt
-    const history = [...s.history.slice(-359), { t: simTime, v }]
+    const history = [...s.history.slice(-599), { t: simTime, v }]
     set(moved ? { levels, simTime, history } : { simTime, history })
   },
 
   solve: () => {
     const s = get()
     if (!s.engineReady) return
-    set({ results: engine.solve(model(s)) })
+    // null = superseded by a newer request whose answer is already on its way
+    solver.solve(model(s)).then((results) => results && set({ results }))
   },
 }))
 
@@ -258,6 +379,13 @@ export function bootLab() {
   if (!restored) useLab.getState().loadExperiment('pump')
 
   useLab.subscribe((s) => {
+    // controllers first: if a timer just switched something, that lands in the signature below
+    const controls = computeControls(s.nodes, s.edges, s.simTime)
+    const keys = Object.keys(controls)
+    if (keys.length !== Object.keys(s.controls).length || keys.some((k) => controls[k] !== s.controls[k])) {
+      useLab.setState({ controls })
+      return
+    }
     const sig = signature(s)
     if (sig !== lastSig && s.engineReady) {
       lastSig = sig
@@ -270,7 +398,7 @@ export function bootLab() {
     clearTimeout(saveTimer)
     saveTimer = window.setTimeout(() => localStorage.setItem(STORAGE_KEY, useLab.getState().exportProject()), 400)
   })
-  engine.ready().then(() => useLab.setState({ engineReady: true }))
+  solver.ready().then(() => useLab.setState({ engineReady: true }))
 }
 
 export const selectedId = (s: State) => s.nodes.find((n) => n.selected)?.id ?? s.edges.find((e) => e.selected)?.id ?? null

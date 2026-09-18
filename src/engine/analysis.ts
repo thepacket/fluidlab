@@ -17,6 +17,7 @@ export function systemCurve(engine: HydraulicEngine, model: Model, pumpId: strin
   for (let s = 0.15; s <= 1.8; s += 0.11) {
     const forced: Model = {
       ...model,
+      controls: { ...model.controls, [pumpId]: true },
       nodes: model.nodes.map((n) => (n.id === pumpId ? { ...n, data: { ...n.data, props: { ...n.data.props, on: true } } } : n)),
     }
     const r = engine.solve(forced, { pumpSpeed: { [pumpId]: s } })

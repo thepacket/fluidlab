@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { engine } from '../engine/epanet'
+import { solver } from '../engine/client'
 import { METRIC, UNITS, US, type UnitPrefs } from '../model/units'
 import { useLab, type Overlay } from '../store'
 import { Icon } from './icons'
@@ -20,13 +20,14 @@ const UNIT_NAMES: Record<keyof UnitPrefs, string> = {
   roughness: 'Roughness',
   velocity: 'Velocity',
   power: 'Power',
+  time: 'Time',
 }
 
 export function TopBar() {
   const s = useLab()
   const [unitsOpen, setUnitsOpen] = useState(false)
   const file = useRef<HTMLInputElement>(null)
-  const hasTanks = s.nodes.some((n) => n.data.kind === 'tank')
+  const hasTanks = s.nodes.some((n) => n.data.kind === 'tank' || n.data.kind === 'timer')
 
   const save = () => {
     const blob = new Blob([s.exportProject()], { type: 'application/json' })
@@ -86,13 +87,22 @@ export function TopBar() {
         </button>
       </div>
 
+      <div className="history">
+        <button className="icon-btn" disabled={!s.past.length} onClick={s.undo} title="Undo (⌘Z)">
+          {Icon.undo}
+        </button>
+        <button className="icon-btn" disabled={!s.future.length} onClick={s.redo} title="Redo (⇧⌘Z)">
+          {Icon.redo}
+        </button>
+      </div>
+
       <div className="spacer" />
 
-      <div className={`solver ${s.results.ok ? 'ok' : s.results.error ? 'bad' : ''}`} title={engine.name}>
+      <div className={`solver ${s.results.ok ? 'ok' : s.results.error ? 'bad' : ''}`} title={`${solver.name}${solver.threaded ? ' · in a Web Worker' : ''}`}>
         <i />
         <div>
           <b>{!s.engineReady ? 'Loading solver…' : s.results.ok ? `Solved in ${s.results.solveMs.toFixed(1)} ms` : s.results.error ? 'Not solved' : 'Idle'}</b>
-          <span>{engine.name}</span>
+          <span>{solver.name}</span>
         </div>
       </div>
 

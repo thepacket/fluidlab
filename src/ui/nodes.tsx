@@ -1,41 +1,80 @@
-import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { memo, type ReactNode } from 'react'
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
+import { memo, useEffect, type ReactNode } from 'react'
 import { NODE_SIZE, PORT_Y, type LabNode } from '../experiments'
-import { valveK } from '../model/physics'
-import type { Kind } from '../model/types'
+import { fmtClock, timerState } from '../model/control'
+import { beta, valveK } from '../model/physics'
+import { CONTROLLABLE, ROTATABLE, type Kind } from '../model/types'
 import { fmt, fmtU, toSI, unitLabel } from '../model/units'
 import { useLab } from '../store'
+import { SIGNAL_OFF, SIGNAL_ON } from './SignalEdge'
 import { DRY, PLAIN, niceCeil, pressureColor } from './colors'
 
 // ---- shared shell -----------------------------------------------------------
 
-function Ports({ kind }: { kind: Kind }) {
-  const y = `${PORT_Y[kind] * 100}%`
-  if (kind === 'pump' || kind === 'valve' || kind === 'meter')
+const SIDES = [Position.Left, Position.Top, Position.Right, Position.Bottom]
+/** where a port that sits on `base` at 0° ends up once the part is turned */
+const side = (base: Position, rot: number) => SIDES[(SIDES.indexOf(base) + rot / 90) % 4]
+
+/** CSS transform for the artwork. 180° is drawn as a mirror image so stems, LEDs and handwheels stay upright. */
+const artTransform = (rot: number) => (rot === 180 ? 'scaleX(-1)' : rot ? `rotate(${rot}deg)` : undefined)
+/** SVG transform that keeps a text anchored at (cx, cy) readable whatever the artwork is doing. */
+const upright = (rot: number, cx: number, cy: number) => (rot === 180 ? `translate(${2 * cx} 0) scale(-1 1)` : rot ? `rotate(${-rot} ${cx} ${cy})` : undefined)
+
+/** Command input for anything a controller can switch. It takes whichever side the fluid ports leave free. */
+function ControlPort({ kind, rot }: { kind: Kind; rot: number }) {
+  if (!CONTROLLABLE.includes(kind)) return null
+  return <Handle id="ctl" type="source" position={rot === 180 ? Position.Top : side(Position.Top, rot)} className="port port-signal" />
+}
+
+function Ports({ kind, rot }: { kind: Kind; rot: number }) {
+  if (kind === 'timer') return <Handle id="sig" type="source" position={Position.Right} className="port port-signal" />
+  if (kind === 'dpgauge' || ROTATABLE.includes(kind)) {
+    const y = kind === 'dpgauge' ? { top: `${PORT_Y[kind] * 100}%` } : undefined
+    if (kind === 'outlet') return <Handle id="l" type="source" position={side(Position.Left, rot)} className="port" />
     return (
       <>
-        <Handle id="in" type="source" position={Position.Left} className="port port-in" style={{ top: y }} />
-        <Handle id="out" type="source" position={Position.Right} className="port port-out" style={{ top: y }} />
+        <Handle id="in" type="source" position={side(Position.Left, rot)} className="port port-in" style={y} />
+        <Handle id="out" type="source" position={side(Position.Right, rot)} className="port port-out" style={y} />
       </>
     )
+  }
+  const y = `${PORT_Y[kind] * 100}%`
   return (
     <>
       <Handle id="l" type="source" position={Position.Left} className="port" style={{ top: y }} />
-      {kind !== 'outlet' && <Handle id="r" type="source" position={Position.Right} className="port" style={{ top: y }} />}
-      {kind !== 'reservoir' && kind !== 'tank' && kind !== 'outlet' && <Handle id="t" type="source" position={Position.Top} className="port" />}
-      {kind !== 'outlet' && <Handle id="b" type="source" position={Position.Bottom} className="port" />}
+      <Handle id="r" type="source" position={Position.Right} className="port" style={{ top: y }} />
+      {kind !== 'reservoir' && kind !== 'tank' && <Handle id="t" type="source" position={Position.Top} className="port" />}
+      <Handle id="b" type="source" position={Position.Bottom} className="port" />
     </>
   )
 }
 
-function Shell({ id, kind, selected, label, sub, children, extra }: { id: string; kind: Kind; selected?: boolean; label: string; sub?: ReactNode; children: ReactNode; extra?: ReactNode }) {
+interface ShellProps {
+  id: string
+  kind: Kind
+  selected?: boolean
+  label: string
+  rot?: number
+  sub?: ReactNode
+  children: ReactNode
+  extra?: ReactNode
+}
+
+function Shell({ id, kind, selected, label, rot = 0, sub, children, extra }: ShellProps) {
   const warn = useLab((s) => s.results.warnings.find((w) => w.id === id && w.level !== 'info'))
   const off = useLab((s) => s.results.excluded.includes(id))
-  const [w, h] = NODE_SIZE[kind]
+  const updateInternals = useUpdateNodeInternals()
+  useEffect(() => updateInternals(id), [id, rot, updateInternals])
+  const [bw, bh] = NODE_SIZE[kind]
+  const turned = rot % 180 === 90
+  const [w, h] = turned ? [bh, bw] : [bw, bh]
   return (
     <div className={`eq eq-${kind} ${selected ? 'is-selected' : ''} ${off ? 'is-off' : ''} ${warn ? `has-${warn.level}` : ''}`} style={{ width: w, height: h }}>
-      {children}
-      <Ports kind={kind} />
+      <div className="eq-art" style={{ left: (w - bw) / 2, top: (h - bh) / 2, width: bw, height: bh, transform: artTransform(rot) }}>
+        {children}
+      </div>
+      <Ports kind={kind} rot={rot} />
+      <ControlPort kind={kind} rot={rot} />
       <div className="eq-label">
         <b>{label}</b>
         {sub && <span>{sub}</span>}
@@ -49,6 +88,8 @@ function Shell({ id, kind, selected, label, sub, children, extra }: { id: string
     </div>
   )
 }
+
+const rotOf = (data: LabNode['data']) => (ROTATABLE.includes(data.kind) ? (data.rot ?? 0) : 0)
 
 const usePressureColor = (p: number | undefined) => {
   const overlay = useLab((s) => s.overlay)
@@ -177,9 +218,11 @@ export const OutletNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const c = usePressureColor(r?.pressure)
   const q = r?.outflow ?? 0
   const on = q > 1e-8
+  const held = useLab((s) => s.controls[id] === false)
   const vigor = Math.min(1, Math.sqrt(Math.max(0, r?.pressure ?? 0) / 150000))
+  const droop = rotOf(data) % 180 === 90 ? 0 : 10 + (1 - vigor) * 14 // a vertical jet doesn't sag sideways
   return (
-    <Shell id={id} kind="outlet" selected={selected} label={data.label} sub={r ? fmtU(Math.abs(q), 'flow', units) : undefined}>
+    <Shell id={id} kind="outlet" rot={rotOf(data)} selected={selected} label={data.label} sub={held ? 'SHUT · timer' : r ? fmtU(Math.abs(q), 'flow', units) : undefined}>
       <svg width="76" height="64" viewBox="0 0 76 64" style={{ overflow: 'visible' }}>
         <path d="M0,24 H24 L40,28 V36 L24,40 H0 Z" fill="#04070d" />
         <path d="M0,27 H24 L38,29.5 V34.5 L24,37 H0 Z" fill={c} style={{ filter: `drop-shadow(0 0 4px ${c})` }} />
@@ -190,7 +233,7 @@ export const OutletNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
             <path
               key={k}
               className="spray"
-              d={`M43,32 Q${58 + vigor * 10},${32 + k * 3} ${62 + vigor * 34},${32 + k * (5 + vigor * 5) + 10 + (1 - vigor) * 14}`}
+              d={`M43,32 Q${58 + vigor * 10},${32 + k * 3} ${62 + vigor * 34},${32 + k * (5 + vigor * 5) + droop}`}
               style={{ animationDuration: `${0.9 - vigor * 0.5}s`, animationDelay: `${-k * 0.13}s`, animationPlayState: paused ? 'paused' : 'running' }}
             />
           ))}
@@ -280,16 +323,18 @@ export const PumpNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const paused = useLab((s) => !s.running)
   const cav = useLab((s) => s.results.warnings.some((w) => w.id === id && w.level === 'error'))
   const p = data.props
-  const running = p.on && p.speed >= 0.01
+  const held = useLab((s) => s.controls[id] === false)
+  const running = p.on && p.speed >= 0.01 && !held
   const cIn = usePressureColor(d?.pIn)
   const cOut = usePressureColor(d?.pOut)
   return (
     <Shell
       id={id}
       kind="pump"
+      rot={rotOf(data)}
       selected={selected}
       label={data.label}
-      sub={running ? (d ? `${fmtU(d.flow, 'flow', units)} · +${fmtU(Math.max(0, d.dH), 'head', units)}` : `${Math.round(p.speed * 100)} %`) : 'OFF'}
+      sub={running ? (d ? `${fmtU(d.flow, 'flow', units)} · +${fmtU(Math.max(0, d.dH), 'head', units)}` : `${Math.round(p.speed * 100)} %`) : held ? 'OFF · timer' : 'OFF'}
     >
       <svg width="100" height="100" viewBox="0 0 100 100" className={cav ? 'cavitating' : ''}>
         <defs>
@@ -329,12 +374,15 @@ export const ValveNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const update = useLab((s) => s.updateNode)
   const p = data.props
   const type: string = p.valveType
+  const rot = rotOf(data)
   const cIn = usePressureColor(d?.pIn)
   const cOut = usePressureColor(d?.pOut)
-  const open = type === 'throttle' ? p.opening : d?.status === 'closed' ? 0 : 1
+  const held = useLab((s) => s.controls[id] === false)
+  const open = held ? 0 : type === 'throttle' ? p.opening : d?.status === 'closed' ? 0 : 1
   const K = valveK(p.opening, p.kOpen)
   let sub: string
-  if (type === 'throttle') sub = p.opening <= 0.001 ? 'CLOSED' : `${Math.round(p.opening * 100)} % · K ${K > 999 ? K.toExponential(1) : K.toFixed(1)}`
+  if (held) sub = 'SHUT · timer'
+  else if (type === 'throttle') sub = p.opening <= 0.001 ? 'CLOSED' : `${Math.round(p.opening * 100)} % · K ${K > 999 ? K.toExponential(1) : K.toFixed(1)}`
   else if (type === 'check') sub = d?.status === 'closed' ? 'seated' : 'open'
   else if (type === 'fcv') sub = `set ${fmtU(p.flowSetting, 'flow', units)}`
   else sub = `set ${fmtU(p.pressureSetting, 'pressure', units)}`
@@ -350,6 +398,7 @@ export const ValveNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
     <Shell
       id={id}
       kind="valve"
+      rot={rot}
       selected={selected}
       label={data.label}
       sub={sub}
@@ -380,7 +429,7 @@ export const ValveNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
           <>
             <line x1="46" y1="38" x2="46" y2="22" stroke="#8aa0c6" strokeWidth="3" />
             <path d="M30,22 A16,14 0 0 1 62,22 Z" fill="#1b2a44" stroke="#5a7099" strokeWidth="2" />
-            <text x="46" y="19" className="svg-tag">
+            <text x="46" y="19" className="svg-tag" transform={upright(rot, 46, 16)}>
               {VALVE_TAG[type]}
             </text>
           </>
@@ -407,8 +456,10 @@ export const MeterNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const c = usePressureColor(d?.pIn)
   const q = d?.flow ?? 0
   const spin = Math.abs(q) > 1e-8
+  const rot = rotOf(data)
+  const turned = rot % 180 === 90
   return (
-    <Shell id={id} kind="meter" selected={selected} label={data.label}>
+    <Shell id={id} kind="meter" rot={rot} selected={selected} label={data.label} sub={rot % 180 === 90 && d ? fmtU(Math.abs(q), 'flow', units) : undefined}>
       <svg width="104" height="56" viewBox="0 0 104 56">
         <rect x="0" y="18" width="104" height="20" fill="#04070d" />
         <rect x="0" y="21" width="104" height="14" fill={c} />
@@ -428,11 +479,164 @@ export const MeterNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
           ))}
         </g>
         <circle cx="23" cy="28" r="2" fill="#eaffff" />
-        <text x="84" y="31" className="svg-lcd">
+        <text x={turned ? 61.5 : 84} y="31" className={`svg-lcd ${turned ? 'turned' : ''}`} transform={upright(rot, 61.5, 28)}>
           {d ? fmt(Math.abs(q), 'flow', units) : '—'}
         </text>
-        <text x="84" y="41" className="svg-lcd-unit">
+        <text x={turned ? 61.5 : 84} y="41" className={`svg-lcd-unit ${turned ? 'turned' : ''}`} transform={upright(rot, 61.5, 28)}>
           {unitLabel('flow', units)}
+        </text>
+      </svg>
+    </Shell>
+  )
+})
+
+// ---- venturi / orifice ------------------------------------------------------
+
+export const ElementNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const d = useLab((s) => s.results.devices[id])
+  const overlay = useLab((s) => s.overlay)
+  const pMax = useLab((s) => s.results.pMax)
+  const p = data.props
+  const rot = rotOf(data)
+  const cIn = usePressureColor(d?.pIn)
+  const cOut = usePressureColor(d?.pOut)
+  // the throat really does run at a lower pressure — show it
+  const cThroat = d && overlay === 'pressure' ? pressureColor(Math.min(d.pIn, d.pOut) - (d.tapDp ?? 0), pMax) : cIn
+  const venturi = p.elementType !== 'orifice'
+  const half = 3 + 11 * beta(p) // half-height of the throat / orifice opening
+  return (
+    <Shell id={id} kind="element" rot={rot} selected={selected} label={data.label} sub={d ? `Δp ${fmtU(d.tapDp, 'pressure', units)}` : undefined}>
+      <svg width="120" height="64" viewBox="0 0 120 64">
+        <defs>
+          <linearGradient id={`fe-${id}`} x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stopColor={cIn} />
+            <stop offset={venturi ? '.42' : '.5'} stopColor={cThroat} />
+            <stop offset="1" stopColor={cOut} />
+          </linearGradient>
+        </defs>
+        {venturi ? (
+          <>
+            <path d={`M0,17 H22 L46,${32 - half - 3} H56 L98,17 H120 V47 H98 L56,${32 + half + 3} H46 L22,47 H0 Z`} fill="#04070d" />
+            <path d={`M0,21 H22 L46,${32 - half} H56 L98,21 H120 V43 H98 L56,${32 + half} H46 L22,43 H0 Z`} fill={`url(#fe-${id})`} style={{ filter: `drop-shadow(0 0 4px ${cThroat})` }} />
+            <path d={`M22,17 L46,${32 - half - 3} H56 L98,17 M22,47 L46,${32 + half + 3} H56 L98,47`} fill="none" stroke="#5a7099" strokeWidth="2.5" strokeLinejoin="round" />
+            <path d="M30,18 V6 H51 V23" fill="none" stroke="#8aa0c6" strokeWidth="1.5" strokeDasharray="2 2" />
+          </>
+        ) : (
+          <>
+            <rect x="0" y="17" width="120" height="30" fill="#04070d" />
+            <rect x="0" y="21" width="120" height="22" fill={`url(#fe-${id})`} />
+            <path d={`M60,6 V${32 - half} M60,${32 + half} V58`} stroke="#cfd9ec" strokeWidth="4" strokeLinecap="round" />
+            <path d="M53,8 V56 M67,8 V56" stroke="#5a7099" strokeWidth="4" strokeLinecap="round" />
+            <path d={`M64,${32 - half + 1} Q82,32 104,23 M64,${32 + half - 1} Q82,32 104,41`} fill="none" stroke="#fff" strokeWidth="1" opacity=".35" />
+            <path d="M42,18 V6 H76 V18" fill="none" stroke="#8aa0c6" strokeWidth="1.5" strokeDasharray="2 2" />
+          </>
+        )}
+        <rect x="8" y="13" width="5" height="38" rx="1.5" fill="#5a7099" />
+        <rect x="107" y="13" width="5" height="38" rx="1.5" fill="#5a7099" />
+        <text x="60" y="61" className="svg-tag" transform={upright(rot, 60, 58)}>
+          β {beta(p).toFixed(2)}
+        </text>
+      </svg>
+    </Shell>
+  )
+})
+
+// ---- differential pressure gauge ----------------------------------------------
+
+export const DpGaugeNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const d = useLab((s) => s.results.devices[id])
+  const dp = d ? d.pIn - d.pOut : undefined
+  return (
+    <Shell id={id} kind="dpgauge" selected={selected} label={data.label}>
+      <svg width="96" height="96" viewBox="0 0 96 96">
+        <defs>
+          <linearGradient id={`dp-${id}`} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#9fb3d6" />
+            <stop offset=".5" stopColor="#3b4a66" />
+            <stop offset="1" stopColor="#7d8fb0" />
+          </linearGradient>
+        </defs>
+        <path d="M0,77 H14 M82,77 H96" stroke="#5a7099" strokeWidth="7" strokeLinecap="round" />
+        <rect x="8" y="4" width="80" height="88" rx="14" fill={`url(#dp-${id})`} />
+        <rect x="12" y="8" width="72" height="80" rx="11" fill="#0a111d" />
+        <text x="48" y="25" className="svg-tag big">
+          ΔP
+        </text>
+        <rect x="18" y="31" width="60" height="32" rx="5" fill="#03140f" stroke="#15382c" />
+        <text x="74" y="51" className="svg-lcd">
+          {dp !== undefined ? fmt(dp, 'pressure', units) : '—'}
+        </text>
+        <text x="74" y="60" className="svg-lcd-unit">
+          {unitLabel('pressure', units)}
+        </text>
+        <text x="23" y="81" className="svg-port hi">
+          HI
+        </text>
+        <text x="73" y="81" className="svg-port lo">
+          LO
+        </text>
+        <path d={`M34,77 H62`} stroke="#22314d" strokeWidth="2" strokeDasharray="2 3" />
+      </svg>
+    </Shell>
+  )
+})
+
+// ---- timer ------------------------------------------------------------------
+
+export const TimerNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const t = useLab((s) => s.simTime)
+  const wired = useLab((s) => s.edges.some((e) => e.type === 'signal' && e.source === id))
+  const p = data.props
+  const st = timerState(p, t)
+  const live = p.enabled
+  const color = !live ? '#51617f' : st.on ? SIGNAL_ON : SIGNAL_OFF
+  const R = 30
+  const C = 2 * Math.PI * R
+  return (
+    <Shell
+      id={id}
+      kind="timer"
+      selected={selected}
+      label={data.label}
+      sub={!live ? 'disabled' : !wired ? 'not wired' : p.mode === 'once' ? `one-shot → ${p.action.toUpperCase()}` : `${fmtClock(p.onTime)} on / ${fmtClock(p.offTime)} off`}
+    >
+      <svg width="96" height="104" viewBox="0 0 96 104">
+        <defs>
+          <linearGradient id={`tb-${id}`} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#9fb3d6" />
+            <stop offset=".5" stopColor="#3b4a66" />
+            <stop offset="1" stopColor="#7d8fb0" />
+          </linearGradient>
+        </defs>
+        <rect x="41" y="0" width="14" height="9" rx="2.5" fill="#5a7099" />
+        <rect x="35" y="0" width="26" height="5" rx="2.5" fill="#8aa0c6" />
+        <path d="M74,22 l7,-7" stroke="#5a7099" strokeWidth="5" strokeLinecap="round" />
+        <circle cx="48" cy="56" r="42" fill={`url(#tb-${id})`} />
+        <circle cx="48" cy="56" r="37.5" fill="#080d18" />
+        {Array.from({ length: 12 }, (_, i) => {
+          const a = (i * Math.PI) / 6
+          return <line key={i} x1={48 + 33 * Math.sin(a)} y1={56 - 33 * Math.cos(a)} x2={48 + 36 * Math.sin(a)} y2={56 - 36 * Math.cos(a)} stroke="#6f819f" strokeWidth={i % 3 === 0 ? 2 : 1} />
+        })}
+        <circle cx="48" cy="56" r={R} fill="none" stroke="#1a2438" strokeWidth="5" />
+        <circle
+          cx="48"
+          cy="56"
+          r={R}
+          fill="none"
+          stroke={color}
+          strokeWidth="5"
+          strokeLinecap="round"
+          strokeDasharray={`${C * (live ? st.progress : 0)} ${C}`}
+          transform="rotate(-90 48 56)"
+          style={{ filter: live && st.on ? `drop-shadow(0 0 4px ${color})` : undefined }}
+        />
+        <text x="48" y="53" className="svg-readout small timer-state" style={{ fill: color }}>
+          {!live ? '– –' : st.on ? 'ON' : 'OFF'}
+        </text>
+        <text x="48" y="68" className="svg-lcd timer-count">
+          {live && st.next !== null ? fmtClock(st.next) : '∞'}
         </text>
       </svg>
     </Shell>
@@ -448,4 +652,7 @@ export const nodeTypes = {
   pump: PumpNode,
   valve: ValveNode,
   meter: MeterNode,
+  element: ElementNode,
+  dpgauge: DpGaugeNode,
+  timer: TimerNode,
 }

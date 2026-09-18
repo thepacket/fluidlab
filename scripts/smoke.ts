@@ -3,16 +3,109 @@ import { FLUIDS, defaultProps, defaultPipeProps, type Model, type Kind } from '.
 import { compile } from '../src/engine/inp'
 
 const node = (id: string, kind: Kind, props = {}) => ({ id, data: { kind, label: id, props: { ...defaultProps(kind), ...props } } })
-const pipe = (id: string, s: string, t: string, sh?: string, th?: string, props = {}) => ({ id, source: s, target: t, sourceHandle: sh, targetHandle: th, data: { label: id, props: { ...defaultPipeProps(), ...props } } })
+const pipe = (id: string, s: string, t: string, sh?: string, th?: string, props = {}) => ({
+  id,
+  source: s,
+  target: t,
+  sourceHandle: sh,
+  targetHandle: th,
+  data: { label: id, props: { ...defaultPipeProps(), ...props } },
+})
 
 await engine.ready()
 for (const opening of [1, 0.5, 0.2, 0]) {
   const m: Model = {
     fluid: FLUIDS[0],
-    nodes: [node('R', 'reservoir', { head: 2 }), node('PU', 'pump'), node('V', 'valve', { opening }), node('O', 'outlet'), node('T', 'tank', { initLevel: 2.5 }), node('J','junction'), node('lonely', 'junction')],
-    edges: [pipe('p1', 'R', 'PU', 'r', 'in'), pipe('p2', 'PU', 'V', 'out', 'in'), pipe('p3', 'V', 'J', 'out', 'l'), pipe('p4','J','O'), pipe('p5','J','T')],
+    nodes: [
+      node('R', 'reservoir', { head: 2 }),
+      node('PU', 'pump'),
+      node('V', 'valve', { opening }),
+      node('O', 'outlet'),
+      node('T', 'tank', { initLevel: 2.5 }),
+      node('J', 'junction'),
+      node('lonely', 'junction'),
+    ],
+    edges: [pipe('p1', 'R', 'PU', 'r', 'in'), pipe('p2', 'PU', 'V', 'out', 'in'), pipe('p3', 'V', 'J', 'out', 'l'), pipe('p4', 'J', 'O'), pipe('p5', 'J', 'T')],
   }
   if (opening === 1) console.log(compile(m).inp)
   const r = engine.solve(m)
-  console.log(opening, r.ok, r.error, 'Q L/min', (r.devices.PU?.flow * 60000).toFixed(2), 'dH', r.devices.PU?.dH.toFixed(2), 'valve dH', r.devices.V?.dH.toFixed(2), 'out', (r.nodes.O?.outflow*60000).toFixed(2), 'tank in', (r.nodes.T?.outflow*60000).toFixed(2), 'res', (r.nodes.R?.outflow*60000).toFixed(2), r.solveMs.toFixed(1)+'ms', r.warnings.map(w=>w.text))
+  console.log(
+    opening,
+    r.ok,
+    r.error,
+    'Q L/min',
+    (r.devices.PU?.flow * 60000).toFixed(2),
+    'dH',
+    r.devices.PU?.dH.toFixed(2),
+    'valve dH',
+    r.devices.V?.dH.toFixed(2),
+    'out',
+    (r.nodes.O?.outflow * 60000).toFixed(2),
+    'tank in',
+    (r.nodes.T?.outflow * 60000).toFixed(2),
+    'res',
+    (r.nodes.R?.outflow * 60000).toFixed(2),
+    r.solveMs.toFixed(1) + 'ms',
+    r.warnings.map((w) => w.text),
+  )
+}
+
+// differential gauge + venturi: taps either side of a valve, one DP gauge left half-wired
+{
+  const m: Model = {
+    fluid: FLUIDS[0],
+    nodes: [
+      node('R', 'reservoir', { head: 10 }),
+      node('A', 'junction'),
+      node('FE', 'element'),
+      node('V', 'valve', { opening: 0.4 }),
+      node('B', 'junction'),
+      node('O', 'outlet'),
+      node('DP', 'dpgauge'),
+      node('DP2', 'dpgauge'),
+    ],
+    edges: [
+      pipe('p1', 'R', 'A'),
+      pipe('p2', 'A', 'FE', 'r', 'in'),
+      pipe('p3', 'FE', 'V', 'out', 'in'),
+      pipe('p4', 'V', 'B', 'out', 'l'),
+      pipe('p5', 'B', 'O'),
+      pipe('s1', 'A', 'DP', 't', 'in'),
+      pipe('s2', 'B', 'DP', 't', 'out'),
+      pipe('s3', 'A', 'DP2', 't', 'in'),
+    ],
+  }
+  const r = engine.solve(m)
+  const dp = r.devices.DP
+  console.log(
+    'dp gauge',
+    r.ok,
+    r.error,
+    'ΔP kPa',
+    ((dp.pIn - dp.pOut) / 1000).toFixed(2),
+    'A-B kPa',
+    ((r.nodes.A.pressure - r.nodes.B.pressure) / 1000).toFixed(2),
+    'venturi tap kPa',
+    (r.devices.FE.tapDp! / 1000).toFixed(2),
+    'loss kPa',
+    (r.devices.FE.permanentLoss! / 1000).toFixed(2),
+    'Q',
+    (r.devices.FE.flow * 60000).toFixed(1),
+    'inferred',
+    (r.devices.FE.inferredFlow! * 60000).toFixed(1),
+    'excluded',
+    r.excluded,
+  )
+}
+
+// timer → pump over a signal wire: the command must override the pump's own switch
+{
+  const { computeControls, timerState } = await import('../src/model/control')
+  const nodes = [node('R', 'reservoir', { head: 2 }), node('PU', 'pump'), node('O', 'outlet'), node('TM', 'timer', { onTime: 60, offTime: 120, startOn: false })]
+  const edges = [pipe('p1', 'R', 'PU', 'r', 'in'), pipe('p2', 'PU', 'O', 'out', 'l'), { id: 's1', type: 'signal', source: 'TM', target: 'PU', sourceHandle: 'sig', targetHandle: 'ctl' }]
+  for (const t of [0, 119, 120, 179, 180, 300]) {
+    const controls = computeControls(nodes, edges, t)
+    const r = engine.solve({ fluid: FLUIDS[0], nodes, edges, controls })
+    console.log('timer t=' + t, timerState(nodes[3].data.props, t), 'pump L/min', (r.devices.PU.flow * 60000).toFixed(1), r.ok, r.excluded)
+  }
 }
