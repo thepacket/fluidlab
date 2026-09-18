@@ -13,7 +13,7 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 
 ## What's in it
 
-- **Network editor** (React Flow): 20 components plus the catalogue, loose port-to-port pipes, snap grid, minimap, 90° rotation (`R`),
+- **Network editor** (React Flow): 25 components plus the catalogue, loose port-to-port pipes, snap grid, minimap, 90° rotation (`R`),
   undo/redo (`⌘Z` / `⇧⌘Z`, 100 steps, slider drags and typing coalesce into one step).
 - **Runs off the main thread**: EPANET lives in a Web Worker behind a latest-wins client (no backlog while dragging a
   slider); falls back to the main thread if workers are unavailable.
@@ -67,6 +67,18 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   fire pump (with the NFPA 20 churn / 150 % checks in the inspector), a steep multistage and a flat circulator.
   Hydronics adds boiler, radiator and a balancing-valve body; closed loops solve with the expansion vessel as the
   pressure reference.
+- **Round-out of the catalogue**: tapered reducers/diffusers, hose, a lossy three-port **tee** and a **three-way
+  valve** (both compile to a hidden junction per port joined by lossy stubs), **air valve** (breaks a vacuum in the
+  water-hammer engine), spring checks / foot valve / backflow preventers (check + pressure-breaker valve for the
+  cracking pressure), PICV, solenoid and pinch presets, valve sizing by Kv/Cv. Pumps by **table** (catalogue points,
+  or a **positive-displacement** pump with slip and an internal relief), efficiency chart, motor efficiency, tariff,
+  kWh and cost; borehole, jockey and dosing presets; turbine / pump-as-turbine with recovered power. Flow-meter
+  sensing principles with their own losses, pitot and sight glass, U-tube manometer display, totalisers, CSV export
+  of everything recorded. Control: **pump sequencer** (staging with hysteresis, shared trimmed speed, lead rotation),
+  **setpoint scheduler**, PID remote setpoint, S/R latch, emergency stop.
+- **Thermal layer** (`src/engine/thermal.ts`): once flows are known, water temperature is carried round the loop —
+  mixed at junctions, reset by a boiler, given up by emitters (NTU model against a constant room temperature).
+  Shows as a "Thermal" pipe-colour overlay with temperatures and heat duty per part. Steady-state, no pipe heat loss.
 - **Sources**: a reservoir is an open surface, a **mains connection** quoted in pressure, or a **well** whose pumping
   level is drawn down in proportion to yield (a head-loss curve between the aquifer and the pumping node). Tanks can
   **overflow** at the rim (spill reported) instead of shutting their inlet; the float valve has an **altitude-valve**
@@ -75,10 +87,10 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **33 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **35 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
   valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
-  balancing a heating loop → water hammer, surge vessel, pump trip). `scripts/control-sim.ts` runs the loops closed
+  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli

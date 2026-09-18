@@ -61,11 +61,14 @@ export const kvOf = (K: number, d: number) => (isFinite(K) && K > 0 ? 3600 * are
 // ---- catalogue loss devices ------------------------------------------------------------
 
 /** Bore the solver sees, and the K on that bore, for a K-model fitting. Reducers and expanders follow from their two diameters. */
-export function fittingK(p: Props, byDiameters?: 'contraction' | 'expansion') {
+export type ByDiameters = 'contraction' | 'expansion' | 'taper' | 'diffuser'
+export function fittingK(p: Props, byDiameters?: ByDiameters) {
   if (!byDiameters) return { bore: p.diameter, K: Math.max(0, p.k) }
   const small = Math.min(p.diameter, p.d2)
   const b2 = (small / Math.max(p.diameter, p.d2)) ** 2
-  return { bore: small, K: byDiameters === 'contraction' ? 0.5 * (1 - b2) : (1 - b2) ** 2 }
+  // sudden changes: vena contracta / Borda–Carnot. Gradual ones keep the jet attached and lose a fraction of that.
+  const K = { contraction: 0.5 * (1 - b2), expansion: (1 - b2) ** 2, taper: 0.05 * (1 - b2), diffuser: 0.3 * (1 - b2) ** 2 }[byDiameters]
+  return { bore: small, K }
 }
 
 /** Pressure drop (Pa) of a rated device at flow q: the datasheet point scaled by (Q/Q_r)ⁿ, worsened by fouling. */
@@ -81,17 +84,60 @@ export function pumpShape(p: Props) {
   const rMax = Math.max(1.05, p.runoutRatio ?? 2)
   return { r0, rMax, c: Math.log(r0 / (r0 - 1)) / Math.log(rMax) }
 }
+/**
+ * Pumps described by a table instead of a shape: a catalogue curve typed in point by point, or a positive-
+ * displacement pump — near-constant flow (a little slip as pressure rises) until its internal relief lifts.
+ * Points are [flow, head] at full speed, head falling as flow rises.
+ */
+export function pumpPoints(p: Props): [number, number][] | null {
+  if (p.pumpType === 'pd') {
+    const Hr = Math.max(1, p.reliefHead ?? 80)
+    const Q = p.designFlow
+    return [
+      [0, 1.03 * Hr],
+      [0.475 * Q, 1.015 * Hr],
+      [0.95 * Q, Hr],
+      [Q, 0],
+    ]
+  }
+  if (p.pumpType === 'custom' && Array.isArray(p.points) && p.points.length >= 2) {
+    const pts = (p.points as { q: number; h: number }[]).map((x): [number, number] => [x.q, x.h]).sort((a, b) => a[0] - b[0])
+    // the solver needs head to fall strictly with flow
+    for (let k = 1; k < pts.length; k++) if (pts[k][1] >= pts[k - 1][1]) pts[k][1] = pts[k - 1][1] - 0.01
+    return pts
+  }
+  return null
+}
 export function pumpHead(q: number, p: Props, speed = p.speed): number {
-  const { r0, c } = pumpShape(p)
   const s = Math.max(1e-6, speed)
+  const pts = pumpPoints(p)
+  if (pts) {
+    // affinity laws: read the full-speed table at Q/s and scale the head by s²
+    const x = Math.max(0, q) / s
+    let k = 1
+    while (k < pts.length - 1 && x > pts[k][0]) k++
+    const [q0, h0] = pts[k - 1]
+    const [q1, h1] = pts[k]
+    return s * s * (h0 + ((h1 - h0) * (x - q0)) / Math.max(1e-12, q1 - q0))
+  }
+  const { r0, c } = pumpShape(p)
   return p.designHead * (s * s * r0 - (r0 - 1) * Math.pow(s, 2 - c) * Math.pow(Math.max(0, q) / p.designFlow, c))
 }
 export function pumpMaxFlow(p: Props, speed = p.speed): number {
+  const pts = pumpPoints(p)
+  if (pts) {
+    const [q0, h0] = pts[pts.length - 2]
+    const [q1, h1] = pts[pts.length - 1]
+    return speed * (h1 <= 0 ? q1 : q1 + (h1 * (q1 - q0)) / Math.max(1e-9, h0 - h1))
+  }
   return pumpShape(p).rMax * p.designFlow * speed
 }
+/** Duty head for ratios and checks: the design head, or the table's head at the design flow. */
+export const pumpRatedHead = (p: Props) => (pumpPoints(p) ? pumpHead(p.designFlow * (p.pumpType === 'pd' ? 0.95 : 1), p, 1) : p.designHead)
 /** Parabolic efficiency curve peaking at the (speed-scaled) design flow. */
 export function pumpEfficiency(q: number, p: Props, speed = p.speed): number {
   if (speed <= 0) return 0
+  if (p.pumpType === 'pd') return p.bepEfficiency // volumetric machines hold their efficiency across the range
   const x = q / (p.designFlow * speed)
   return Math.max(0.02, p.bepEfficiency * (2 * x - x * x))
 }
@@ -111,7 +157,12 @@ export function elementTapDp(q: number, p: Props, fluid: Fluid) {
   return (fluid.density / 2) * vt * vt * (1 - b ** 4)
 }
 /** Fraction of the tap differential that is never recovered downstream. */
-export const elementLossFraction = (p: Props) => (p.elementType === 'orifice' ? 1 - beta(p) ** 1.9 : 0.12)
+export const elementLossFraction = (p: Props) => {
+  const b = beta(p)
+  if (p.elementType === 'orifice') return 1 - b ** 1.9
+  if (p.elementType === 'nozzle') return 1 - 0.014 * b - 2.06 * b * b + 1.18 * b ** 3 // ISO 5167 flow nozzle
+  return 0.12
+}
 
 /** Permanent-loss coefficient referred to the pipe-bore velocity. */
 export function elementK(p: Props) {
@@ -209,3 +260,18 @@ export function sourceHead(p: Props, rhoG: number): number {
 export const sourceElevation = (p: Props, head: number) => (p.sourceType === 'mains' ? p.elevation : head)
 /** Drawdown (m) of a well delivering q: the datasheet point, scaled linearly (aquifer loss dominates). */
 export const wellDrawdown = (p: Props, q: number) => (p.ratedDrawdown * Math.abs(q)) / Math.max(1e-9, p.ratedYield)
+
+// ---- flow meters ------------------------------------------------------------------------------
+// What a meter costs in pressure depends entirely on how it senses the flow.
+export const METER_TYPES = [
+  { id: 'magnetic', name: 'Electromagnetic — full bore', k: 0 },
+  { id: 'ultrasonic', name: 'Ultrasonic — clamp-on', k: 0 },
+  { id: 'pitot', name: 'Pitot / averaging tube', k: 0.15 },
+  { id: 'turbine', name: 'Turbine', k: 1.5 },
+  { id: 'vortex', name: 'Vortex shedding', k: 2.2 },
+  { id: 'rotameter', name: 'Rotameter (variable area)', k: 6 },
+  { id: 'pd', name: 'Positive displacement', k: 8 },
+  { id: 'coriolis', name: 'Coriolis mass meter', k: 10 },
+  { id: 'sight', name: 'Sight glass (indication only)', k: 0.3 },
+]
+export const meterK = (p: Props) => METER_TYPES.find((m) => m.id === (p.meterType ?? 'magnetic'))?.k ?? 0

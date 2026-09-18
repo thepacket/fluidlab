@@ -18,7 +18,9 @@ export interface LossDevice {
   glyph: Glyph
   model: 'k' | 'rated'
   /** true when K follows from the two bores rather than being a catalogue number */
-  byDiameters?: 'contraction' | 'expansion'
+  byDiameters?: 'contraction' | 'expansion' | 'taper' | 'diffuser'
+  /** fraction of the hydraulic power it takes out that comes back as shaft power (turbines) */
+  recovers?: number
   /** dirt builds up in it: exposes the fouling slider */
   fouls?: boolean
   defaults: Props
@@ -26,7 +28,7 @@ export interface LossDevice {
 
 const k = (id: string, name: string, prefix: string, glyph: Glyph, K: number, blurb: string): LossDevice => ({ id, name, group: 'Fittings', blurb, prefix, glyph, model: 'k', defaults: { k: K } })
 const LPM = 1 / 60000
-const rated = (id: string, name: string, prefix: string, glyph: Glyph, dp: number, flowLpm: number, n: number, blurb: string, fouls = false): LossDevice => ({
+const rated = (id: string, name: string, prefix: string, glyph: Glyph, dp: number, flowLpm: number, n: number, blurb: string, fouls = false, thermal: Props = {}): LossDevice => ({
   id,
   name,
   group: 'Equipment',
@@ -35,7 +37,7 @@ const rated = (id: string, name: string, prefix: string, glyph: Glyph, dp: numbe
   glyph,
   model: 'rated',
   fouls,
-  defaults: { ratedDp: dp, ratedFlow: flowLpm * LPM, exponent: n, fouling: 0 },
+  defaults: { ratedDp: dp, ratedFlow: flowLpm * LPM, exponent: n, fouling: 0, ...thermal },
 })
 
 export const LOSS_DEVICES: LossDevice[] = [
@@ -67,6 +69,28 @@ export const LOSS_DEVICES: LossDevice[] = [
     byDiameters: 'expansion',
     defaults: { d2: 0.025 },
   },
+  {
+    id: 'taper',
+    name: 'Reducer (tapered)',
+    group: 'Fittings',
+    blurb: 'Concentric taper · a tenth of the sudden loss',
+    prefix: 'RD',
+    glyph: 'reducer',
+    model: 'k',
+    byDiameters: 'taper',
+    defaults: { d2: 0.025 },
+  },
+  {
+    id: 'diffuser',
+    name: 'Expander (tapered diffuser)',
+    group: 'Fittings',
+    blurb: '≈ 7° cone · K = 0.3·(1 − β²)²',
+    prefix: 'EX',
+    glyph: 'expander',
+    model: 'k',
+    byDiameters: 'diffuser',
+    defaults: { d2: 0.025 },
+  },
   k('entrance', 'Pipe entrance, sharp', 'EN', 'entrance', 0.5, 'Tank into pipe · K ≈ 0.5'),
   k('entrance-round', 'Pipe entrance, bell-mouth', 'EN', 'entrance', 0.05, 'Rounded inlet · K ≈ 0.05'),
   k('exit', 'Pipe exit', 'XT', 'exit', 1.0, 'All velocity head is lost · K = 1'),
@@ -76,12 +100,16 @@ export const LOSS_DEVICES: LossDevice[] = [
   rated('filter', 'Cartridge filter', 'FL', 'filter', 25e3, 40, 1.4, 'Fine media, fouls steadily', true),
   rated('hx-plate', 'Plate heat exchanger', 'HX', 'plate', 35e3, 60, 1.8, 'Compact, high Δp'),
   rated('hx-shell', 'Shell & tube exchanger', 'HX', 'shell', 20e3, 80, 1.9, 'Tube-side pressure drop'),
-  rated('coil', 'Coil / radiator', 'CL', 'coil', 12e3, 20, 1.9, 'Heating or cooling terminal unit'),
+  rated('coil', 'Coil / radiator', 'CL', 'coil', 12e3, 20, 1.9, 'Heating or cooling terminal unit', false, { ratedHeat: 5000, roomTemp: 20 }),
   rated('mixer', 'Static mixer', 'MX', 'mixer', 30e3, 60, 2, 'Blending elements in the bore'),
   rated('membrane', 'Membrane / packed bed', 'MB', 'membrane', 150e3, 20, 1.05, 'Near-laminar: Δp ∝ Q', true),
   rated('uv', 'UV reactor', 'UV', 'uv', 5e3, 60, 2, 'Low-loss treatment chamber'),
-  rated('boiler', 'Boiler / chiller', 'BL', 'shell', 10e3, 30, 2, 'Heat source — hydraulically a pressure drop'),
-  rated('radiator', 'Radiator', 'RA', 'coil', 6e3, 3, 1.9, 'Panel radiator with its lockshield'),
+  rated('boiler', 'Boiler / chiller', 'BL', 'shell', 10e3, 30, 2, 'Heat source — sets the flow temperature', false, { supplyTemp: 70 }),
+  rated('radiator', 'Radiator', 'RA', 'coil', 6e3, 3, 1.9, 'Panel radiator with its lockshield', false, { ratedHeat: 1500, roomTemp: 20 }),
+  rated('cyclone', 'Hydrocyclone', 'CY', 'mixer', 80e3, 60, 2, 'Separates solids by swirl — and pays for it'),
+  rated('watermeter', 'Water meter (revenue)', 'WM', 'generic', 25e3, 50, 2, 'Mechanical meter: a real restriction'),
+  rated('injector', 'Venturi injector', 'IJ', 'mixer', 60e3, 30, 2, 'Draws in additive using ≈ 30 % of the inlet pressure'),
+  { ...rated('turbine', 'Turbine / pump-as-turbine', 'TB', 'shell', 150e3, 100, 2, 'Takes head out of the water and returns it as power'), recovers: 0.7 },
   rated('custom-rated', 'Custom rated device', 'DV', 'generic', 20e3, 50, 2, 'Anything with a datasheet Δp @ Q'),
 ]
 
@@ -100,6 +128,7 @@ export const VALVE_BODIES: { id: string; name: string; kOpen: number; trim: Trim
   { id: 'plug', name: 'Plug', kOpen: 0.4, trim: 'equal' },
   { id: 'needle', name: 'Needle', kOpen: 9, trim: 'linear' },
   { id: 'diaphragm', name: 'Diaphragm', kOpen: 2.3, trim: 'quick' },
+  { id: 'pinch', name: 'Pinch', kOpen: 0.1, trim: 'linear' },
   { id: 'balancing', name: 'Balancing (double-regulating)', kOpen: 4, trim: 'linear' },
 ]
 export const TRIMS: { id: Trim; name: string }[] = [
@@ -118,6 +147,19 @@ export interface PipeStandard {
   sizes: { label: string; id: number }[]
 }
 export const PIPE_STANDARDS: PipeStandard[] = [
+  {
+    id: 'hose',
+    name: 'Hose (rubber / lay-flat)',
+    material: 'hose',
+    sizes: [
+      ['13 mm garden', 12.7],
+      ['19 mm', 19],
+      ['25 mm reel', 25],
+      ['38 mm', 38],
+      ['45 mm attack', 45],
+      ['65 mm supply', 65],
+    ].map(([label, id]) => ({ label: label as string, id: id as number })),
+  },
   {
     id: 'steel40',
     name: 'Steel · Schedule 40',
@@ -206,6 +248,8 @@ export const PUMP_TYPES: { id: string; name: string; shutoffRatio: number; runou
   { id: 'fire', name: 'Fire pump (NFPA 20 shape)', shutoffRatio: 1.2, runoutRatio: 2.2 },
   { id: 'multistage', name: 'Multistage (steep)', shutoffRatio: 1.6, runoutRatio: 1.6 },
   { id: 'circulator', name: 'Circulator (flat)', shutoffRatio: 1.15, runoutRatio: 2.5 },
+  { id: 'custom', name: 'Catalogue curve (enter points)', shutoffRatio: 4 / 3, runoutRatio: 2 },
+  { id: 'pd', name: 'Positive displacement', shutoffRatio: 4 / 3, runoutRatio: 2 },
 ]
 
 // ---- discharge devices ---------------------------------------------------------------------
@@ -268,6 +312,7 @@ export const DISCHARGE_DEVICES: DischargeDevice[] = [
     defaults: { mode: 'kfactor', kFactor: K(200), fused: false },
   },
   { id: 'hosereel', name: 'Hose reel', group: 'Fire protection', blurb: 'First-aid hose · K ≈ 28', prefix: 'HR', glyph: 'hose', defaults: { mode: 'kfactor', kFactor: K(28) } },
+  { id: 'landing', name: 'Standpipe hose valve 65 mm', group: 'Fire protection', blurb: 'Landing valve · K ≈ 430', prefix: 'LV', glyph: 'hydrant', defaults: { mode: 'kfactor', kFactor: K(430) } },
   { id: 'hydrant', name: 'Hydrant outlet 65 mm', group: 'Fire protection', blurb: 'Open butt · K ≈ 1500', prefix: 'HY', glyph: 'hydrant', defaults: { mode: 'kfactor', kFactor: K(1500) } },
   // K chosen so each fixture gives its usual flow at 1 bar
   { id: 'basin', name: 'Basin tap', group: 'Fixtures', blurb: '≈ 6 L/min at 1 bar', prefix: 'TP', glyph: 'tap', defaults: { mode: 'kfactor', kFactor: K(6) } },
@@ -302,6 +347,37 @@ export const DISCHARGE_DEVICES: DischargeDevice[] = [
 ]
 export const dischargeDevice = (variant?: string) => DISCHARGE_DEVICES.find((d) => d.id === variant)
 
+const LPM_ = 1 / 60000
+/** Pumps and valves that are an ordinary component with telling defaults. */
+export const PUMP_PRESETS: Record<string, { prefix: string; defaults: Props; name: string; blurb: string }> = {
+  jockey: {
+    prefix: 'JP',
+    name: 'Jockey pump',
+    blurb: 'Small, high head: tops up a fire main',
+    defaults: { designFlow: 20 * LPM_, designHead: 85, pumpType: 'multistage', shutoffRatio: 1.6, runoutRatio: 1.6 },
+  },
+  submersible: {
+    prefix: 'BP',
+    name: 'Borehole pump',
+    blurb: 'Multistage, hangs below the water level',
+    defaults: { designFlow: 60 * LPM_, designHead: 60, elevation: -20, pumpType: 'multistage', shutoffRatio: 1.6, runoutRatio: 1.6, npshr: 1 },
+  },
+  dosing: {
+    prefix: 'DP',
+    name: 'Positive-displacement pump',
+    blurb: 'Near-constant flow, with an internal relief',
+    defaults: { designFlow: 15 * LPM_, designHead: 60, reliefHead: 80, pumpType: 'pd', bepEfficiency: 0.85 },
+  },
+}
+export const VALVE_PRESETS: Record<string, { prefix: string; defaults: Props; name: string; blurb: string }> = {
+  foot: { prefix: 'FV', name: 'Foot valve', blurb: 'Check valve + strainer on a suction pipe', defaults: { valveType: 'check', kOpen: 3.5, crackPressure: 2e3 } },
+  springcheck: { prefix: 'CV', name: 'Spring check valve', blurb: 'Opens only above its cracking pressure', defaults: { valveType: 'check', kOpen: 2, crackPressure: 15e3 } },
+  dcv: { prefix: 'BF', name: 'Backflow preventer (double check)', blurb: 'Two spring checks in series · ≈ 35 kPa', defaults: { valveType: 'check', kOpen: 4, crackPressure: 35e3 } },
+  rpz: { prefix: 'BF', name: 'Backflow preventer (RPZ)', blurb: 'Reduced-pressure zone · ≈ 70 kPa', defaults: { valveType: 'check', kOpen: 6, crackPressure: 70e3 } },
+  solenoid: { prefix: 'SV', name: 'Solenoid valve', blurb: 'On/off — wire a controller to it', defaults: { valveType: 'throttle', body: 'diaphragm', kOpen: 2.3, trim: 'quick' } },
+  picv: { prefix: 'PI', name: 'Pressure-independent control valve', blurb: 'Flow follows its position, whatever the Δp', defaults: { valveType: 'picv', flowSetting: 20 * LPM_ } },
+}
+
 /** What a catalogue-backed kind should be dropped with: label prefix, preset props, initial rotation. */
 export function catalogueSpec(kind: string, variant?: string): { prefix: string; defaults: Props; rot?: number } | undefined {
   if (!variant) return undefined
@@ -310,6 +386,9 @@ export function catalogueSpec(kind: string, variant?: string): { prefix: string;
     return { prefix: d.prefix, defaults: { variant: d.id, ...d.defaults } }
   }
   if (kind === 'leak' && variant === 'burst') return { prefix: 'BR', defaults: { variant: 'burst', holeDiameter: 0.04, active: false } }
+  if (kind === 'manual' && variant === 'estop') return { prefix: 'ES', defaults: { on: true, style: 'estop' } }
+  if (kind === 'pump' && PUMP_PRESETS[variant]) return PUMP_PRESETS[variant]
+  if (kind === 'valve' && VALVE_PRESETS[variant]) return VALVE_PRESETS[variant]
   if (kind === 'outlet') {
     const d = dischargeDevice(variant)
     return d && { prefix: d.prefix, defaults: { variant: d.id, ...d.defaults }, rot: d.rot }

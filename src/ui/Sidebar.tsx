@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { EXPERIMENTS } from '../experiments'
-import { DISCHARGE_DEVICES, LOSS_DEVICES } from '../model/catalog'
+import { DISCHARGE_DEVICES, LOSS_DEVICES, PUMP_PRESETS, VALVE_PRESETS } from '../model/catalog'
 import { KIND_META, type Kind } from '../model/types'
 import { useLab } from '../store'
 import { KindIcon } from './icons'
@@ -18,15 +18,25 @@ const catalogue = (group: string) => LOSS_DEVICES.filter((d) => d.group === grou
 
 const discharge = (group: string) => DISCHARGE_DEVICES.filter((d) => d.group === group).map((d): PaletteItem => ({ key: `outlet:${d.id}`, kind: 'outlet', name: d.name, blurb: d.blurb }))
 
+const presets = (kind: Kind, table: Record<string, { name: string; blurb: string }>) =>
+  Object.entries(table).map(([id, d]): PaletteItem => ({ key: `${kind}:${id}`, kind, name: d.name, blurb: d.blurb }))
+
 const GROUPS: { name: string; items: PaletteItem[] }[] = [
   { name: 'Sources & storage', items: (['reservoir', 'tank', 'vessel'] as Kind[]).map(item) },
-  { name: 'Pumps & valves', items: (['pump', 'valve', 'relief'] as Kind[]).map(item) },
+  { name: 'Pumps', items: [item('pump'), ...presets('pump', PUMP_PRESETS)] },
+  { name: 'Valves', items: [...(['valve', 'threeway', 'relief', 'airvalve'] as Kind[]).map(item), ...presets('valve', VALVE_PRESETS)] },
   {
     name: 'Nodes',
-    items: [...(['junction', 'outlet', 'leak'] as Kind[]).map(item), { key: 'leak:burst', kind: 'leak' as Kind, name: 'Burst main', blurb: 'Intact until it ruptures — a 40 mm hole' }],
+    items: [...(['junction', 'tee', 'outlet', 'leak'] as Kind[]).map(item), { key: 'leak:burst', kind: 'leak' as Kind, name: 'Burst main', blurb: 'Intact until it ruptures — a 40 mm hole' }],
   },
   { name: 'Instruments', items: (['gauge', 'dpgauge', 'meter', 'element'] as Kind[]).map(item) },
-  { name: 'Control', items: (['manual', 'timer', 'switch', 'pid', 'logic', 'lamp'] as Kind[]).map(item) },
+  {
+    name: 'Control',
+    items: [
+      ...(['manual', 'timer', 'schedule', 'switch', 'pid', 'stager', 'logic', 'lamp'] as Kind[]).map(item),
+      { key: 'manual:estop', kind: 'manual' as Kind, name: 'Emergency stop', blurb: 'Healthy until hit — wire it through an AND gate' },
+    ],
+  },
   { name: 'Fittings', items: catalogue('Fittings') },
   { name: 'Equipment', items: catalogue('Equipment') },
   { name: 'Fixtures', items: discharge('Fixtures') },

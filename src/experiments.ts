@@ -15,6 +15,11 @@ export const NODE_SIZE: Record<Kind, [number, number]> = {
   element: [120, 64],
   dpgauge: [96, 96],
   vessel: [92, 124],
+  tee: [56, 56],
+  threeway: [92, 84],
+  airvalve: [60, 72],
+  stager: [108, 84],
+  schedule: [96, 84],
   leak: [44, 44],
   fitting: [96, 64],
   relief: [84, 64],
@@ -39,6 +44,11 @@ export const PORT_Y: Record<Kind, number> = {
   element: 0.5,
   dpgauge: 0.8,
   vessel: 0.86,
+  tee: 0.5,
+  threeway: 0.4524,
+  airvalve: 0.833,
+  stager: 0.5,
+  schedule: 0.5,
   leak: 0.5,
   fitting: 0.5,
   relief: 0.5,
@@ -1124,7 +1134,12 @@ export const EXPERIMENTS: Experiment[] = [
     formula: 'Σ Δp around any loop = 0',
     brief:
       'A closed heating circuit: the circulator only has to beat friction, and the expansion vessel pins the pressure. Two identical radiators hang off the same pipes, but the near one has a far shorter path — so it hogs the flow while the far room stays cold. Balancing valves exist to waste a little head on purpose.',
-    steps: ['Compare the two branch meters.', 'Select the near branch’s balancing valve and throttle it.', 'Watch flow migrate to the far radiator. The pump’s total barely changes.'],
+    steps: [
+      'Switch the pipe colours to “Thermal” (top bar): the far radiator comes back colder.',
+      'Compare the two branch meters.',
+      'Select the near branch’s balancing valve and throttle it.',
+      'Watch flow migrate to the far radiator. The pump’s total barely changes.',
+    ],
     goal: {
       text: 'Balance the radiators to within 10 % of each other, with at least 3 L/min through each',
       check: (r) => {
@@ -1137,11 +1152,11 @@ export const EXPERIMENTS: Experiment[] = [
     build: () => {
       const cu = { diameter: 0.0199, std: 'copperL', size: '¾″', material: 'copper', roughness: 0.0015e-3 }
       const bv = { diameter: 0.015, body: 'balancing', kOpen: 4, trim: 'linear' }
-      const rad = { variant: 'radiator', ratedDp: 6e3, ratedFlow: 3 * LPM, exponent: 1.9, fouling: 0, diameter: 0.015 }
+      const rad = { variant: 'radiator', ratedDp: 6e3, ratedFlow: 3 * LPM, exponent: 1.9, fouling: 0, diameter: 0.015, ratedHeat: 4000, roomTemp: 20 }
       return new Rig()
         .add('ev', 'vessel', 120, 330, { volume: 0.018, precharge: 100e3, initPressure: 150e3 }, 'Expansion')
         .add('p', 'pump', 260, 520, { pumpType: 'circulator', shutoffRatio: 1.15, runoutRatio: 2.5, designFlow: 12 * LPM, designHead: 4, npshr: 1 }, 'Circulator')
-        .add('b', 'fitting', 430, 520, { variant: 'boiler', ratedDp: 10e3, ratedFlow: 30 * LPM, exponent: 2, fouling: 0, diameter: 0.02 }, 'Boiler')
+        .add('b', 'fitting', 430, 520, { variant: 'boiler', ratedDp: 10e3, ratedFlow: 30 * LPM, exponent: 2, fouling: 0, diameter: 0.02, supplyTemp: 70 }, 'Boiler')
         .add('s1', 'junction', 600, 520, {}, 'S1')
         .add('s2', 'junction', 960, 520, {}, 'S2')
         .add('r1', 'fitting', 600, 380, rad, 'RA1')
@@ -1277,5 +1292,114 @@ export const EXPERIMENTS: Experiment[] = [
         .pipe('g', 'hp', { length: 700, diameter: 0.1023, material: 'steel', roughness: 0.045e-3 }, ['r', 'l'], 'Rising main')
         .pipe('hp', 'dst', { length: 500, diameter: 0.1023, material: 'steel', roughness: 0.045e-3 }, ['r', 'l'], 'Gravity leg')
         .done(),
+  },
+  {
+    id: 'standpipe',
+    no: '34',
+    title: 'Standpipe',
+    concept: 'Pressure at the top of a tall building',
+    formula: 'p_roof = p_pump − ρg·z − friction',
+    brief:
+      'Fire-fighters connect to landing valves on each floor. The hardest one to feed is on the roof: every metre of height costs 9.8 kPa before friction takes its share. The standard asks for 950 L/min from the topmost valve — this riser was run in too small a pipe.',
+    steps: [
+      'The roof valve is open; read its flow and the gauge beside it.',
+      'Click the riser sections: static lift you cannot change, friction you can.',
+      'Pick a bigger nominal size for the riser until the roof valve makes its 950 L/min.',
+    ],
+    goal: {
+      text: 'Deliver at least 950 L/min from the roof landing valve',
+      check: (r) => {
+        const q = (r.nodes['lv3']?.outflow ?? 0) / LPM
+        return { done: q >= 950, readout: `${q.toFixed(0)} L/min · ${((r.nodes['g3']?.pressure ?? 0) / 1000).toFixed(0)} kPa at the roof` }
+      },
+    },
+    select: 'lv3',
+    build: () => {
+      const riser = { length: 15, std: 'steel40', size: 'DN65 · 2½″', diameter: 0.0627, material: 'steel', roughness: 0.045e-3 }
+      const valve = { variant: 'landing', mode: 'kfactor', kFactor: 430 / 60000 / Math.sqrt(1e5) }
+      const rig = new Rig()
+        .add('src', 'reservoir', 90, 620, { head: 3 }, 'Fire tank')
+        .add('p', 'pump', 270, 620, { pumpType: 'fire', shutoffRatio: 1.2, runoutRatio: 2.2, designFlow: 1000 * LPM, designHead: 95, npshr: 4 }, 'Fire pump')
+        .add('g0', 'gauge', 470, 620, {}, 'Ground')
+        .pipe('src', 'p', { length: 3, diameter: 0.15 })
+        .pipe('p', 'g0', { length: 4, diameter: 0.1023, material: 'steel', roughness: 0.045e-3 })
+      let prev = 'g0'
+      ;[15, 30, 45].forEach((z, i) => {
+        const g = `g${i + 1}`
+        const lv = `lv${i + 1}`
+        rig
+          .add(g, 'gauge', 470, 620 - (i + 1) * 170, { elevation: z }, `Level ${i + 1}`)
+          .add(lv, 'outlet', 700, 620 - (i + 1) * 170, { ...valve, elevation: z }, i === 2 ? 'Roof valve' : `Landing ${i + 1}`)
+          .pipe(prev, g, riser, ['t', 'b'], `Riser ${i + 1}`)
+          .pipe(g, lv, { length: 1, diameter: 0.0627 })
+        if (i < 2) rig.nodes[rig.nodes.length - 1].data.props.mode = 'demand' // lower landings shut: a zero demand
+        if (i < 2) rig.nodes[rig.nodes.length - 1].data.props.demand = 0
+        prev = g
+      })
+      return rig.done()
+    },
+  },
+  {
+    id: 'booster',
+    no: '35',
+    title: 'Booster set',
+    concept: 'Staging pumps · lead / lag rotation',
+    formula: 'pumps running = ⌈ demand × N ⌉',
+    brief:
+      'Three small pumps instead of one big one: most of the day a single pump copes, and the others only join when the building wakes up. The pressure controller asks for a demand; the sequencer turns that into how many pumps run, trims the speed they share, and rotates which pump leads so they wear evenly. Two of the three were never wired in.',
+    steps: [
+      'Watch PT1 when the big users come on: one pump cannot hold the header.',
+      'Pull wires from the sequencer’s violet port to P2 and P3.',
+      'Watch the bars on the sequencer: pumps stage in and out, and the lead (amber) rotates every 5 minutes.',
+    ],
+    goal: {
+      text: 'Hold the header within 350 ± 40 kPa for 80 % of the last 5 lab-minutes',
+      check: (r, _n, _l, history) => {
+        const share = shareInBand(history, 'pt', 310e3, 390e3, 300)
+        return {
+          done: share !== null && share >= 0.8,
+          readout: `${((r.nodes['pt']?.pressure ?? 0) / 1000).toFixed(0)} kPa · ${share === null ? 'recording…' : `${(share * 100).toFixed(0)} % in band`}`,
+        }
+      },
+    },
+    timeScale: 10,
+    select: 'sq',
+    build: () => {
+      const pump = { designFlow: 60 * LPM, designHead: 40, speed: 1.15 }
+      return new Rig()
+        .add('src', 'reservoir', 80, 470, { head: 2 }, 'Break tank')
+        .add('j1', 'junction', 230, 470)
+        .add('p1', 'pump', 400, 300, pump, 'P1')
+        .add('p2', 'pump', 400, 470, pump, 'P2')
+        .add('p3', 'pump', 400, 640, pump, 'P3')
+        .add('j2', 'junction', 570, 470)
+        .add('pt', 'gauge', 700, 470, {}, 'PT1')
+        .add('pic', 'pid', 700, 170, { setpoint: 350e3, span: 700e3, kp: 0.5, ti: 1, pvKind: 'gauge' }, 'PIC1')
+        .add('sq', 'stager', 470, 110, { rotateEvery: 300, trim: true }, 'SEQ1')
+        .add('j3', 'junction', 860, 470)
+        .add('o1', 'outlet', 1040, 330, { nozzleDiameter: 0.007 }, 'Base load')
+        .add('o2', 'outlet', 1040, 470, { nozzleDiameter: 0.009 }, 'Floors 1–5')
+        .add('o3', 'outlet', 1040, 610, { nozzleDiameter: 0.009 }, 'Floors 6–10')
+        .add('t2', 'timer', 1210, 470, { onTime: 120, offTime: 60, startOn: false }, 'Morning')
+        .add('t3', 'timer', 1210, 640, { onTime: 60, offTime: 120, startOn: false }, 'Evening')
+        .pipe('src', 'j1', { length: 2, diameter: 0.08 })
+        .pipe('j1', 'p1', { length: 1, diameter: 0.04 }, ['t', 'in'])
+        .pipe('j1', 'p2', { length: 1, diameter: 0.04 }, ['r', 'in'])
+        .pipe('j1', 'p3', { length: 1, diameter: 0.04 }, ['b', 'in'])
+        .pipe('p1', 'j2', { length: 1, diameter: 0.04 }, ['out', 't'])
+        .pipe('p2', 'j2', { length: 1, diameter: 0.04 }, ['out', 'l'])
+        .pipe('p3', 'j2', { length: 1, diameter: 0.04 }, ['out', 'b'])
+        .pipe('j2', 'pt', { length: 2, diameter: 0.05 })
+        .pipe('pt', 'j3', { length: 10, diameter: 0.05 })
+        .pipe('j3', 'o1', { length: 8, diameter: 0.025 }, ['t', 'l'])
+        .pipe('j3', 'o2', { length: 8, diameter: 0.025 }, ['r', 'l'])
+        .pipe('j3', 'o3', { length: 8, diameter: 0.025 }, ['b', 'l'])
+        .wire('pt', 'pic', ['pv', 'cin'])
+        .wire('pic', 'sq', ['sig', 'cin'])
+        .wire('sq', 'p1')
+        .wire('t2', 'o2')
+        .wire('t3', 'o3')
+        .done()
+    },
   },
 ]

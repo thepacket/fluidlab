@@ -3,7 +3,23 @@ import { gradeLine, pipeCurve, pumpCurve, type XY } from '../engine/analysis'
 import { solver } from '../engine/client'
 import { DEMAND_PATTERNS, demandFactor, dischargeDevice, LOSS_DEVICES, PUMP_TYPES, PIPE_STANDARDS, TRIMS, VALVE_BODIES, lossDevice } from '../model/catalog'
 import { PV_SOURCES, fmtClock, timerState } from '../model/control'
-import { SOURCE_TYPES, TANK_SHAPES, pumpHead, beta, elementLossFraction, tankHeight, tankVolume, vesselPressure, vesselWater } from '../model/physics'
+import {
+  METER_TYPES,
+  SOURCE_TYPES,
+  TANK_SHAPES,
+  area,
+  kvOf,
+  pumpEfficiency,
+  pumpHead,
+  pumpMaxFlow,
+  pumpRatedHead,
+  beta,
+  elementLossFraction,
+  tankHeight,
+  tankVolume,
+  vesselPressure,
+  vesselWater,
+} from '../model/physics'
 import { ELEMENT_TYPES, FLUIDS, KIND_META, MATERIALS, ROTATABLE, VALVE_TYPES, isControl, type Kind, type Props } from '../model/types'
 import { fmt, fmtNum, fmtU, toDisplay, toSI, unitLabel, type Quantity } from '../model/units'
 import { model, selectedId, useLab } from '../store'
@@ -85,14 +101,17 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'designFlow', label: 'Design flow', q: 'flow' },
     { key: 'designHead', label: 'Design head', q: 'head' },
     { key: 'bepEfficiency', label: 'Best efficiency', q: 'percent' },
+    { key: 'reliefHead', label: 'Internal relief lifts at', q: 'head', show: (p) => p.pumpType === 'pd' },
     { key: 'npshr', label: 'NPSH required', q: 'head' },
+    { key: 'motorEfficiency', label: 'Motor efficiency', q: 'percent' },
+    { key: 'tariff', label: 'Electricity price (per kWh)', q: 'none' },
     elevation,
   ],
   valve: [
     { key: 'valveType', label: 'Type', q: 'none', type: 'select', options: VALVE_TYPES },
     { key: 'body', label: 'Body', q: 'none', type: 'select', options: VALVE_BODIES, show: (p) => p.valveType === 'throttle' },
     { key: 'trim', label: 'Characteristic', q: 'none', type: 'select', options: TRIMS, show: (p) => p.valveType === 'throttle' },
-    { key: 'opening', label: 'Opening', q: 'percent', type: 'slider', max: 1, show: (p) => p.valveType === 'throttle' || p.valveType === 'float' },
+    { key: 'opening', label: 'Opening', q: 'percent', type: 'slider', max: 1, show: (p) => p.valveType === 'throttle' || p.valveType === 'float' || p.valveType === 'picv' },
     {
       key: 'floatMode',
       label: 'Action',
@@ -108,12 +127,14 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'band', label: 'Fully open this far below', q: 'length', show: (p) => p.valveType === 'float' },
     { key: 'pressureSetting', label: 'Pressure setpoint', q: 'pressure', show: (p) => p.valveType === 'prv' || p.valveType === 'psv' },
     { key: 'flowSetting', label: 'Flow setpoint', q: 'flow', show: (p) => p.valveType === 'fcv' },
+    { key: 'flowSetting', label: 'Flow at 100 % position', q: 'flow', show: (p) => p.valveType === 'picv' },
     { key: 'diameter', label: 'Bore', q: 'diameter' },
     { key: 'kOpen', label: 'K when fully open', q: 'none' },
+    { key: 'crackPressure', label: 'Cracking pressure (spring)', q: 'pressure', show: (p) => p.valveType === 'check' },
     { key: 'strokeTime', label: 'Actuator stroke time (s)', q: 'none', show: (p) => p.valveType === 'throttle' },
     elevation,
   ],
-  meter: [{ key: 'diameter', label: 'Bore', q: 'diameter' }, elevation],
+  meter: [{ key: 'meterType', label: 'Sensing principle', q: 'none', type: 'select', options: METER_TYPES }, { key: 'diameter', label: 'Bore', q: 'diameter' }, elevation],
   element: [
     { key: 'elementType', label: 'Type', q: 'none', type: 'select', options: ELEMENT_TYPES },
     { key: 'diameter', label: 'Pipe bore D', q: 'diameter' },
@@ -121,7 +142,55 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'cd', label: 'Discharge coeff. Cd', q: 'none' },
     elevation,
   ],
-  dpgauge: [elevation],
+  dpgauge: [
+    {
+      key: 'display',
+      label: 'Display',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 'digital', name: 'Digital' },
+        { id: 'water', name: 'U-tube manometer · water' },
+        { id: 'mercury', name: 'U-tube manometer · mercury' },
+      ],
+    },
+    elevation,
+  ],
+  tee: [{ key: 'diameter', label: 'Bore', q: 'diameter' }, { key: 'kRun', label: 'K straight through', q: 'none' }, { key: 'kBranch', label: 'K through the branch', q: 'none' }, elevation],
+  threeway: [
+    { key: 'position', label: 'Leg A open (B is the rest)', q: 'percent', type: 'slider', max: 1 },
+    { key: 'diameter', label: 'Bore', q: 'diameter' },
+    { key: 'kOpen', label: 'K of a fully open leg', q: 'none' },
+    { key: 'trim', label: 'Characteristic', q: 'none', type: 'select', options: TRIMS },
+    elevation,
+  ],
+  airvalve: [
+    {
+      key: 'mode',
+      label: 'Function',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 'combination', name: 'Combination (release + vacuum)' },
+        { id: 'vacuum', name: 'Vacuum breaker only' },
+        { id: 'release', name: 'Air release only' },
+      ],
+    },
+    elevation,
+  ],
+  stager: [
+    { key: 'enabled', label: 'Enabled', q: 'none', type: 'toggle' },
+    { key: 'rotateEvery', label: 'Rotate the lead every', q: 'time' },
+    { key: 'trim', label: 'Running pumps share a trimmed speed', q: 'none', type: 'toggle' },
+    { key: 'minSpeed', label: 'Slowest useful speed', q: 'percent', show: (p) => !!p.trim },
+  ],
+  schedule: [
+    { key: 'enabled', label: 'Enabled', q: 'none', type: 'toggle' },
+    { key: 'dayValue', label: 'Day value', q: 'percent', type: 'slider', max: 1 },
+    { key: 'nightValue', label: 'Night value', q: 'percent', type: 'slider', max: 1 },
+    { key: 'dayStart', label: 'Day starts at (h)', q: 'none' },
+    { key: 'dayEnd', label: 'Day ends at (h)', q: 'none' },
+  ],
   fitting: [
     { key: 'variant', label: 'Catalogue part', q: 'none', type: 'select', options: LOSS_DEVICES },
     { key: 'diameter', label: 'Bore', q: 'diameter' },
@@ -130,6 +199,9 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'ratedDp', label: 'Rated pressure drop', q: 'pressure', show: (p) => lossDevice(p.variant).model === 'rated' },
     { key: 'ratedFlow', label: '… at a flow of', q: 'flow', show: (p) => lossDevice(p.variant).model === 'rated' },
     { key: 'exponent', label: 'Exponent n (2 = turbulent)', q: 'none', show: (p) => lossDevice(p.variant).model === 'rated' },
+    { key: 'supplyTemp', label: 'Flow temperature (°C)', q: 'none', show: (p) => p.variant === 'boiler' },
+    { key: 'ratedHeat', label: 'Rated output (at 50 K excess)', q: 'power', show: (p) => p.ratedHeat !== undefined },
+    { key: 'roomTemp', label: 'Room temperature (°C)', q: 'none', show: (p) => p.ratedHeat !== undefined },
     { key: 'fouling', label: 'Fouling', q: 'percent', type: 'slider', max: 0.95, show: (p) => !!lossDevice(p.variant).fouls },
     elevation,
   ],
@@ -208,6 +280,7 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
         { id: 'and', name: 'AND — all inputs on' },
         { id: 'or', name: 'OR — any input on' },
         { id: 'not', name: 'NOT — no input on' },
+        { id: 'latch', name: 'Latch — set (left) / reset (bottom)' },
       ],
     },
   ],
@@ -294,6 +367,8 @@ function FieldRow({ f, props, pvq, onChange }: { f: Field; props: Props; pvq: Qu
           onChange={(e) => {
             const raw = e.target.value
             const patch: Props = { [f.key]: raw === 'true' ? true : raw === 'false' ? false : raw }
+            if (f.key === 'pumpType' && raw === 'custom' && !props.points)
+              patch.points = [0, 0.5, 1, 1.5, 1.9].map((r) => ({ q: props.designFlow * r, h: Math.max(0, pumpHead(props.designFlow * r, { ...props, pumpType: 'standard' }, 1)) }))
             if (f.key === 'pumpType') Object.assign(patch, (({ shutoffRatio, runoutRatio }) => ({ shutoffRatio, runoutRatio }))(PUMP_TYPES.find((t) => t.id === raw)!))
             if (f.key === 'body') Object.assign(patch, (({ kOpen, trim }) => ({ kOpen, trim }))(VALVE_BODIES.find((b) => b.id === raw)!))
             if (f.key === 'variant') Object.assign(patch, lossDevice(raw).defaults) // a different part brings its own datasheet numbers
@@ -761,6 +836,70 @@ function SurgePanel({ id, kind }: { id: string; kind: Kind }) {
   )
 }
 
+/** Everything the recorder holds, as one table: a column per element, a row per sample. */
+function exportCsv() {
+  const s = useLab.getState()
+  const label = (key: string) => {
+    const [id, sub] = key.split(':')
+    const name = s.nodes.find((n) => n.id === id)?.data.label ?? s.edges.find((e) => e.id === id)?.data?.label ?? id
+    return sub ? `${name} ${sub}` : name
+  }
+  const keys = [...new Set(s.history.flatMap((h) => Object.keys(h.v)))]
+  const rows = [['lab time (s)', ...keys.map(label)].join(','), ...s.history.map((h) => [h.t.toFixed(1), ...keys.map((k) => h.v[k] ?? '')].join(','))]
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([rows.join('\n')], { type: 'text/csv' }))
+  a.download = `${s.projectName.replace(/[^\w-]+/g, '-').toLowerCase() || 'fluidlab'}-log.csv`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+/** Efficiency against flow, on its own axis — never stacked on the head curve's. */
+function EfficiencyChart({ id }: { id: string }) {
+  const s = useLab()
+  const node = s.nodes.find((n) => n.id === id)!
+  const p = node.data.props
+  const d = s.results.devices[id]
+  const speed = p.speed * (s.controls[id] ?? 1)
+  const qMax = pumpMaxFlow(p, Math.max(0.05, speed))
+  const pts = Array.from({ length: 41 }, (_, i) => ({ x: toDisplay((qMax * i) / 40, 'flow', s.units), y: pumpEfficiency((qMax * i) / 40, p, Math.max(0.05, speed)) * 100 }))
+  return (
+    <Chart
+      series={[{ name: 'Efficiency', color: SERIES.aqua, points: pts, area: true }]}
+      markers={d?.efficiency !== undefined && d.flow > 1e-8 ? [{ x: toDisplay(d.flow, 'flow', s.units), y: d.efficiency * 100, label: `${(d.efficiency * 100).toFixed(0)} %`, color: '#ffffff' }] : []}
+      xLabel={`Flow (${unitLabel('flow', s.units)})`}
+      yLabel="Efficiency (%)"
+      height={130}
+    />
+  )
+}
+
+/** A catalogue curve, typed in point by point. */
+function CurvePoints({ props, onChange }: { props: Props; onChange: (patch: Props) => void }) {
+  const pts: { q: number; h: number }[] = props.points ?? []
+  const set = (i: number, patch: Partial<{ q: number; h: number }>) => onChange({ points: pts.map((x, k) => (k === i ? { ...x, ...patch } : x)) })
+  return (
+    <>
+      <p className="muted">Flow and head from the maker’s curve, shut-off first, run-out last.</p>
+      {pts.map((pt, i) => (
+        <div className="field pair" key={i}>
+          <NumberField value={pt.q} q="flow" onCommit={(q) => set(i, { q })} />
+          <NumberField value={pt.h} q="head" onCommit={(h) => set(i, { h })} />
+        </div>
+      ))}
+    </>
+  )
+}
+
+/** Size a valve the way a datasheet does: by its flow coefficient. Sets K for the bore it has. */
+function KvField({ props, onChange }: { props: Props; onChange: (patch: Props) => void }) {
+  return (
+    <div className="field">
+      <span>Kv fully open (m³/h) · Cv {fmtNum(kvOf(props.kOpen, props.diameter) / 0.865)}</span>
+      <NumberField value={kvOf(props.kOpen, props.diameter)} q="none" onCommit={(kv) => kv > 0 && onChange({ kOpen: 200 * ((3600 * area(props.diameter)) / kv) ** 2, body: 'generic' })} />
+    </div>
+  )
+}
+
 function GradeChart({ id }: { id?: string }) {
   const s = useLab()
   const pts = useMemo(() => gradeLine(model(s), s.results, id), [s.results, id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -838,12 +977,27 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
           tone={d.efficiency && d.efficiency > 0.85 * node!.data.props.bepEfficiency ? 'good' : 'warn'}
         />
         <Row label="Hydraulic power" value={fmtU(d.hydraulicPower, 'power', u)} />
+        {(() => {
+          const pp = node!.data.props
+          const electrical = (d.shaftPower ?? 0) / Math.max(0.05, pp.motorEfficiency ?? 0.9)
+          const kWh = (s.totals[id] ?? 0) / 3.6e6
+          return (
+            <>
+              <Row label="Electrical input" value={fmtU(electrical, 'power', u)} />
+              <Row
+                label="Running cost"
+                value={`${((electrical / 1000) * pp.tariff).toFixed(3)} / h${d.flow > 1e-8 ? ` · ${(((electrical / 1000) * pp.tariff) / (d.flow * 3600)).toFixed(3)} / m³` : ''}`}
+              />
+              <Row label="Energy used" value={`${kWh.toFixed(3)} kWh · ${(kWh * pp.tariff).toFixed(3)}`} />
+            </>
+          )
+        })()}
         {node!.data.props.pumpType === 'fire' &&
           (() => {
             // NFPA 20 acceptance shape: shut-off ≤ 140 % of rated head, and ≥ 65 % of it still there at 150 % flow
             const pp = node!.data.props
             const churn = pumpHead(0, pp, 1) / pp.designHead
-            const overload = pumpHead(1.5 * pp.designFlow, pp, 1) / pp.designHead
+            const overload = pumpHead(1.5 * pp.designFlow, pp, 1) / pumpRatedHead(pp)
             return (
               <>
                 <Row label="Churn (shut-off) head" value={`${(churn * 100).toFixed(0)} % of rated — limit 140 %`} tone={churn <= 1.4 ? 'good' : 'bad'} />
@@ -921,6 +1075,20 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
         {kind === 'valve' && <Row label="Status" value={d.status} tone={d.status === 'closed' ? 'bad' : d.status === 'active' ? 'warn' : 'good'} />}
         {d.K !== undefined && <Row label="Loss coefficient K" value={isFinite(d.K) ? fmtNum(d.K) : '∞'} />}
         {d.kv !== undefined && <Row label="Flow coefficient" value={`Kv ${fmtNum(d.kv)} · Cv ${fmtNum(d.kv / 0.865)}`} />}
+        {kind === 'fitting' && lossDevice(node!.data.props.variant).recovers && (
+          <Row label="Power recovered" value={fmtU(Math.abs(d.flow) * Math.abs(d.pIn - d.pOut) * lossDevice(node!.data.props.variant).recovers!, 'power', u)} tone="good" />
+        )}
+        {s.results.thermal?.devices[id] && Math.abs(s.results.thermal.devices[id].heat) > 1 && (
+          <>
+            <Row label="Water temperature" value={`${s.results.thermal.devices[id].tIn.toFixed(1)} → ${s.results.thermal.devices[id].tOut.toFixed(1)} °C`} />
+            <Row
+              label={s.results.thermal.devices[id].heat > 0 ? 'Heat put into the water' : 'Heat given to the room'}
+              value={fmtU(Math.abs(s.results.thermal.devices[id].heat), 'power', u)}
+              tone="good"
+            />
+          </>
+        )}
+        {kind === 'meter' && <Row label="Totalised" value={fmtU(s.totals[id] ?? 0, 'volume', u)} />}
         {d.ratedShare !== undefined && <Row label="Load" value={`${(d.ratedShare * 100).toFixed(0)} % of rated flow`} tone={d.ratedShare > 1.5 ? 'warn' : undefined} />}
         <Row label="Head loss" value={fmtU(-d.dH, 'head', u)} />
       </>
@@ -1075,9 +1243,21 @@ export function Inspector() {
             </button>
           ))}
         </div>
-        {active === 'main' && kind === 'pump' && <PumpChart id={id} />}
+        {active === 'main' && kind === 'pump' && (
+          <>
+            <PumpChart id={id} />
+            <EfficiencyChart id={id} />
+          </>
+        )}
         {active === 'main' && kind === 'pipe' && <PipeChart id={id} />}
-        {active === 'trend' && <TrendChart id={id} kind={kind} />}
+        {active === 'trend' && (
+          <>
+            <TrendChart id={id} kind={kind} />
+            <button className="link" onClick={exportCsv}>
+              Export everything recorded as CSV
+            </button>
+          </>
+        )}
         {active === 'main' && kind === 'timer' && <ScheduleChart id={id} />}
         {active === 'main' && (kind === 'junction' || kind === 'outlet') && <PatternChart pattern={props.pattern} base={props.demand} />}
         {active === 'main' && (kind === 'switch' || kind === 'pid') && <LoopCharts id={id} kind={kind} />}
@@ -1092,6 +1272,8 @@ export function Inspector() {
       )}
       <section>
         <h4>Properties</h4>
+        {kind === 'pump' && props.pumpType === 'custom' && <CurvePoints props={props} onChange={(patch) => updateNode(id, patch)} />}
+        {kind === 'valve' && props.valveType === 'throttle' && <KvField props={props} onChange={(patch) => updateNode(id, patch)} />}
         {kind === 'pipe' && <PipeSizePicker props={props} onChange={(patch) => updateEdge(id, patch)} />}
         {FIELDS[kind]
           .filter((f) => !f.show || f.show(props))

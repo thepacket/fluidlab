@@ -3,7 +3,7 @@ import { memo } from 'react'
 import type { LabEdge } from '../experiments'
 import { fmt, unitLabel } from '../model/units'
 import { useLab } from '../store'
-import { DRY, PLAIN, pressureColor, velocityColor } from './colors'
+import { DRY, PLAIN, pressureColor, thermalColor, velocityColor } from './colors'
 
 function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected }: EdgeProps<LabEdge>) {
   const r = useLab((s) => s.results.links[id])
@@ -11,6 +11,8 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
   const pMax = useLab((s) => s.results.pMax)
   const vMax = useLab((s) => s.results.vMax)
   const overlay = useLab((s) => s.overlay)
+  const thermal = useLab((s) => s.results.thermal)
+  const heat = thermal?.links[id] ? { t: thermal.links[id], tMin: thermal.tMin, tMax: thermal.tMax } : null
   const units = useLab((s) => s.units)
   const paused = useLab((s) => !s.running)
 
@@ -33,6 +35,7 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
   if (live) {
     if (overlay === 'pressure') [c1, c2] = [pressureColor(r.pStart, pMax), pressureColor(r.pEnd, pMax)]
     else if (overlay === 'velocity') c1 = c2 = velocityColor(r.velocity, vMax)
+    else if (overlay === 'thermal' && heat) [c1, c2] = [thermalColor(heat.t.tStart, heat.tMin, heat.tMax), thermalColor(heat.t.tEnd, heat.tMin, heat.tMax)]
     else c1 = c2 = PLAIN
   }
   const gid = `grad-${id}`

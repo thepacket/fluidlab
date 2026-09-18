@@ -10,7 +10,7 @@ import { VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from './model/p
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
 import { METRIC, type UnitPrefs } from './model/units'
 
-export type Overlay = 'pressure' | 'velocity' | 'plain'
+export type Overlay = 'pressure' | 'velocity' | 'thermal' | 'plain'
 /** Everything undo/redo restores: the rig itself, not the simulation state around it. */
 interface Snapshot {
   nodes: LabNode[]
@@ -33,6 +33,8 @@ interface State {
   results: Results
   engineReady: boolean
   levels: Record<string, number>
+  /** running totals since the last reset: metered volume (m³) per meter, electrical energy (J) per pump */
+  totals: Record<string, number>
   /** live on/off commands from controllers, keyed by the device they switch */
   controls: Record<string, number>
   /** the controllers' own state: block outputs, measurements, PID memory, actuator positions */
@@ -113,14 +115,16 @@ export function signalEnds(c: { source: string | null; target: string | null; so
     { id: c.source, h: c.sourceHandle },
     { id: c.target, h: c.targetHandle },
   ]
-  const isSignalPort = (h?: string | null) => h === 'sig' || h === 'ctl' || h === 'pv' || h === 'cin'
+  const isSignalPort = (h?: string | null) => h === 'sig' || h === 'ctl' || h === 'pv' || h === 'cin' || h === 'cin2' || h === 'rsp'
   if (!ends.some((e) => isSignalPort(e.h))) return null
   const from = ends.find((e) => e.h === 'sig' || e.h === 'pv')
-  const to = ends.find((e) => e.h === 'ctl' || e.h === 'cin')
+  const to = ends.find((e) => e.h === 'ctl' || e.h === 'cin' || e.h === 'cin2' || e.h === 'rsp')
   const kindOf = (id?: string | null) => nodes.find((n) => n.id === id)?.data.kind
   const target = kindOf(to?.id)
   if (!from?.id || !to?.id || !target || from.id === to.id) return 'invalid' as const
-  const ok = from.h === 'pv' ? to.h === 'cin' && PV_CONSUMERS.includes(target) : to.h === 'ctl' ? CONTROLLABLE.includes(target) : SIGNAL_CONSUMERS.includes(target)
+  // command wires: into a device, a PID's remote setpoint, a latch's reset, or any block that reads signals
+  const command = to.h === 'ctl' ? CONTROLLABLE.includes(target) : to.h === 'rsp' ? target === 'pid' : to.h === 'cin2' ? target === 'logic' : SIGNAL_CONSUMERS.includes(target)
+  const ok = from.h === 'pv' ? to.h === 'cin' && PV_CONSUMERS.includes(target) : command
   return ok ? { from: from.id, fromHandle: from.h as string, to: to.id, toHandle: to.h as string } : ('invalid' as const)
 }
 
@@ -160,6 +164,7 @@ export const useLab = create<State>((set, get) => ({
   results: EMPTY_RESULTS,
   engineReady: false,
   levels: {},
+  totals: {},
   controls: {},
   ctrl: EMPTY_CONTROL,
   simTime: 0,
@@ -349,7 +354,7 @@ export const useLab = create<State>((set, get) => ({
       1,
     )
   },
-  resetSim: () => set({ levels: {}, simTime: 0, history: [], ctrl: EMPTY_CONTROL }),
+  resetSim: () => set({ levels: {}, simTime: 0, history: [], totals: {}, ctrl: EMPTY_CONTROL }),
 
   /** Quasi-steady time stepping: solve → integrate tank volumes → solve again. */
   tick: (dtReal) => {
@@ -414,6 +419,13 @@ export const useLab = create<State>((set, get) => ({
     }
     // one controller scan per tick, on the measurements of the network as last solved
     const ctrl = stepControl({ nodes: s.nodes, edges: s.edges, t: s.simTime + dt, dt, results: s.results, levels, prev: s.ctrl })
+    const totals = { ...s.totals }
+    for (const n of s.nodes) {
+      const d = s.results.devices[n.id]
+      if (!d) continue
+      if (n.data.kind === 'meter') totals[n.id] = (totals[n.id] ?? 0) + Math.abs(d.flow) * dt
+      else if (n.data.kind === 'pump' && d.shaftPower) totals[n.id] = (totals[n.id] ?? 0) + (d.shaftPower / Math.max(0.05, n.data.props.motorEfficiency ?? 0.9)) * dt
+    }
     const v: Record<string, number> = {}
     for (const n of s.nodes) {
       const nr = s.results.nodes[n.id]
@@ -429,7 +441,7 @@ export const useLab = create<State>((set, get) => ({
     for (const e of s.edges) if (s.results.links[e.id]) v[e.id] = s.results.links[e.id].flow
     const simTime = s.simTime + dt
     const history = [...s.history.slice(-599), { t: simTime, v }]
-    set(moved ? { levels, simTime, history, ctrl, controls: ctrl.commands } : { simTime, history, ctrl, controls: ctrl.commands })
+    set(moved ? { levels, simTime, history, totals, ctrl, controls: ctrl.commands } : { simTime, history, totals, ctrl, controls: ctrl.commands })
   },
 
   runSurge: (event) => {

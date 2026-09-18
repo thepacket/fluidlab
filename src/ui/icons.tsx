@@ -125,6 +125,32 @@ export function KindIcon({ kind }: { kind: Kind | 'pipe' | 'network' }) {
           <path d="M16 20v2M12 21l-1.500 3M20 21l1.500 3M16 26v2" stroke="var(--accent)" />
         </>
       )}
+      {kind === 'tee' && <path d="M3 12h26M3 20h9v9M29 20h-9v9" />}
+      {kind === 'threeway' && (
+        <>
+          <path d="M3 8v12l10-6zM29 8v12l-10-6zM10 29h12l-6-10z" />
+          <circle cx="16" cy="14" r="2" fill="var(--accent)" stroke="none" />
+        </>
+      )}
+      {kind === 'airvalve' && (
+        <>
+          <path d="M3 27h26M14 27v-6h4v6" />
+          <path d="M9 21v-8a7 7 0 0 1 14 0v8z" />
+          <circle cx="16" cy="12" r="3" stroke="var(--accent)" />
+        </>
+      )}
+      {kind === 'stager' && (
+        <>
+          <rect x="4" y="4" width="24" height="24" rx="5" />
+          <path d="M9 23v-5M14 23v-9M19 23v-12M24 23v-3" stroke="var(--accent)" strokeWidth="2.400" />
+        </>
+      )}
+      {kind === 'schedule' && (
+        <>
+          <rect x="4" y="4" width="24" height="24" rx="5" />
+          <path d="M8 21h5v-8h9v8h3" stroke="var(--accent)" strokeWidth="2.200" />
+        </>
+      )}
       {kind === 'fitting' && (
         <>
           <path d="M3 20h13a6 6 0 0 0 6-6V3" />

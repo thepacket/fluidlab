@@ -213,3 +213,39 @@ for (const opening of [1, 0.5, 0.2, 0]) {
     rs.warnings.map((w) => w.text),
   )
 }
+
+// structural parts and pump tables
+{
+  const base = (mid: ReturnType<typeof node>[], edges: ReturnType<typeof pipe>[]): Model => ({ fluid: FLUIDS[0], nodes: [node('R', 'reservoir', { head: 30 }), ...mid], edges })
+  // spring check: below its cracking pressure nothing moves; above it, it costs that pressure
+  for (const head of [1, 30]) {
+    const m = base([node('C', 'valve', { valveType: 'check', crackPressure: 20e3, kOpen: 2 }), node('O', 'outlet')], [pipe('a', 'R', 'C', 'r', 'in'), pipe('b', 'C', 'O', 'out', 'l')])
+    m.nodes[0].data.props.head = head
+    const r = engine.solve(m)
+    console.log('spring check, supply', head, 'm →', r.ok, r.error ?? '', 'Q', (r.devices.C.flow * 60000).toFixed(1), 'L/min · Δp', ((r.devices.C.pIn - r.devices.C.pOut) / 1000).toFixed(1), 'kPa')
+  }
+  // tee: the branch port costs more than the run
+  const t = engine.solve(base([node('T', 'tee'), node('O1', 'outlet'), node('O2', 'outlet')], [pipe('a', 'R', 'T', 'r', 'l'), pipe('b', 'T', 'O1', 'r', 'l'), pipe('c', 'T', 'O2', 'b', 'l')]))
+  console.log('tee →', t.ok, t.error ?? '', 'run', (t.nodes.O1.outflow * 60000).toFixed(1), 'branch', (t.nodes.O2.outflow * 60000).toFixed(1), 'L/min')
+  // three-way valve at 25 %: leg A throttled, leg B favoured
+  const w = engine.solve({
+    fluid: FLUIDS[0],
+    nodes: [node('RA', 'reservoir', { head: 20 }), node('RB', 'reservoir', { head: 20 }), node('W', 'threeway', { position: 0.25 }), node('O', 'outlet')],
+    edges: [pipe('a', 'RA', 'W', 'r', 'a'), pipe('b', 'RB', 'W', 'r', 'b'), pipe('c', 'W', 'O', 'ab', 'l')],
+  })
+  console.log('three-way →', w.ok, w.error ?? '', 'A', (w.nodes.W.extra!.flowA * 60000).toFixed(1), 'B', (w.nodes.W.extra!.flowB * 60000).toFixed(1), 'L/min')
+  // positive-displacement pump: flow barely moves as the valve closes, until the relief takes over
+  for (const opening of [1, 0.3, 0.1, 0.03]) {
+    const r = engine.solve({
+      fluid: FLUIDS[0],
+      nodes: [
+        node('R', 'reservoir', { head: 2 }),
+        node('P', 'pump', { pumpType: 'pd', designFlow: 15 / 60000, reliefHead: 80 }),
+        node('V', 'valve', { opening, diameter: 0.015 }),
+        node('O', 'outlet'),
+      ],
+      edges: [pipe('a', 'R', 'P', 'r', 'in'), pipe('b', 'P', 'V', 'out', 'in'), pipe('c', 'V', 'O', 'out', 'l')],
+    })
+    console.log('PD pump, valve', opening, '→', r.ok, r.error ?? '', 'Q', (r.devices.P.flow * 60000).toFixed(2), 'L/min · head', r.devices.P.dH.toFixed(1), 'm')
+  }
+}

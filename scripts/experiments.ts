@@ -103,5 +103,10 @@ for (const ex of EXPERIMENTS) {
       prop('bv1').opening = o
       again('BV1 ' + o)
     }
+  if (ex.id === 'standpipe')
+    for (const d of [0.0779, 0.1023]) {
+      for (const e of edges) if (e.data?.label.startsWith('Riser')) e.data.props.diameter = d
+      again('riser ' + d * 1000 + ' mm')
+    }
   if (ex.id === 'prv') console.log('  p2', r.nodes.g2.pressure, r.devices.v.status)
 }

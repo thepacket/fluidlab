@@ -10,7 +10,7 @@ import { PipeEdge } from './ui/PipeEdge'
 import { SignalEdge } from './ui/SignalEdge'
 import { Sidebar } from './ui/Sidebar'
 import { TopBar } from './ui/TopBar'
-import { rampCss } from './ui/colors'
+import { rampCss, thermalCss } from './ui/colors'
 import { Icon } from './ui/icons'
 import { nodeTypes } from './ui/nodes'
 import { useIsMobile } from './ui/useIsMobile'
@@ -73,6 +73,18 @@ function Legend() {
   const r = useLab((s) => s.results)
   const units = useLab((s) => s.units)
   if (overlay === 'plain' || !r.ok) return null
+  if (overlay === 'thermal')
+    return r.thermal ? (
+      <div className="legend">
+        <span>water temperature · °C</span>
+        <div className="legend-bar" style={{ background: thermalCss }} />
+        <div className="legend-scale">
+          <b>{r.thermal.tMin.toFixed(0)}</b>
+          <b>{((r.thermal.tMin + r.thermal.tMax) / 2).toFixed(0)}</b>
+          <b>{r.thermal.tMax.toFixed(0)}</b>
+        </div>
+      </div>
+    ) : null
   const q = overlay === 'pressure' ? 'pressure' : 'velocity'
   return (
     <div className="legend">

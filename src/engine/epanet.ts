@@ -21,6 +21,7 @@ import {
   valveK,
 } from '../model/physics'
 import { EMPTY_RESULTS, isControl, type Model, type Results, type Warning } from '../model/types'
+import { solveThermal } from './thermal'
 import { command, commandedOff, compile, floatTank, valvePosition, type Overrides } from './inp'
 
 /** Any solver FluidLab can plug in (EPANET today; water-hammer / gas later). */
@@ -88,6 +89,13 @@ class EpanetEngine implements HydraulicEngine {
           const rawDemand = project.getNodeValue(idx, NodeProperty.Demand) / 1000
           const demand = Math.abs(rawDemand) < 1e-7 ? 0 : rawDemand // residual seepage through "closed" links is solver noise
           const pressure = (h - elevation) * rhoG
+          if (kind === 'threeway') {
+            const leg = (h: string) => (c.subPorts[nd.id]?.[h] ? flowOf(`${c.subPorts[nd.id][h]}s`) : 0)
+            res.nodes[nd.id] = { head: h, pressure, elevation, outflow: 0, extra: { flowA: leg('a'), flowB: leg('b') } }
+            continue
+          }
+          if (kind === 'airvalve' && pressure < -500 && p.mode !== 'release')
+            warnings.push({ id: nd.id, level: 'info', text: `${nd.data.label}: line is below atmospheric here — this valve would be admitting air` })
           const vented = kind === 'relief' ? flowOf(`${eid}v`) : 0
           if (kind === 'tank' && p.overflow && demand > 1e-7 && (model.levels?.[nd.id] ?? p.initLevel) >= tankHeight(p) - 1e-6)
             warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: overflowing — spilling ${(demand * 60000).toFixed(0)} L/min` })
@@ -220,12 +228,14 @@ class EpanetEngine implements HydraulicEngine {
         /* already closed */
       }
     }
+    if (res.ok) res.thermal = solveThermal(model, res)
     res.solveMs = performance.now() - t0
     return res
   }
 }
 
 function portId(c: ReturnType<typeof compile>, nodeId: string, handle?: string | null) {
+  if (handle && c.subPorts[nodeId]?.[handle]) return c.subPorts[nodeId][handle]
   if (c.nodeIds[nodeId]) return c.nodeIds[nodeId]
   const d = c.deviceIds[nodeId]
   return handle === 'out' ? d.b : d.a

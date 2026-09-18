@@ -15,6 +15,11 @@ export type Kind =
   | 'relief'
   | 'vessel'
   | 'leak'
+  | 'tee'
+  | 'threeway'
+  | 'airvalve'
+  | 'stager'
+  | 'schedule'
   | 'timer'
   | 'manual'
   | 'switch'
@@ -25,10 +30,10 @@ export type Kind =
 /** two-port components: compiled to a link between two hidden junctions */
 export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter', 'element', 'dpgauge', 'fitting']
 /** controllers: no fluid passes through them, they switch other components over signal wires */
-export const CONTROL_KINDS: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'lamp']
+export const CONTROL_KINDS: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'lamp', 'stager', 'schedule']
 export const isControl = (k: Kind) => CONTROL_KINDS.includes(k)
 /** components a controller can switch */
-export const CONTROLLABLE: Kind[] = ['pump', 'valve', 'outlet']
+export const CONTROLLABLE: Kind[] = ['pump', 'valve', 'outlet', 'threeway']
 /** components that can be turned in 90° steps on the bench */
 export const ROTATABLE: Kind[] = ['pump', 'valve', 'meter', 'element', 'outlet', 'fitting', 'relief']
 export const isInline = (k: Kind) => INLINE_KINDS.includes(k)
@@ -102,6 +107,7 @@ export const MATERIALS: { id: string; name: string; roughness: number; waveSpeed
   { id: 'stainless', name: 'Stainless steel', roughness: 0.015e-3, waveSpeed: 1250 },
   { id: 'steel', name: 'Commercial steel', roughness: 0.045e-3, waveSpeed: 1250 },
   { id: 'castiron', name: 'Cast iron', roughness: 0.26e-3, waveSpeed: 1150 },
+  { id: 'hose', name: 'Hose (rubber)', roughness: 0.01e-3, waveSpeed: 250 },
   { id: 'concrete', name: 'Concrete', roughness: 1.0e-3, waveSpeed: 1050 },
   { id: 'custom', name: 'Custom', roughness: 0.05e-3, waveSpeed: 1000 },
 ]
@@ -109,6 +115,7 @@ export const MATERIALS: { id: string; name: string; roughness: number; waveSpeed
 export const ELEMENT_TYPES = [
   { id: 'venturi', name: 'Venturi tube' },
   { id: 'orifice', name: 'Orifice plate' },
+  { id: 'nozzle', name: 'Flow nozzle' },
 ]
 
 export const VALVE_TYPES = [
@@ -118,6 +125,7 @@ export const VALVE_TYPES = [
   { id: 'psv', name: 'Pressure sustaining (PSV)' },
   { id: 'fcv', name: 'Flow control (FCV)' },
   { id: 'float', name: 'Float valve (fills a tank)' },
+  { id: 'picv', name: 'Pressure-independent (PICV)' },
 ]
 
 export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: string }> = {
@@ -134,6 +142,11 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
   fitting: { name: 'Loss device', prefix: 'FT', blurb: 'Fittings and equipment from the catalogue' },
   vessel: { name: 'Pressure vessel', prefix: 'PV', blurb: 'Bladder tank: stores water against a gas cushion' },
   leak: { name: 'Leaky joint', prefix: 'LK', blurb: 'A junction that loses water with pressure' },
+  tee: { name: 'Tee (with losses)', prefix: 'TE', blurb: 'Three-way joint: run ≈ 0.4, branch ≈ 1.0' },
+  threeway: { name: 'Three-way valve', prefix: 'TV', blurb: 'Mixes A and B into AB — or diverts' },
+  airvalve: { name: 'Air valve', prefix: 'AV', blurb: 'Vents air; breaks a vacuum in a surge' },
+  stager: { name: 'Pump sequencer', prefix: 'SQ', blurb: 'Stages pumps on demand, rotates the lead' },
+  schedule: { name: 'Setpoint scheduler', prefix: 'SC', blurb: 'Day / night value on the lab clock' },
   relief: { name: 'Relief valve', prefix: 'RV', blurb: 'Lifts above its set pressure, vents to atmosphere' },
   timer: { name: 'Timer', prefix: 'TM', blurb: 'Switches pumps, valves and taps on a schedule' },
   manual: { name: 'Manual switch', prefix: 'HS', blurb: 'Click it on the bench to start / stop' },
@@ -156,9 +169,24 @@ export function defaultProps(kind: Kind): Props {
     case 'outlet':
       return { elevation: 0, mode: 'nozzle', nozzleDiameter: 0.012, cd: 0.9, demand: 0.0005, pattern: 'constant', variant: 'nozzle', kFactor: 80 / 60000 / Math.sqrt(1e5), fused: true }
     case 'pump':
-      return { elevation: 0, on: true, speed: 1, designFlow: 0.001, designHead: 20, bepEfficiency: 0.68, npshr: 2.5, pumpType: 'standard', shutoffRatio: 4 / 3, runoutRatio: 2 }
+      return {
+        elevation: 0,
+        on: true,
+        speed: 1,
+        designFlow: 0.001,
+        designHead: 20,
+        bepEfficiency: 0.68,
+        npshr: 2.5,
+        pumpType: 'standard',
+        shutoffRatio: 4 / 3,
+        runoutRatio: 2,
+        reliefHead: 80,
+        motorEfficiency: 0.9,
+        tariff: 0.15,
+      }
     case 'valve':
       return {
+        crackPressure: 0,
         floatMode: 'modulating',
         closeLevel: 2,
         band: 0.3,
@@ -172,7 +200,7 @@ export function defaultProps(kind: Kind): Props {
         strokeTime: 0,
       }
     case 'meter':
-      return { elevation: 0, diameter: 0.04 }
+      return { elevation: 0, diameter: 0.04, meterType: 'magnetic' }
     case 'element':
       return { elevation: 0, elementType: 'venturi', diameter: 0.04, throat: 0.02, cd: 0.98 }
     case 'dpgauge':
@@ -183,6 +211,16 @@ export function defaultProps(kind: Kind): Props {
       return { elevation: 0, volume: 0.1, precharge: 180e3, initPressure: 250e3, polytropic: 1.2 }
     case 'leak':
       return { elevation: 0, holeDiameter: 0.004, cd: 0.6, active: true, variant: 'leak' }
+    case 'tee':
+      return { elevation: 0, diameter: 0.04, kRun: 0.4, kBranch: 1.0 }
+    case 'threeway':
+      return { elevation: 0, diameter: 0.025, position: 0.5, kOpen: 3, trim: 'linear' }
+    case 'airvalve':
+      return { elevation: 0, mode: 'combination' }
+    case 'stager':
+      return { enabled: true, rotateEvery: 3600, trim: true, minSpeed: 0.75 }
+    case 'schedule':
+      return { enabled: true, dayValue: 1, nightValue: 0.5, dayStart: 6, dayEnd: 22 }
     case 'relief':
       return { elevation: 0, setPressure: 400e3, diameter: 0.025 }
     case 'timer':
@@ -207,6 +245,8 @@ export function defaultPipeProps(): Props {
 // ---- results -------------------------------------------------------------
 
 export interface NodeResult {
+  /** anything kind-specific: a three-way valve's two leg flows, … */
+  extra?: Record<string, number>
   head: number
   pressure: number // Pa gauge
   elevation: number
@@ -259,6 +299,8 @@ export interface Warning {
   text: string
 }
 export interface Results {
+  /** water temperatures and heat duties, when the rig has a boiler (see engine/thermal.ts) */
+  thermal?: import('../engine/thermal').Thermal
   ok: boolean
   error?: string
   warnings: Warning[]

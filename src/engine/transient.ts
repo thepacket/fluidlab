@@ -10,7 +10,7 @@
 // Every pipe needs a whole number of reaches, so wave speeds are nudged (a′ = L / N·Δt); pipes shorter than one
 // reach are stretched to one. That is the classic compromise, and it is why very short stubs barely matter.
 import { dischargeDevice, lossDevice } from '../model/catalog'
-import { G, P_ATM, area, sourceElevation, elementK, fittingK, frictionFactor, pumpShape, ratedDp, reynolds, valveK, vesselPressure, vesselWater } from '../model/physics'
+import { G, P_ATM, area, sourceElevation, elementK, fittingK, frictionFactor, pumpHead, ratedDp, reynolds, valveK, vesselPressure, vesselWater } from '../model/physics'
 import { MATERIALS, isControl, isInline, type Model, type ModelNode, type Props, type Results } from '../model/types'
 import { command, commandedOff, valvePosition } from './inp'
 
@@ -87,6 +87,8 @@ interface HNode {
   ce: number
   ce0: number
   relief?: { setHead: number; c: number }
+  /** an air valve lets air in rather than let the line go below atmospheric */
+  breaksVacuum?: boolean
   vessel?: { props: Props; water: number }
   ends: { pipe: number; up: boolean }[]
   SC: number
@@ -219,7 +221,8 @@ export function runTransient(model: Model, results: Results, event: TransientEve
     else if (kind === 'vessel') {
       n.kind = 'vessel'
       n.vessel = { props: p, water: model.levels?.[nd.id] ?? vesselWater(p, p.initPressure) }
-    } else if (kind === 'relief') n.relief = { setHead: p.setPressure / rhoG, c: 0.7 * area(p.diameter) * Math.sqrt(2 * G) }
+    } else if (kind === 'airvalve') n.breaksVacuum = p.mode !== 'release'
+    else if (kind === 'relief') n.relief = { setHead: p.setPressure / rhoG, c: 0.7 * area(p.diameter) * Math.sqrt(2 * G) }
     else if (kind === 'junction' || (kind === 'outlet' && p.mode === 'demand')) n.demand = commandedOff(model, nd.id) ? 0 : r.outflow
     n.ce = n.ce0 = emitterCoeff(nd, model, rhoG)
   }
@@ -392,9 +395,8 @@ export function runTransient(model: Model, results: Results, event: TransientEve
           Q = d.kv > 0 ? (Math.sign(E) * (-M + Math.sqrt(M * M + 4 * d.kv * Math.abs(E)))) / (2 * d.kv) : E / M
         } else {
           // pump: (H_b − H_a) = pump head at this speed; f rises with Q, so bisect
-          const { r0, c } = pumpShape(d.props)
           const sp = Math.max(0.03, d.speed)
-          const head = (q: number) => d.props.designHead * (sp * sp * r0 - (r0 - 1) * Math.pow(sp, 2 - c) * Math.pow(q / d.props.designFlow, c))
+          const head = (q: number) => pumpHead(q, d.props, sp)
           const f = (q: number) => -E + M * q - head(q)
           if (f(0) < 0) {
             let lo = 0
@@ -441,6 +443,8 @@ export function runTransient(model: Model, results: Results, event: TransientEve
       n.H = H
     }
 
+    // an air valve admits air the moment the line reaches atmospheric: the pressure simply cannot go lower there
+    for (const n of nodes) if (n.breaksVacuum && n.H < n.z) n.H = n.z
     // vapour pressure is a floor: below it the column parts
     for (const n of nodes)
       if (n.kind === 'free' && n.H - n.z < hVapour) {

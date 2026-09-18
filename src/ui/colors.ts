@@ -18,6 +18,11 @@ export const SIGNAL_ON = '#b7a9ff'
 export const SIGNAL_OFF = '#4a4f7a'
 export const SIGNAL_PV = '#4fe0b0'
 
+// temperature: a diverging pair — cool blue, neutral grey midpoint, warm red
+const THERMAL = ['#2a78d6', '#6da7ec', '#8b8d92', '#ec835a', '#e34948'].map(hex)
+export const thermalColor = (t: number, tMin: number, tMax: number) => ramp(THERMAL, (t - tMin) / Math.max(1e-9, tMax - tMin))
+export const thermalCss = `linear-gradient(90deg, ${THERMAL.map((c) => `rgb(${c.join(',')})`).join(',')})`
+
 export const SUB_ATMOSPHERIC = '#ff4fa3'
 export const PLAIN = '#3aa0ff'
 export const DRY = '#33415a'

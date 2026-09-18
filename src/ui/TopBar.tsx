@@ -62,7 +62,7 @@ export function TopBar() {
       </div>
 
       <div className="seg" title="What the pipe colours show">
-        {(['pressure', 'velocity', 'plain'] as Overlay[]).map((o) => (
+        {((s.results.thermal ? ['pressure', 'velocity', 'thermal', 'plain'] : ['pressure', 'velocity', 'plain']) as Overlay[]).map((o) => (
           <button key={o} className={s.overlay === o ? 'on' : ''} onClick={() => s.set({ overlay: o })}>
             {o}
           </button>

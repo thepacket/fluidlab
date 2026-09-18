@@ -55,3 +55,15 @@ console.log('23 vessel, as delivered (24 L)     ', run('vessel', {}, 1500, 2))
 console.log('23 vessel, 300 L, pre-charge 180   ', run('vessel', { pv: { volume: 0.3, precharge: 180e3 } }, 1500, 2))
 console.log('26 float valve, as delivered       ', run('float-valve', {}, 7200, 6))
 console.log('26 float valve, shuts at 1.8 m     ', run('float-valve', { fv: { closeLevel: 1.8 } }, 7200, 6))
+console.log('35 booster, one pump wired         ', run('booster', {}, 900, 1))
+{
+  const ex = EXPERIMENTS.find((e) => e.id === 'booster')!
+  const original = ex.build
+  ex.build = () => {
+    const rig = original()
+    for (const id of ['p2', 'p3']) rig.edges.push({ id: `sx${id}`, type: 'signal', source: 'sq', sourceHandle: 'sig', target: id, targetHandle: 'ctl' })
+    return rig
+  }
+  console.log('35 booster, all three wired        ', run('booster', {}, 900, 1))
+  if (process.argv[2] === 'booster') for (const kp of [0.3, 0.5]) for (const ti of [0.5, 1]) console.log('   kp', kp, 'ti', ti, run('booster', { pic: { kp, ti } }, 900, 1).readout)
+}

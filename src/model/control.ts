@@ -22,9 +22,16 @@ export const PV_SOURCES: Partial<Record<Kind, { quantity: Quantity; name: string
 /** controllers that read a measurement */
 export const PV_CONSUMERS: Kind[] = ['switch', 'pid']
 /** control blocks that read other controllers' outputs */
-export const SIGNAL_CONSUMERS: Kind[] = ['logic', 'lamp']
+export const SIGNAL_CONSUMERS: Kind[] = ['logic', 'lamp', 'stager']
 /** control blocks with an output */
-export const SIGNAL_SOURCES: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic']
+export const SIGNAL_SOURCES: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'stager', 'schedule']
+
+/** Day/night value of a setpoint scheduler at lab time t. */
+export function scheduleValue(p: Props, t: number): number {
+  const h = (((t / 3600) % 24) + 24) % 24
+  const day = p.dayStart <= p.dayEnd ? h >= p.dayStart && h < p.dayEnd : h >= p.dayStart || h < p.dayEnd
+  return Math.min(1, Math.max(0, day ? p.dayValue : p.nightValue))
+}
 
 // ---- timer -----------------------------------------------------------------------
 
@@ -69,8 +76,10 @@ export interface ControlState {
   actuators: Record<string, number>
   /** what the solver is told: effective command per device */
   commands: Record<string, number>
+  /** blocks that tell each device something different (a pump sequencer): output per wire */
+  wire: Record<string, number>
 }
-export const EMPTY_CONTROL: ControlState = { out: {}, pv: {}, mem: {}, actuators: {}, commands: {} }
+export const EMPTY_CONTROL: ControlState = { out: {}, pv: {}, mem: {}, actuators: {}, commands: {}, wire: {} }
 
 export interface ControlInput {
   nodes: ModelNode[]
@@ -102,16 +111,20 @@ function readPV(src: ModelNode, results?: Results, levels?: Record<string, numbe
 export function stepControl({ nodes, edges, t, dt, results, levels, prev = EMPTY_CONTROL }: ControlInput): ControlState {
   const byId = new Map(nodes.map((n) => [n.id, n]))
   const wires = edges.filter((e) => e.type === 'signal' && byId.has(e.source) && byId.has(e.target))
-  const next: ControlState = { out: {}, pv: {}, mem: {}, actuators: {}, commands: {} }
+  const next: ControlState = { out: {}, pv: {}, mem: {}, actuators: {}, commands: {}, wire: {} }
   const live = (n: ModelNode) => n.data.props.enabled !== false
 
   // 1. blocks whose output depends only on time, the operator, or a measurement
   for (const n of nodes) {
     const p = n.data.props
+    if (n.data.kind === 'timer') next.out[n.id] = timerState(p, t).on ? 1 : 0
+    else if (n.data.kind === 'manual') next.out[n.id] = p.on ? 1 : 0
+    else if (n.data.kind === 'schedule') next.out[n.id] = scheduleValue(p, t)
+  }
+  for (const n of nodes) {
+    const p = n.data.props
     const kind = n.data.kind
-    if (kind === 'timer') next.out[n.id] = timerState(p, t).on ? 1 : 0
-    else if (kind === 'manual') next.out[n.id] = p.on ? 1 : 0
-    else if (kind === 'switch' || kind === 'pid') {
+    if (kind === 'switch' || kind === 'pid') {
       const wire = wires.find((w) => w.target === n.id && w.targetHandle === 'cin')
       const pv = wire ? readPV(byId.get(wire.source)!, results, levels) : undefined
       if (pv !== undefined) next.pv[n.id] = pv
@@ -142,7 +155,10 @@ export function stepControl({ nodes, edges, t, dt, results, levels, prev = EMPTY
           next.out[n.id] = held
           next.mem[n.id] = { integral: held, lastError: 0 }
         } else {
-          const e = ((p.setpoint - pv) / Math.max(1e-9, p.span)) * (p.reverse ? -1 : 1)
+          // a remote setpoint (0‥1 of the span) overrides the one typed on the faceplate
+          const rsp = wires.find((w) => w.target === n.id && w.targetHandle === 'rsp' && next.out[w.source] !== undefined)
+          const setpoint = rsp ? next.out[rsp.source] * p.span : p.setpoint
+          const e = ((setpoint - pv) / Math.max(1e-9, p.span)) * (p.reverse ? -1 : 1)
           // a scan longer than the integral time would overshoot in one step: limit it (slower, never wilder)
           const h = Math.min(dt, p.ti > 0 ? p.ti : dt)
           const unsat = clamp01(p.kp * e + m.integral)
@@ -164,16 +180,48 @@ export function stepControl({ nodes, edges, t, dt, results, levels, prev = EMPTY
     for (const n of logic) {
       const ins = wires.filter((w) => w.target === n.id && w.targetHandle === 'cin' && live(byId.get(w.source)!)).map((w) => (next.out[w.source] ?? 0) >= 0.5)
       const op = n.data.kind === 'lamp' ? 'or' : n.data.props.op
+      if (op === 'latch') {
+        // set / reset memory: reset wins, and with neither input on it remembers
+        const reset = wires.some((w) => w.target === n.id && w.targetHandle === 'cin2' && live(byId.get(w.source)!) && (next.out[w.source] ?? 0) >= 0.5)
+        next.out[n.id] = reset ? 0 : ins.some(Boolean) ? 1 : (prev.out[n.id] ?? 0)
+        continue
+      }
       const v = !ins.length ? false : op === 'and' ? ins.every(Boolean) : op === 'not' ? !ins.some(Boolean) : ins.some(Boolean)
       next.out[n.id] = v ? 1 : 0
     }
+
+  // 2b. pump sequencers: turn a demand (0‥1) into "how many, and which", rotating the lead so wear is shared
+  for (const n of nodes) {
+    if (n.data.kind !== 'stager') continue
+    const p = n.data.props
+    const ins = wires.filter((w) => w.target === n.id && w.targetHandle === 'cin' && live(byId.get(w.source)!)).map((w) => next.out[w.source] ?? 0)
+    const demand = ins.length ? Math.max(...ins) : 0
+    next.out[n.id] = demand
+    const outs = wires.filter((w) => w.source === n.id && w.targetHandle === 'ctl')
+    const N = outs.length
+    if (!N) continue
+    // stage up as soon as the running pumps are not enough; stage down only once there is clear room to spare,
+    // so a demand sitting on a boundary doesn't make a pump start and stop every scan
+    const was = outs.filter((w) => (prev.wire[w.id] ?? 0) > 0.01).length
+    const wanted = demand <= 0.02 ? 0 : Math.min(N, Math.ceil(demand * N - 1e-9))
+    const running = wanted >= was ? wanted : demand * N < was - 1 - 0.25 ? wanted : was
+    const lead = p.rotateEvery > 0 ? Math.floor(t / p.rotateEvery) % N : 0
+    for (let k = 0; k < N; k++) {
+      const w = outs[(lead + k) % N]
+      // Staged pumps share one speed. Trimming only the last one in doesn't work in parallel: a pump much slower
+      // than its neighbours can't open its check valve. So all of them ride between a floor and full speed.
+      const floor = p.minSpeed ?? 0.75
+      const share = Math.min(1, Math.max(0, demand * N - (running - 1)))
+      next.wire[w.id] = k >= running ? 0 : p.trim ? floor + (1 - floor) * share : 1
+    }
+  }
 
   // 3. commands: the strongest live signal arriving at each device wins
   for (const w of wires) {
     if (w.targetHandle !== 'ctl') continue
     const src = byId.get(w.source)!
     if (!live(src) || next.out[w.source] === undefined) continue
-    next.commands[w.target] = Math.max(next.commands[w.target] ?? 0, next.out[w.source])
+    next.commands[w.target] = Math.max(next.commands[w.target] ?? 0, next.wire[w.id] ?? next.out[w.source])
   }
 
   // 4. actuators with a stroke time travel towards their command instead of jumping

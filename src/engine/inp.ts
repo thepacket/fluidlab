@@ -1,7 +1,7 @@
 // EPANET adapter, part 1: translate a FluidLab model into an EPANET .inp file.
 // Units: LPS / SI  →  flow L/s, length m, diameter mm, roughness mm (D-W), pressure m.
 import { demandFactor, dischargeDevice, lossDevice } from '../model/catalog'
-import { G, area, sourceHead, wellDrawdown, pumpShape, elementK, fittingK, ratedDp, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
+import { G, area, sourceHead, wellDrawdown, pumpShape, pumpPoints, meterK, elementK, fittingK, ratedDp, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
 import { isControl, isInline, type Model, type Warning } from '../model/types'
 
 export interface Compiled {
@@ -11,6 +11,8 @@ export interface Compiled {
   /** inline device id → EPANET ids */
   deviceIds: Record<string, { a: string; b: string; link: string }>
   pipeIds: Record<string, string>
+  /** parts with internal structure (tees, three-way valves): handle → the hidden junction behind that port */
+  subPorts: Record<string, Record<string, string>>
   excluded: string[]
   warnings: Warning[]
   empty: boolean
@@ -73,7 +75,20 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
     else nodeIds[nd.id] = `N${i}`
   })
 
+  // tees and three-way valves have a hidden junction behind each port, joined to their centre by a lossy stub
+  const subPorts: Compiled['subPorts'] = {}
+  for (const e of model.edges)
+    for (const [id, h] of [
+      [e.source, e.sourceHandle],
+      [e.target, e.targetHandle],
+    ] as const) {
+      const nd = byId.get(id)
+      if (!nd || !h || !nodeIds[id]) continue
+      if (nd.data.kind === 'tee' || (nd.data.kind === 'threeway' && h !== 'ab')) (subPorts[id] ??= {})[h] = `${nodeIds[id]}${h}`
+    }
+
   const port = (nodeId: string, handle?: string | null): string | undefined => {
+    if (handle && subPorts[nodeId]?.[handle]) return subPorts[nodeId][handle]
     if (nodeIds[nodeId]) return nodeIds[nodeId]
     const d = deviceIds[nodeId]
     if (!d) return undefined
@@ -94,6 +109,7 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
     b: string
   }[]
   edges.forEach((x) => link(x.a, x.b))
+  for (const [id, ports] of Object.entries(subPorts)) Object.values(ports).forEach((sub) => link(nodeIds[id], sub))
   // a differential gauge is a permanently closed link: its two sides must each reach a source on their own
   model.nodes.forEach((nd) => {
     const d = deviceIds[nd.id]
@@ -119,7 +135,7 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
     const ids = d ? [d.a, d.b] : [nodeIds[nd.id]]
     const wired = (id: string) => reached.has(id) && (adj.get(id)?.length ?? 0) > 0
     const ok = nd.data.kind === 'dpgauge' ? ids.every(wired) : wired(ids[0])
-    if (ok) ids.forEach((id) => emitted.add(id))
+    if (ok) [...ids, ...Object.values(subPorts[nd.id] ?? {})].forEach((id) => emitted.add(id))
     else excluded.push(nd.id)
     return ok
   })
@@ -167,6 +183,25 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
     } else if (k === 'leak') {
       J.push(`${nodeIds[nd.id]} ${n(p.elevation)} 0`)
       if (p.active !== false) EM.push(`${nodeIds[nd.id]} ${n(Math.max(p.cd * area(p.holeDiameter) * Math.sqrt(2 * G) * 1000, 1e-6))}`)
+    } else if (k === 'tee' || k === 'threeway') {
+      const id = nodeIds[nd.id]
+      J.push(`${id} ${n(p.elevation)} 0`)
+      for (const [h, sub] of Object.entries(subPorts[nd.id] ?? {})) {
+        J.push(`${sub} ${n(p.elevation)} 0`)
+        if (k === 'tee') {
+          // run ports share the through-flow loss; a branch port carries the turning loss
+          const K = h === 'l' || h === 'r' ? p.kRun / 2 : p.kBranch
+          P.push(`${sub}s ${sub} ${id} 0.05 ${n(p.diameter * 1000)} 0.0015 ${n(K)} OPEN`)
+        } else {
+          // leg A opens as leg B closes; a controller's command moves the plug
+          const x = Math.min(1, Math.max(0, p.position * command(model, nd.id)))
+          const K = valveK(h === 'a' ? x : 1 - x, p.kOpen, p.trim)
+          V.push(`${sub}s ${sub} ${id} ${n(p.diameter * 1000)} TCV ${n(isFinite(K) ? K : 1e9)} 0`)
+          if (!isFinite(K)) ST.push(`${sub}s CLOSED`)
+        }
+      }
+    } else if (k === 'airvalve') {
+      J.push(`${nodeIds[nd.id]} ${n(p.elevation)} 0`)
     } else if (k === 'relief') {
       // A PSV holds its upstream side at the set pressure by venting — exactly a modulating relief valve.
       // EPANET won't join a valve straight to a reservoir, hence the stub pipe to "atmosphere".
@@ -194,12 +229,14 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
       if (k === 'pump') {
         const speed = overrides.pumpSpeed?.[nd.id] ?? p.speed * command(model, nd.id)
         // shut-off, duty and run-out: EPANET fits H = H₀ − B·Qᶜ through them, the same form pumpHead() uses
+        const table = pumpPoints(p)
         const { r0, rMax } = pumpShape(p)
-        CU.push(`C${d.link} 0 ${n(p.designHead * r0)}`, `C${d.link} ${n(p.designFlow * 1000)} ${n(p.designHead)}`, `C${d.link} ${n(p.designFlow * rMax * 1000)} 0`)
+        if (table) for (const [q, h] of table) CU.push(`C${d.link} ${n(q * 1000)} ${n(h)}`)
+        else CU.push(`C${d.link} 0 ${n(p.designHead * r0)}`, `C${d.link} ${n(p.designFlow * 1000)} ${n(p.designHead)}`, `C${d.link} ${n(p.designFlow * rMax * 1000)} 0`)
         PU.push(`${d.link} ${d.a} ${d.b} HEAD C${d.link} SPEED ${n(Math.max(speed, 0.01))}`)
         if (!p.on || speed < 0.01) ST.push(`${d.link} CLOSED`)
       } else if (k === 'meter') {
-        P.push(`${d.link} ${d.a} ${d.b} 0.05 ${n(p.diameter * 1000)} 0.0015 0 OPEN`)
+        P.push(`${d.link} ${d.a} ${d.b} 0.05 ${n(p.diameter * 1000)} 0.0015 ${n(meterK(p))} OPEN`)
       } else if (k === 'element') {
         P.push(`${d.link} ${d.a} ${d.b} 0.05 ${n(p.diameter * 1000)} 0.0015 ${n(elementK(p))} OPEN`)
       } else if (k === 'fitting') {
@@ -220,10 +257,20 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
       } else {
         const dia = n(p.diameter * 1000)
         const shut = off(nd.id)
-        if (shut && p.valveType !== 'check' && p.valveType !== 'throttle' && p.valveType !== 'float') ST.push(`${d.link} CLOSED`)
+        if (shut && p.valveType !== 'check' && p.valveType !== 'throttle' && p.valveType !== 'float' && p.valveType !== 'picv') ST.push(`${d.link} CLOSED`)
         switch (p.valveType) {
           case 'check':
-            P.push(`${d.link} ${d.a} ${d.b} 0.05 ${dia} 0.0015 ${n(p.kOpen)} ${shut ? 'CLOSED' : 'CV'}`)
+            if ((p.crackPressure ?? 0) > 0) {
+              // the spring: a pressure-breaker valve takes out the cracking pressure, behind an ordinary check that
+              // shuts the moment that would mean flowing backwards
+              J.push(`${d.link}m ${n(p.elevation)} 0`)
+              P.push(`${d.link}c ${d.a} ${d.link}m 0.05 ${dia} 0.0015 ${n(p.kOpen)} ${shut ? 'CLOSED' : 'CV'}`)
+              V.push(`${d.link} ${d.link}m ${d.b} ${dia} PBV ${n(p.crackPressure / rhoG)} 0`)
+            } else P.push(`${d.link} ${d.a} ${d.b} 0.05 ${dia} 0.0015 ${n(p.kOpen)} ${shut ? 'CLOSED' : 'CV'}`)
+            break
+          case 'picv':
+            // a flow limiter whose setpoint is its position: the built-in Δp regulator does the rest
+            V.push(`${d.link} ${d.a} ${d.b} ${dia} FCV ${n(Math.max(1e-6, p.flowSetting * p.opening * command(model, nd.id)) * 1000)} ${n(p.kOpen)}`)
             break
           case 'prv':
             V.push(`${d.link} ${d.a} ${d.b} ${dia} PRV ${n(p.pressureSetting / rhoG)} ${n(p.kOpen)}`)
@@ -294,5 +341,5 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
     '',
   ].join('\n')
 
-  return { inp, nodeIds, deviceIds, pipeIds, excluded, warnings, empty: R.length + T.length === 0 || P.length + PU.length + V.length === 0 }
+  return { inp, nodeIds, deviceIds, pipeIds, subPorts, excluded, warnings, empty: R.length + T.length === 0 || P.length + PU.length + V.length === 0 }
 }
