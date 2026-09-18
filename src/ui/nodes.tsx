@@ -133,6 +133,7 @@ export const ReservoirNode = memo(({ id, data, selected }: NodeProps<LabNode>) =
   const units = useLab((s) => s.units)
   const r = useLab((s) => s.results.nodes[id])
   const q = Math.abs(r?.outflow ?? 0)
+  const type: string = data.props.sourceType ?? 'surface'
   return (
     <Shell id={id} kind="reservoir" selected={selected} label={data.label} sub={q > 1e-8 ? `${r!.outflow < 0 ? '↑' : '↓'} ${fmtU(q, 'flow', units)}` : undefined}>
       <svg width="132" height="96" viewBox="0 0 132 96">
@@ -156,12 +157,14 @@ export const ReservoirNode = memo(({ id, data, selected }: NodeProps<LabNode>) =
         <path d="M7,6 V82 Q7,89 14,89 H118 Q125,89 125,82 V6" fill="none" stroke="#5a7099" strokeWidth="2.5" strokeLinecap="round" />
         <path d="M2,6 H12 M120,6 H130" stroke="#5a7099" strokeWidth="2.5" strokeLinecap="round" />
         <text x="66" y="62" className="svg-readout">
-          {fmt(data.props.head, 'head', units)}
-          <tspan className="svg-unit"> {unitLabel('head', units)}</tspan>
+          {type === 'mains' ? fmt(data.props.pressure, 'pressure', units) : fmt(type === 'well' ? (r?.head ?? data.props.staticLevel) : data.props.head, 'head', units)}
+          <tspan className="svg-unit"> {unitLabel(type === 'mains' ? 'pressure' : 'head', units)}</tspan>
         </text>
         <text x="66" y="76" className="svg-caption">
-          HEAD
+          {type === 'mains' ? 'MAINS' : type === 'well' ? 'PUMPING LEVEL' : 'HEAD'}
         </text>
+        {type === 'mains' && <path d="M2,48 H130" stroke="#8aa0c6" strokeWidth="7" opacity=".35" />}
+        {type === 'well' && <path d="M40,4 V92 M92,4 V92" stroke="#c98500" strokeWidth="2" strokeDasharray="3 4" opacity=".7" />}
       </svg>
     </Shell>
   )
@@ -188,8 +191,10 @@ export const TankNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const y = bottom - frac * (bottom - top)
   const net = r?.outflow ?? 0
   const trend = Math.abs(net) < 1e-7 ? '' : net > 0 ? '▲' : '▼'
+  const spilling = !!p.overflow && frac >= 0.999 && net > 1e-7
+  const paused = useLab((s) => !s.running)
   return (
-    <Shell id={id} kind="tank" selected={selected} label={data.label} sub={`${trend} ${fmtU(level, 'length', units)}`}>
+    <Shell id={id} kind="tank" selected={selected} label={data.label} sub={spilling ? `overflowing ${fmtU(net, 'flow', units)}` : `${trend} ${fmtU(level, 'length', units)}`}>
       <svg width="112" height="136" viewBox="0 0 112 136">
         <defs>
           <linearGradient id={`tw-${id}`} x1="0" y1="0" x2="0" y2="1">
@@ -210,6 +215,16 @@ export const TankNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
         </g>
         <path d={art.d} fill="none" stroke="#5a7099" strokeWidth="2.5" strokeLinejoin="round" />
         <path d="M10,126 H102 M26,126 V134 M86,126 V134" stroke="#5a7099" strokeWidth="2.5" strokeLinecap="round" />
+        {p.overflow && <path d="M96,18 H108 V30" fill="none" stroke="#8aa0c6" strokeWidth="4" strokeLinecap="round" />}
+        {spilling &&
+          [0, 1, 2].map((k) => (
+            <path
+              key={k}
+              className="spray"
+              d={`M${106 + k * 2},32 Q${108 + k * 3},80 ${104 + k * 6},130`}
+              style={{ animationDuration: '.6s', animationDelay: `${-k * 0.2}s`, animationPlayState: paused ? 'paused' : 'running' }}
+            />
+          ))}
         <text x="56" y={p.shape === 'cone' ? 58 : 74} className="svg-readout big">
           {Math.round(frac * 100)}
           <tspan className="svg-unit">%</tspan>
@@ -274,11 +289,12 @@ export const LeakNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const c = usePressureColor(r?.pressure)
   const q = r?.outflow ?? 0
   return (
-    <Shell id={id} kind="leak" selected={selected} label={data.label} sub={r ? `${fmtU(q, 'flow', units)} lost` : undefined}>
+    <Shell id={id} kind="leak" selected={selected} label={data.label} sub={data.props.active === false ? 'intact' : r ? `${fmtU(q, 'flow', units)} lost` : undefined}>
       <svg width="44" height="44" viewBox="0 0 44 44" style={{ overflow: 'visible' }}>
         <circle cx="22" cy="22" r="13" fill="#04070d" />
         <circle cx="22" cy="22" r="10" fill={c} style={{ filter: `drop-shadow(0 0 4px ${c})` }} />
-        <path d="M17,15 l4,5 l-3,3 l5,6" fill="none" stroke="#04070d" strokeWidth="2" strokeLinejoin="round" />
+        {data.props.active !== false && <path d="M17,15 l4,5 l-3,3 l5,6" fill="none" stroke="#04070d" strokeWidth="2" strokeLinejoin="round" />}
+        {data.props.variant === 'burst' && <circle cx="22" cy="22" r="16" fill="none" stroke="#ff5d7a" strokeWidth="1.500" strokeDasharray="3 3" />}
         {q > 1e-8 &&
           [-1, 0, 1].map((k) => (
             <path
@@ -359,6 +375,21 @@ export const OutletNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
             <rect x="24" y="22" width="16" height="20" rx="5" fill="#1b2a44" stroke="#5a7099" strokeWidth="2" />
             <circle cx="40" cy="32" r="2.500" fill="#8aa0c6" />
             {on && <path className="spray" d="M44,32 H74" style={{ animationDuration: '1.6s', strokeDasharray: '2 12', animationPlayState: paused ? 'paused' : 'running' }} />}
+          </>
+        ) : glyph === 'tap' || glyph === 'shower' ? (
+          <>
+            <path d="M0,27 H30 Q44,27 44,40 V46 H36 V40 Q36,35 30,35 H0 Z" fill={c} stroke="#04070d" strokeWidth="3" strokeLinejoin="round" />
+            <path d="M22,27 V16 M14,15 H30" stroke="#cfd9ec" strokeWidth="3.500" strokeLinecap="round" />
+            {glyph === 'shower' && <path d="M30,46 H50 L54,52 H26 Z" fill="#8aa0c6" />}
+            {on &&
+              (glyph === 'shower' ? [-2, -1, 0, 1, 2] : [0]).map((k) => (
+                <path
+                  key={k}
+                  className="spray"
+                  d={`M${40 + k * 5},${glyph === 'shower' ? 54 : 48} L${40 + k * 9},${70 + vigor * 14}`}
+                  style={{ ...anim(k), strokeWidth: glyph === 'shower' ? 1.8 : 3.2 }}
+                />
+              ))}
           </>
         ) : glyph === 'rotor' ? (
           <>

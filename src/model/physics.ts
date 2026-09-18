@@ -188,3 +188,24 @@ export function vesselWater(p: Props, pressure: number): number {
   if (pressure <= p.precharge) return 0
   return Math.min(p.volume * VESSEL_FILL_LIMIT, p.volume * (1 - Math.pow((p.precharge + P_ATM) / (pressure + P_ATM), 1 / (p.polytropic ?? 1.2))))
 }
+
+// ---- sources ------------------------------------------------------------------------------------
+// A "reservoir" is any fixed-head supply: an open water surface, a town main known by its pressure, or a well
+// whose level is drawn down in proportion to what is pumped out of it.
+
+export const SOURCE_TYPES = [
+  { id: 'surface', name: 'Open water surface' },
+  { id: 'mains', name: 'Mains connection (fixed pressure)' },
+  { id: 'well', name: 'Well (drawdown with flow)' },
+]
+
+/** Head of the source at rest (m). */
+export function sourceHead(p: Props, rhoG: number): number {
+  if (p.sourceType === 'mains') return p.elevation + p.pressure / rhoG
+  if (p.sourceType === 'well') return p.staticLevel
+  return p.head
+}
+/** Elevation its pressure is quoted at: only a mains connection has any (a free surface sits at zero gauge). */
+export const sourceElevation = (p: Props, head: number) => (p.sourceType === 'mains' ? p.elevation : head)
+/** Drawdown (m) of a well delivering q: the datasheet point, scaled linearly (aquifer loss dominates). */
+export const wellDrawdown = (p: Props, q: number) => (p.ratedDrawdown * Math.abs(q)) / Math.max(1e-9, p.ratedYield)

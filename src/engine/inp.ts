@@ -1,7 +1,7 @@
 // EPANET adapter, part 1: translate a FluidLab model into an EPANET .inp file.
 // Units: LPS / SI  →  flow L/s, length m, diameter mm, roughness mm (D-W), pressure m.
 import { demandFactor, dischargeDevice, lossDevice } from '../model/catalog'
-import { G, area, pumpShape, elementK, fittingK, ratedDp, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
+import { G, area, sourceHead, wellDrawdown, pumpShape, elementK, fittingK, ratedDp, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
 import { isControl, isInline, type Model, type Warning } from '../model/types'
 
 export interface Compiled {
@@ -48,7 +48,8 @@ export function valvePosition(model: Model, id: string): number {
     const tank = floatTank(model, id)
     if (tank) {
       const level = model.levels?.[tank.id] ?? tank.data.props.initLevel
-      pos *= Math.min(1, Math.max(0, (p.closeLevel - level) / Math.max(1e-6, p.band)))
+      // an altitude valve is the on/off cousin: shut at the level, open again a band below it (the latch lives with the levels)
+      pos *= p.floatMode === 'altitude' ? (model.levels?.[`${id}:shut`] ? 0 : 1) : Math.min(1, Math.max(0, (p.closeLevel - level) / Math.max(1e-6, p.band)))
     }
   }
   return pos
@@ -141,12 +142,20 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
   for (const nd of live) {
     const p = nd.data.props
     const k = nd.data.kind
-    if (k === 'reservoir') R.push(`${nodeIds[nd.id]} ${n(p.head)}`)
+    if (k === 'reservoir' && p.sourceType === 'well') {
+      // aquifer at its static level, then a head-loss curve standing in for drawdown; the node is the pumping level
+      const id = nodeIds[nd.id]
+      R.push(`${id}aq ${n(p.staticLevel)}`)
+      J.push(`${id} ${n(p.staticLevel - 200)} 0`)
+      for (const f of [0, 1, 4]) CU.push(`C${id}w ${n(p.ratedYield * f * 1000)} ${n(wellDrawdown(p, p.ratedYield * f))}`)
+      V.push(`${id}w ${id}aq ${id} 300 GPV C${id}w 0`)
+    } else if (k === 'reservoir') R.push(`${nodeIds[nd.id]} ${n(sourceHead(p, rhoG))}`)
     else if (k === 'tank') {
       const min = Math.max(0, p.minLevel)
       const max = Math.max(min + 0.01, tankHeight(p))
       const lvl = Math.min(max, Math.max(min, model.levels?.[nd.id] ?? p.initLevel))
-      T.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n(lvl)} ${n(min)} ${n(max)} ${n(Math.max(0.05, p.diameter))} 0`)
+      // a tank that may overflow must never look "full" to the solver, or it would shut the inlet instead of spilling
+      T.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n(lvl)} ${n(min)} ${n(p.overflow ? max + 1000 : max)} ${n(Math.max(0.05, p.diameter))} 0`)
     } else if (k === 'vessel') {
       // A fixed-head node whose head is set by the gas cushion. The stub pipe lets an empty vessel refuse to give
       // water (check valve towards the vessel) exactly as an empty tank would.
@@ -157,7 +166,7 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
       P.push(`${id}s ${id} ${id}gas 0.05 100 0.0015 0 ${water <= 1e-9 ? 'CV' : 'OPEN'}`)
     } else if (k === 'leak') {
       J.push(`${nodeIds[nd.id]} ${n(p.elevation)} 0`)
-      EM.push(`${nodeIds[nd.id]} ${n(Math.max(p.cd * area(p.holeDiameter) * Math.sqrt(2 * G) * 1000, 1e-6))}`)
+      if (p.active !== false) EM.push(`${nodeIds[nd.id]} ${n(Math.max(p.cd * area(p.holeDiameter) * Math.sqrt(2 * G) * 1000, 1e-6))}`)
     } else if (k === 'relief') {
       // A PSV holds its upstream side at the set pressure by venting — exactly a modulating relief valve.
       // EPANET won't join a valve straight to a reservoir, hence the stub pipe to "atmosphere".

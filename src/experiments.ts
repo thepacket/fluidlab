@@ -987,7 +987,7 @@ export const EXPERIMENTS: Experiment[] = [
       new Rig()
         .add('src', 'reservoir', 90, 300, { head: 30 }, 'Mains')
         .add('fv', 'valve', 330, 300, { valveType: 'float', diameter: 0.02, kOpen: 4, closeLevel: 2.6, band: 0.3 }, 'Float valve')
-        .add('t', 'tank', 580, 300, { elevation: 6, diameter: 1, initLevel: 1.2, maxLevel: 2.4 }, 'Header tank')
+        .add('t', 'tank', 580, 300, { elevation: 6, diameter: 1, initLevel: 1.2, maxLevel: 2.4, overflow: true }, 'Header tank')
         .add('out', 'outlet', 860, 480, { mode: 'demand', demand: 18 * LPM, pattern: 'residential' }, 'Building')
         .pipe('src', 'fv', { length: 20, diameter: 0.025 })
         .pipe('fv', 't', { length: 3, diameter: 0.025 }, ['out', 'l'])

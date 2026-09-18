@@ -3,7 +3,7 @@ import { gradeLine, pipeCurve, pumpCurve, type XY } from '../engine/analysis'
 import { solver } from '../engine/client'
 import { DEMAND_PATTERNS, demandFactor, dischargeDevice, LOSS_DEVICES, PUMP_TYPES, PIPE_STANDARDS, TRIMS, VALVE_BODIES, lossDevice } from '../model/catalog'
 import { PV_SOURCES, fmtClock, timerState } from '../model/control'
-import { TANK_SHAPES, pumpHead, beta, elementLossFraction, tankHeight, tankVolume, vesselPressure, vesselWater } from '../model/physics'
+import { SOURCE_TYPES, TANK_SHAPES, pumpHead, beta, elementLossFraction, tankHeight, tankVolume, vesselPressure, vesselWater } from '../model/physics'
 import { ELEMENT_TYPES, FLUIDS, KIND_META, MATERIALS, ROTATABLE, VALVE_TYPES, isControl, type Kind, type Props } from '../model/types'
 import { fmt, fmtNum, fmtU, toDisplay, toSI, unitLabel, type Quantity } from '../model/units'
 import { model, selectedId, useLab } from '../store'
@@ -24,9 +24,18 @@ interface Field {
 
 const elevation: Field = { key: 'elevation', label: 'Elevation', q: 'length' }
 const FIELDS: Record<Kind | 'pipe', Field[]> = {
-  reservoir: [{ key: 'head', label: 'Water surface head', q: 'head' }],
+  reservoir: [
+    { key: 'sourceType', label: 'Source', q: 'none', type: 'select', options: SOURCE_TYPES },
+    { key: 'head', label: 'Water surface head', q: 'head', show: (p) => (p.sourceType ?? 'surface') === 'surface' },
+    { key: 'pressure', label: 'Mains pressure', q: 'pressure', show: (p) => p.sourceType === 'mains' },
+    { key: 'elevation', label: 'Elevation of the connection', q: 'length', show: (p) => p.sourceType === 'mains' },
+    { key: 'staticLevel', label: 'Static water level', q: 'head', show: (p) => p.sourceType === 'well' },
+    { key: 'ratedDrawdown', label: 'Drawdown', q: 'head', show: (p) => p.sourceType === 'well' },
+    { key: 'ratedYield', label: '… when yielding', q: 'flow', show: (p) => p.sourceType === 'well' },
+  ],
   tank: [
     { key: 'shape', label: 'Shape', q: 'none', type: 'select', options: TANK_SHAPES },
+    { key: 'overflow', label: 'Overflow at the rim', q: 'none', type: 'toggle' },
     { key: 'diameter', label: 'Diameter', q: 'length' },
     { key: 'length', label: 'Drum length', q: 'length', show: (p) => p.shape === 'drum' },
     { key: 'initLevel', label: 'Initial level', q: 'length' },
@@ -42,7 +51,12 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'polytropic', label: 'Polytropic index n', q: 'none' },
     elevation,
   ],
-  leak: [{ key: 'holeDiameter', label: 'Equivalent hole', q: 'diameter' }, { key: 'cd', label: 'Discharge coeff. Cd', q: 'none' }, elevation],
+  leak: [
+    { key: 'active', label: 'Leaking now', q: 'none', type: 'toggle' },
+    { key: 'holeDiameter', label: 'Equivalent hole', q: 'diameter' },
+    { key: 'cd', label: 'Discharge coeff. Cd', q: 'none' },
+    elevation,
+  ],
   gauge: [elevation],
   outlet: [
     {
@@ -79,6 +93,17 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'body', label: 'Body', q: 'none', type: 'select', options: VALVE_BODIES, show: (p) => p.valveType === 'throttle' },
     { key: 'trim', label: 'Characteristic', q: 'none', type: 'select', options: TRIMS, show: (p) => p.valveType === 'throttle' },
     { key: 'opening', label: 'Opening', q: 'percent', type: 'slider', max: 1, show: (p) => p.valveType === 'throttle' || p.valveType === 'float' },
+    {
+      key: 'floatMode',
+      label: 'Action',
+      q: 'none',
+      type: 'select',
+      show: (p) => p.valveType === 'float',
+      options: [
+        { id: 'modulating', name: 'Float valve — closes gradually' },
+        { id: 'altitude', name: 'Altitude valve — shut / open' },
+      ],
+    },
     { key: 'closeLevel', label: 'Shuts at tank level', q: 'length', show: (p) => p.valveType === 'float' },
     { key: 'band', label: 'Fully open this far below', q: 'length', show: (p) => p.valveType === 'float' },
     { key: 'pressureSetting', label: 'Pressure setpoint', q: 'pressure', show: (p) => p.valveType === 'prv' || p.valveType === 'psv' },
@@ -614,15 +639,16 @@ function SurgePanel({ id, kind }: { id: string; kind: Kind }) {
   const r = s.surge?.event.id === id ? s.surge : null
   const u = s.units
 
-  const open = kind === 'outlet' ? (s.results.nodes[id]?.outflow ?? 0) > 1e-8 : true
-  const run = () => s.runSurge({ id, start: 0.5, duration: kind === 'pump' ? 0 : stroke, to: kind === 'outlet' ? (open ? 0 : 1) : to, inertia, runFor })
+  const bursts = kind === 'outlet' || kind === 'leak'
+  const open = bursts ? (s.results.nodes[id]?.outflow ?? 0) > 1e-8 : true
+  const run = () => s.runSurge({ id, start: 0.5, duration: kind === 'pump' ? 0 : stroke, to: bursts ? (open ? 0 : 1) : to, inertia, runFor })
 
   // where to look: the operated part first, then every instrumented point
   const places = useMemo(() => {
     const label = (nid: string) => s.nodes.find((n) => n.id === nid)?.data.label ?? nid
     const keys = Object.keys(r?.series ?? {})
     const named = keys.map((k) => ({ key: k, name: k.includes(':') ? `${label(k.split(':')[0])} · ${k.endsWith(':in') ? 'inlet' : 'outlet'}` : label(k) }))
-    const mine = kind === 'outlet' ? id : `${id}:${kind === 'pump' ? 'out' : 'in'}`
+    const mine = bursts ? id : `${id}:${kind === 'pump' ? 'out' : 'in'}`
     return named.sort((a, b) => Number(b.key === mine) - Number(a.key === mine))
   }, [r, s.nodes, id, kind])
   const at = places.find((p) => p.key === where)?.key ?? places[0]?.key
@@ -649,9 +675,9 @@ function SurgePanel({ id, kind }: { id: string; kind: Kind }) {
           <NumberField value={inertia} q="none" onCommit={(v) => setInertia(Math.max(0.05, v))} />
         </div>
       )}
-      {kind === 'outlet' && (
+      {bursts && (
         <div className="field">
-          <span>{open ? 'Shut it' : 'Open it'} in (s)</span>
+          <span>{kind === 'leak' ? (open ? 'Seal it' : 'Rupture') : open ? 'Shut it' : 'Open it'} in (s)</span>
           <NumberField value={stroke} q="none" onCommit={(v) => setStroke(Math.max(0, v))} />
         </div>
       )}
@@ -661,7 +687,15 @@ function SurgePanel({ id, kind }: { id: string; kind: Kind }) {
       </div>
       <div className="surge-actions">
         <button className="btn primary" disabled={s.surgeBusy || !s.results.ok} onClick={run}>
-          {s.surgeBusy ? 'Solving…' : kind === 'pump' ? '⚡ Trip the pump' : kind === 'outlet' ? `⚡ ${open ? 'Shut' : 'Open'} it` : '⚡ Stroke the valve'}
+          {s.surgeBusy
+            ? 'Solving…'
+            : kind === 'pump'
+              ? '⚡ Trip the pump'
+              : kind === 'leak'
+                ? `⚡ ${open ? 'Seal' : 'Rupture'} it`
+                : kind === 'outlet'
+                  ? `⚡ ${open ? 'Shut' : 'Open'} it`
+                  : '⚡ Stroke the valve'}
         </button>
         {r?.ok && (
           <button className="btn" onClick={replaying ? s.stopSurge : s.replaySurge}>
@@ -935,6 +969,9 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
           )
         })()}
       {kind === 'leak' && <Row label="Lost per day" value={`${(n!.outflow * 86400).toFixed(1)} m³`} tone={n!.outflow > 1e-7 ? 'warn' : 'good'} />}
+      {kind === 'reservoir' && node!.data.props.sourceType === 'well' && (
+        <Row label="Drawdown" value={`${fmtU(node!.data.props.staticLevel - n!.head, 'head', u)} below the static level`} tone="warn" />
+      )}
       <Row label="Elevation" value={fmtU(n!.elevation, 'length', u)} />
     </>
   )
@@ -1047,7 +1084,7 @@ export function Inspector() {
         {active === 'grade' && <GradeChart id={id} />}
       </section>
 
-      {node && (kind === 'pump' || kind === 'outlet' || (kind === 'valve' && (props.valveType === 'throttle' || props.valveType === 'float'))) && (
+      {node && (kind === 'pump' || kind === 'outlet' || kind === 'leak' || (kind === 'valve' && (props.valveType === 'throttle' || props.valveType === 'float'))) && (
         <section>
           <h4>Water hammer</h4>
           <SurgePanel key={id} id={id} kind={kind as Kind} />

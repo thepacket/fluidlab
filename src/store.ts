@@ -1,6 +1,7 @@
 import { addEdge, applyEdgeChanges, applyNodeChanges, type Connection, type EdgeChange, type NodeChange } from '@xyflow/react'
 import { create } from 'zustand'
 import { solver } from './engine/client'
+import { floatTank } from './engine/inp'
 import type { TransientEvent, TransientResult } from './engine/transient'
 import { EXPERIMENTS, NODE_SIZE, PORT_Y, type LabEdge, type LabNode } from './experiments'
 import { EMPTY_CONTROL, PV_CONSUMERS, PV_SOURCES, SIGNAL_CONSUMERS, sameControl, stepControl, type ControlState } from './model/control'
@@ -398,6 +399,18 @@ export const useLab = create<State>((set, get) => ({
       }
       if (Math.abs(next - cur) > 1e-9) moved = true
       levels[n.id] = next
+    }
+    // altitude valves latch shut at their level and only reopen a band below it
+    for (const n of s.nodes) {
+      const p = n.data.props
+      if (n.data.kind !== 'valve' || p.valveType !== 'float' || p.floatMode !== 'altitude') continue
+      const tank = floatTank(model(s), n.id)
+      if (!tank) continue
+      const level = levels[tank.id] ?? tank.data.props.initLevel
+      const key = `${n.id}:shut`
+      const shut = level >= p.closeLevel ? 1 : level <= p.closeLevel - p.band ? 0 : (levels[key] ?? 0)
+      if (shut !== (levels[key] ?? 0)) moved = true
+      levels[key] = shut
     }
     // one controller scan per tick, on the measurements of the network as last solved
     const ctrl = stepControl({ nodes: s.nodes, edges: s.edges, t: s.simTime + dt, dt, results: s.results, levels, prev: s.ctrl })

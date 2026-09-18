@@ -146,9 +146,9 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
 export function defaultProps(kind: Kind): Props {
   switch (kind) {
     case 'reservoir':
-      return { head: 10 }
+      return { head: 10, sourceType: 'surface', pressure: 400e3, elevation: 0, staticLevel: -8, ratedDrawdown: 6, ratedYield: 60 / 60000 }
     case 'tank':
-      return { elevation: 0, shape: 'cylinder', diameter: 1.2, length: 2, initLevel: 0.5, minLevel: 0, maxLevel: 2.5 }
+      return { overflow: false, elevation: 0, shape: 'cylinder', diameter: 1.2, length: 2, initLevel: 0.5, minLevel: 0, maxLevel: 2.5 }
     case 'junction':
       return { elevation: 0, demand: 0, pattern: 'constant' }
     case 'gauge':
@@ -158,7 +158,19 @@ export function defaultProps(kind: Kind): Props {
     case 'pump':
       return { elevation: 0, on: true, speed: 1, designFlow: 0.001, designHead: 20, bepEfficiency: 0.68, npshr: 2.5, pumpType: 'standard', shutoffRatio: 4 / 3, runoutRatio: 2 }
     case 'valve':
-      return { closeLevel: 2, band: 0.3, elevation: 0, valveType: 'throttle', diameter: 0.04, opening: 1, kOpen: 2.5, pressureSetting: 150000, flowSetting: 0.0005, strokeTime: 0 }
+      return {
+        floatMode: 'modulating',
+        closeLevel: 2,
+        band: 0.3,
+        elevation: 0,
+        valveType: 'throttle',
+        diameter: 0.04,
+        opening: 1,
+        kOpen: 2.5,
+        pressureSetting: 150000,
+        flowSetting: 0.0005,
+        strokeTime: 0,
+      }
     case 'meter':
       return { elevation: 0, diameter: 0.04 }
     case 'element':
@@ -170,7 +182,7 @@ export function defaultProps(kind: Kind): Props {
     case 'vessel':
       return { elevation: 0, volume: 0.1, precharge: 180e3, initPressure: 250e3, polytropic: 1.2 }
     case 'leak':
-      return { elevation: 0, holeDiameter: 0.004, cd: 0.6 }
+      return { elevation: 0, holeDiameter: 0.004, cd: 0.6, active: true, variant: 'leak' }
     case 'relief':
       return { elevation: 0, setPressure: 400e3, diameter: 0.025 }
     case 'timer':

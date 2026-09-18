@@ -21,11 +21,15 @@ const discharge = (group: string) => DISCHARGE_DEVICES.filter((d) => d.group ===
 const GROUPS: { name: string; items: PaletteItem[] }[] = [
   { name: 'Sources & storage', items: (['reservoir', 'tank', 'vessel'] as Kind[]).map(item) },
   { name: 'Pumps & valves', items: (['pump', 'valve', 'relief'] as Kind[]).map(item) },
-  { name: 'Nodes', items: (['junction', 'outlet', 'leak'] as Kind[]).map(item) },
+  {
+    name: 'Nodes',
+    items: [...(['junction', 'outlet', 'leak'] as Kind[]).map(item), { key: 'leak:burst', kind: 'leak' as Kind, name: 'Burst main', blurb: 'Intact until it ruptures — a 40 mm hole' }],
+  },
   { name: 'Instruments', items: (['gauge', 'dpgauge', 'meter', 'element'] as Kind[]).map(item) },
   { name: 'Control', items: (['manual', 'timer', 'switch', 'pid', 'logic', 'lamp'] as Kind[]).map(item) },
   { name: 'Fittings', items: catalogue('Fittings') },
   { name: 'Equipment', items: catalogue('Equipment') },
+  { name: 'Fixtures', items: discharge('Fixtures') },
   { name: 'Fire protection', items: discharge('Fire protection') },
   { name: 'Irrigation', items: discharge('Irrigation') },
 ]
@@ -33,7 +37,7 @@ const GROUPS: { name: string; items: PaletteItem[] }[] = [
 export function Sidebar() {
   const [tab, setTab] = useState<'build' | 'lab'>('lab')
   const [query, setQuery] = useState('')
-  const [closed, setClosed] = useState<Record<string, boolean>>({ Fittings: true, Equipment: true, 'Fire protection': true, Irrigation: true })
+  const [closed, setClosed] = useState<Record<string, boolean>>({ Fittings: true, Equipment: true, Fixtures: true, 'Fire protection': true, Irrigation: true })
   const experimentId = useLab((s) => s.experimentId)
   const load = useLab((s) => s.loadExperiment)
   const set = useLab((s) => s.set)

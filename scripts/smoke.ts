@@ -159,3 +159,57 @@ for (const opening of [1, 0.5, 0.2, 0]) {
     )
   }
 }
+
+// sources: a mains connection quoted in pressure, and a well whose level is drawn down by what is pumped
+{
+  const mains: Model = {
+    fluid: FLUIDS[0],
+    nodes: [node('M', 'reservoir', { sourceType: 'mains', pressure: 350e3, elevation: 2 }), node('G', 'gauge', { elevation: 2 }), node('O', 'outlet')],
+    edges: [pipe('p1', 'M', 'G', 'r', 'l', { length: 0.5 }), pipe('p2', 'G', 'O', 'r', 'l')],
+  }
+  const rm = engine.solve(mains)
+  console.log(
+    'mains',
+    rm.ok,
+    rm.error ?? '',
+    'P at source',
+    (rm.nodes.M.pressure / 1000).toFixed(0),
+    'kPa · gauge',
+    (rm.nodes.G.pressure / 1000).toFixed(0),
+    'kPa · pipe pStart',
+    (rm.links.p1.pStart / 1000).toFixed(0),
+  )
+  const well: Model = {
+    fluid: FLUIDS[0],
+    nodes: [node('W', 'reservoir', { sourceType: 'well', staticLevel: -8, ratedDrawdown: 6, ratedYield: 0.001 }), node('PU', 'pump', { elevation: -20, designHead: 40 }), node('O', 'outlet')],
+    edges: [pipe('p1', 'W', 'PU', 'r', 'in', { length: 2 }), pipe('p2', 'PU', 'O', 'out', 'l', { length: 30 })],
+  }
+  const rw = engine.solve(well)
+  console.log(
+    'well ',
+    rw.ok,
+    rw.error ?? '',
+    'Q',
+    (rw.devices.PU.flow * 60000).toFixed(1),
+    'L/min · pumping level',
+    rw.nodes.W.head.toFixed(2),
+    'm (static −8) · supplied',
+    (rw.nodes.W.outflow * 60000).toFixed(1),
+  )
+  const spill: Model = {
+    fluid: FLUIDS[0],
+    levels: { T: 2.5 },
+    nodes: [node('R', 'reservoir', { head: 20 }), node('T', 'tank', { overflow: true, initLevel: 2.5 }), node('T2', 'tank', { initLevel: 2.5 })],
+    edges: [pipe('p1', 'R', 'T', 'r', 'l'), pipe('p2', 'R', 'T2', 'r', 'l')],
+  }
+  const rs = engine.solve(spill)
+  console.log(
+    'tanks',
+    rs.ok,
+    'with overflow takes',
+    (rs.nodes.T.outflow * 60000).toFixed(0),
+    'L/min · without takes',
+    (rs.nodes.T2.outflow * 60000).toFixed(0),
+    rs.warnings.map((w) => w.text),
+  )
+}

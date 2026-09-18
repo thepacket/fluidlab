@@ -2,7 +2,24 @@
 // back into FluidLab's vocabulary (SI, element ids, educational extras).
 import { LinkProperty, NodeProperty, Project, Workspace } from 'epanet-js'
 import { lossDevice } from '../model/catalog'
-import { G, P_ATM, area, fittingK, kvOf, ratedDp, elementInferredFlow, elementTapDp, frictionFactor, pumpEfficiency, pumpMaxFlow, regimeOf, reynolds, valveK } from '../model/physics'
+import {
+  G,
+  P_ATM,
+  area,
+  sourceElevation,
+  tankHeight,
+  fittingK,
+  kvOf,
+  ratedDp,
+  elementInferredFlow,
+  elementTapDp,
+  frictionFactor,
+  pumpEfficiency,
+  pumpMaxFlow,
+  regimeOf,
+  reynolds,
+  valveK,
+} from '../model/physics'
 import { EMPTY_RESULTS, isControl, type Model, type Results, type Warning } from '../model/types'
 import { command, commandedOff, compile, floatTank, valvePosition, type Overrides } from './inp'
 
@@ -67,13 +84,20 @@ class EpanetEngine implements HydraulicEngine {
           const eid = c.nodeIds[nd.id]
           const idx = project.getNodeIndex(eid)
           const h = project.getNodeValue(idx, NodeProperty.Head)
-          const elevation = kind === 'reservoir' ? p.head : p.elevation
+          const elevation = kind === 'reservoir' ? sourceElevation(p, h) : p.elevation
           const rawDemand = project.getNodeValue(idx, NodeProperty.Demand) / 1000
           const demand = Math.abs(rawDemand) < 1e-7 ? 0 : rawDemand // residual seepage through "closed" links is solver noise
-          const pressure = kind === 'reservoir' ? 0 : (h - elevation) * rhoG
+          const pressure = (h - elevation) * rhoG
           const vented = kind === 'relief' ? flowOf(`${eid}v`) : 0
+          if (kind === 'tank' && p.overflow && demand > 1e-7 && (model.levels?.[nd.id] ?? p.initLevel) >= tankHeight(p) - 1e-6)
+            warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: overflowing — spilling ${(demand * 60000).toFixed(0)} L/min` })
           // a vessel's "outflow" follows the tank convention: positive = filling
-          res.nodes[nd.id] = { head: h, pressure, elevation, outflow: kind === 'relief' ? vented : kind === 'vessel' ? flowOf(`${eid}s`) : demand }
+          res.nodes[nd.id] = {
+            head: h,
+            pressure,
+            elevation,
+            outflow: kind === 'relief' ? vented : kind === 'vessel' ? flowOf(`${eid}s`) : kind === 'reservoir' && p.sourceType === 'well' ? -flowOf(`${eid}w`) : demand,
+          }
           if (vented > 1e-8)
             warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: lifting — venting ${(vented * 60000).toFixed(0)} L/min to hold ${(p.setPressure / 1000).toFixed(0)} kPa` })
           if (kind !== 'reservoir' && kind !== 'tank' && pressure + P_ATM < fluid.vaporPressure)
@@ -155,8 +179,9 @@ class EpanetEngine implements HydraulicEngine {
         const v = Math.abs(q) / area(p.diameter)
         const re = reynolds(v, p.diameter, fluid)
         const sign = q >= 0 ? 1 : -1
-        const zA = elevationOf(model, e.source)
-        const zB = elevationOf(model, e.target)
+        // plain nodes already know the elevation their pressure is quoted at (a free surface: its own head)
+        const zA = res.nodes[e.source]?.elevation ?? elevationOf(model, e.source)
+        const zB = res.nodes[e.target]?.elevation ?? elevationOf(model, e.target)
         res.links[e.id] = {
           flow: q,
           velocity: v,
@@ -209,7 +234,7 @@ function portId(c: ReturnType<typeof compile>, nodeId: string, handle?: string |
 function elevationOf(model: Model, id: string) {
   const nd = model.nodes.find((x) => x.id === id)
   if (!nd) return 0
-  return nd.data.kind === 'reservoir' ? nd.data.props.head : nd.data.props.elevation
+  return nd.data.props.elevation ?? 0
 }
 
 function cleanError(err: unknown) {

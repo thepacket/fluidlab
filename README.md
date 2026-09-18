@@ -67,6 +67,11 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   fire pump (with the NFPA 20 churn / 150 % checks in the inspector), a steep multistage and a flat circulator.
   Hydronics adds boiler, radiator and a balancing-valve body; closed loops solve with the expansion vessel as the
   pressure reference.
+- **Sources**: a reservoir is an open surface, a **mains connection** quoted in pressure, or a **well** whose pumping
+  level is drawn down in proportion to yield (a head-loss curve between the aquifer and the pumping node). Tanks can
+  **overflow** at the rim (spill reported) instead of shutting their inlet; the float valve has an **altitude-valve**
+  mode (latched shut / open); household **fixtures** (taps, shower, WC, appliance) are K-factor presets; a **burst
+  main** is a dormant 40 mm leak that can be ruptured as a water-hammer event.
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.

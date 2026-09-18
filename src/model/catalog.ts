@@ -214,11 +214,11 @@ export const PUMP_TYPES: { id: string; name: string; shutoffRatio: number; runou
 
 const K = (lpmPerRootBar: number) => lpmPerRootBar / 60000 / Math.sqrt(1e5) // → m³/s per √Pa
 
-export type DischargeGlyph = 'nozzle' | 'sprinkler' | 'hydrant' | 'hose' | 'drip' | 'rotor'
+export type DischargeGlyph = 'nozzle' | 'sprinkler' | 'hydrant' | 'hose' | 'drip' | 'rotor' | 'tap' | 'shower'
 export interface DischargeDevice {
   id: string
   name: string
-  group: 'Fire protection' | 'Irrigation'
+  group: 'Fire protection' | 'Irrigation' | 'Fixtures'
   blurb: string
   prefix: string
   glyph: DischargeGlyph
@@ -269,6 +269,14 @@ export const DISCHARGE_DEVICES: DischargeDevice[] = [
   },
   { id: 'hosereel', name: 'Hose reel', group: 'Fire protection', blurb: 'First-aid hose · K ≈ 28', prefix: 'HR', glyph: 'hose', defaults: { mode: 'kfactor', kFactor: K(28) } },
   { id: 'hydrant', name: 'Hydrant outlet 65 mm', group: 'Fire protection', blurb: 'Open butt · K ≈ 1500', prefix: 'HY', glyph: 'hydrant', defaults: { mode: 'kfactor', kFactor: K(1500) } },
+  // K chosen so each fixture gives its usual flow at 1 bar
+  { id: 'basin', name: 'Basin tap', group: 'Fixtures', blurb: '≈ 6 L/min at 1 bar', prefix: 'TP', glyph: 'tap', defaults: { mode: 'kfactor', kFactor: K(6) } },
+  { id: 'kitchen', name: 'Kitchen tap', group: 'Fixtures', blurb: '≈ 10 L/min at 1 bar', prefix: 'TP', glyph: 'tap', defaults: { mode: 'kfactor', kFactor: K(10) } },
+  { id: 'shower', name: 'Shower', group: 'Fixtures', blurb: '≈ 9 L/min at 1 bar', prefix: 'SH', glyph: 'shower', defaults: { mode: 'kfactor', kFactor: K(9) } },
+  { id: 'bath', name: 'Bath filler', group: 'Fixtures', blurb: '≈ 18 L/min at 1 bar', prefix: 'BT', glyph: 'tap', defaults: { mode: 'kfactor', kFactor: K(18) } },
+  { id: 'wc', name: 'WC fill valve', group: 'Fixtures', blurb: 'Cistern refill · ≈ 5 L/min at 1 bar', prefix: 'WC', glyph: 'tap', defaults: { mode: 'kfactor', kFactor: K(5) } },
+  { id: 'appliance', name: 'Washing machine', group: 'Fixtures', blurb: 'Solenoid inlet · ≈ 8 L/min at 1 bar', prefix: 'WM', glyph: 'tap', defaults: { mode: 'kfactor', kFactor: K(8) } },
+  { id: 'garden', name: 'Garden tap', group: 'Fixtures', blurb: '≈ 20 L/min at 1 bar', prefix: 'GT', glyph: 'tap', defaults: { mode: 'kfactor', kFactor: K(20) } },
   {
     id: 'drip',
     name: 'Drip emitter 4 L/h',
@@ -301,6 +309,7 @@ export function catalogueSpec(kind: string, variant?: string): { prefix: string;
     const d = lossDevice(variant)
     return { prefix: d.prefix, defaults: { variant: d.id, ...d.defaults } }
   }
+  if (kind === 'leak' && variant === 'burst') return { prefix: 'BR', defaults: { variant: 'burst', holeDiameter: 0.04, active: false } }
   if (kind === 'outlet') {
     const d = dischargeDevice(variant)
     return d && { prefix: d.prefix, defaults: { variant: d.id, ...d.defaults }, rot: d.rot }

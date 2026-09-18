@@ -10,7 +10,7 @@
 // Every pipe needs a whole number of reaches, so wave speeds are nudged (a′ = L / N·Δt); pipes shorter than one
 // reach are stretched to one. That is the classic compromise, and it is why very short stubs barely matter.
 import { dischargeDevice, lossDevice } from '../model/catalog'
-import { G, P_ATM, area, elementK, fittingK, frictionFactor, pumpShape, ratedDp, reynolds, valveK, vesselPressure, vesselWater } from '../model/physics'
+import { G, P_ATM, area, sourceElevation, elementK, fittingK, frictionFactor, pumpShape, ratedDp, reynolds, valveK, vesselPressure, vesselWater } from '../model/physics'
 import { MATERIALS, isControl, isInline, type Model, type ModelNode, type Props, type Results } from '../model/types'
 import { command, commandedOff, valvePosition } from './inp'
 
@@ -109,7 +109,7 @@ const waveSpeedOf = (material: string) => MATERIALS.find((m) => m.id === materia
 /** Emitter coefficient in m³/s per √m of pressure head — the same law the steady compile hands to EPANET. */
 function emitterCoeff(nd: ModelNode, model: Model, rhoG: number): number {
   const p = nd.data.props
-  if (nd.data.kind === 'leak') return p.cd * area(p.holeDiameter) * Math.sqrt(2 * G)
+  if (nd.data.kind === 'leak') return p.active === false ? 0 : p.cd * area(p.holeDiameter) * Math.sqrt(2 * G)
   if (nd.data.kind !== 'outlet' || p.mode === 'demand') return 0
   if (commandedOff(model, nd.id) || (dischargeDevice(p.variant)?.glyph === 'sprinkler' && !p.fused)) return 0
   return p.mode === 'kfactor' ? p.kFactor * Math.sqrt(rhoG) : p.cd * area(p.nozzleDiameter) * Math.sqrt(2 * G)
@@ -214,7 +214,7 @@ export function runTransient(model: Model, results: Results, event: TransientEve
     }
     const r = results.nodes[nd.id]
     if (!r) continue
-    const n = addNode(nd.id, kind === 'reservoir' ? p.head : p.elevation, r.head)
+    const n = addNode(nd.id, kind === 'reservoir' ? sourceElevation(p, r.head) : p.elevation, r.head)
     if (kind === 'reservoir' || kind === 'tank') n.kind = 'fixed'
     else if (kind === 'vessel') {
       n.kind = 'vessel'
@@ -354,7 +354,7 @@ export function runTransient(model: Model, results: Results, event: TransientEve
     } else if (evNode !== undefined) {
       const n = nodes[evNode]
       const from = n.ce0 > 0 ? 1 : 0
-      const full = n.ce0 > 0 ? n.ce0 : emitterCoeff({ ...target, data: { ...target.data, props: { ...tProps, fused: true } } }, { ...model, controls: {} }, rhoG)
+      const full = n.ce0 > 0 ? n.ce0 : emitterCoeff({ ...target, data: { ...target.data, props: { ...tProps, fused: true, active: true } } }, { ...model, controls: {} }, rhoG)
       n.ce = full * (from + (event.to - from) * s)
     }
 
