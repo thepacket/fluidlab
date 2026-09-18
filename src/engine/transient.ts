@@ -175,6 +175,7 @@ export function runTransient(model: Model, results: Results, event: TransientEve
     frames: [],
     solveMs: 0,
   })
+  if (model.fluid.gas) return fail('The water-hammer engine is for liquids — a gas is too compressible to hammer')
   if (!results.ok) return fail('The network has to solve at steady state before it can be disturbed')
   const target = model.nodes.find((n) => n.id === event.id)
   if (!target || results.excluded.includes(event.id)) return fail('Pick a valve, pump or outlet that is part of the solved network')

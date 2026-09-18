@@ -22,7 +22,7 @@ export function systemCurve(engine: HydraulicEngine, model: Model, pumpId: strin
     }
     const r = engine.solve(forced, { pumpSpeed: { [pumpId]: s } })
     const d = r.devices[pumpId]
-    if (r.ok && d && d.flow > 1e-7) pts.push({ x: d.flow, y: d.dH })
+    if (r.ok && d && d.flow > 1e-7) pts.push({ x: d.flow, y: r.gas ? (d.ratio ?? 1) : d.dH })
   }
   return pts.sort((a, b) => a.x - b.x)
 }

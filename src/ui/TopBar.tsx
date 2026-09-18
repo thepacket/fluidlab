@@ -98,13 +98,19 @@ export function TopBar() {
         </button>
       </div>
 
+      {s.results.gas && (
+        <div className="gas-badge" title="Flows are standard volumes at 15 °C and 1 atm">
+          GAS · standard flow
+        </div>
+      )}
+
       <div className="spacer" />
 
       <div className={`solver ${s.results.ok ? 'ok' : s.results.error ? 'bad' : ''}`} title={`${solver.name}${solver.threaded ? ' · in a Web Worker' : ''}`}>
         <i />
         <div>
           <b>{!s.engineReady ? 'Loading solver…' : s.results.ok ? `Solved in ${s.results.solveMs.toFixed(1)} ms` : s.results.error ? 'Not solved' : 'Idle'}</b>
-          <span>{solver.name}</span>
+          <span>{s.results.gas ? 'Gas network · Newton' : solver.name}</span>
         </div>
       </div>
 

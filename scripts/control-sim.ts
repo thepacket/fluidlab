@@ -2,6 +2,7 @@
 // solve → controller scan → integrate tanks. Used to check each goal is reachable (and not trivially met).
 import { engine } from '../src/engine/epanet'
 import { EXPERIMENTS, type LabNode } from '../src/experiments'
+import { receiverRate } from '../src/engine/gas'
 import { EMPTY_CONTROL, stepControl } from '../src/model/control'
 import { VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from '../src/model/physics'
 import { EMPTY_RESULTS, FLUIDS, type Props, type Results } from '../src/model/types'
@@ -13,18 +14,20 @@ function run(id: string, patch: Record<string, Props>, seconds: number, dt: numb
   const { nodes, edges } = ex.build()
   for (const [nid, p] of Object.entries(patch)) Object.assign(nodes.find((n) => n.id === nid)!.data.props, p)
   const levels: Record<string, number> = {}
+  const fluid = FLUIDS.find((f) => f.id === ex.fluidId) ?? FLUIDS[0]
   const history: { t: number; v: Record<string, number> }[] = []
   let ctrl = EMPTY_CONTROL
   let results: Results = EMPTY_RESULTS
   let starts = 0
   for (let t = 0; t < seconds; t += dt) {
-    results = engine.solve({ nodes, edges, fluid: FLUIDS[0], levels, controls: ctrl.commands, time: Math.floor(t / 60) * 60 } as never)
+    results = engine.solve({ nodes, edges, fluid, levels, controls: ctrl.commands, time: Math.floor(t / 60) * 60 } as never)
     const before = ctrl
     ctrl = stepControl({ nodes, edges, t: t + dt, dt, results, levels, prev: ctrl })
     for (const n of nodes as LabNode[]) {
       const p = n.data.props
       const q = results.nodes[n.id]?.outflow ?? 0
-      if (n.data.kind === 'vessel') levels[n.id] = Math.min(p.volume * VESSEL_FILL_LIMIT, Math.max(0, (levels[n.id] ?? vesselWater(p, p.initPressure)) + q * dt))
+      if (n.data.kind === 'vessel' && fluid.gas) levels[`${n.id}:gas`] = Math.max(101325, (levels[`${n.id}:gas`] ?? 101325 + p.initPressure) + receiverRate(fluid, p.volume, q) * dt)
+      else if (n.data.kind === 'vessel') levels[n.id] = Math.min(p.volume * VESSEL_FILL_LIMIT, Math.max(0, (levels[n.id] ?? vesselWater(p, p.initPressure)) + q * dt))
       if (n.data.kind === 'tank') levels[n.id] = Math.max(p.minLevel, tankLevel(p, tankVolume(p, levels[n.id] ?? p.initLevel) + q * dt))
     }
     if ((ctrl.commands.p ?? 0) >= 0.5 && (before.commands.p ?? 0) < 0.5) starts++
@@ -66,4 +69,20 @@ console.log('35 booster, one pump wired         ', run('booster', {}, 900, 1))
   }
   console.log('35 booster, all three wired        ', run('booster', {}, 900, 1))
   if (process.argv[2] === 'booster') for (const kp of [0.3, 0.5]) for (const ti of [0.5, 1]) console.log('   kp', kp, 'ti', ti, run('booster', { pic: { kp, ti } }, 900, 1).readout)
+}
+{
+  // 37: the receiver must cycle between the switch's thresholds with the compressor loading and unloading
+  const ex = EXPERIMENTS.find((e) => e.id === 'air-main')!
+  const original = ex.goal!.check
+  let lo = Infinity
+  let hi = 0
+  ex.goal!.check = (r, n, l, h) => {
+    for (const s of h) {
+      lo = Math.min(lo, s.v['rx'] ?? Infinity)
+      hi = Math.max(hi, s.v['rx'] ?? 0)
+    }
+    return original(r, n, l, h)
+  }
+  const out = run('air-main', {}, 600, 1)
+  console.log('37 air main, closed loop           ', out, 'receiver swings', (lo / 1000).toFixed(0), '–', (hi / 1000).toFixed(0), 'kPa')
 }

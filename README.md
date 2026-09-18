@@ -76,6 +76,15 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   sensing principles with their own losses, pitot and sight glass, U-tube manometer display, totalisers, CSV export
   of everything recorded. Control: **pump sequencer** (staging with hysteresis, shared trimmed speed, lead rotation),
   **setpoint scheduler**, PID remote setpoint, S/R latch, emergency stop.
+- **Gas network engine** (`src/engine/gas.ts`): picked automatically when the working fluid is a gas (air, natural
+  gas, nitrogen, hydrogen, CO₂). Steady isothermal compressible flow — pipes obey p₁² − p₂² = (f·L/D + K)·ṁ²·Z·R·T/A²
+  — solved as mass balances on absolute node pressures by damped Newton (central-difference Jacobian, a starting
+  guess propagated from the sources through regulators and compressors, friction factors refreshed in an outer
+  loop). The same bench is re-read: reservoirs are pressure sources, pumps are compressors (pressure-ratio map,
+  isentropic power), PRVs are regulators with droop, pressure vessels are receivers that charge and blow down on the
+  lab clock, nozzles and leaks choke at the critical ratio. Flows are standard volumes (15 °C, 1 atm). Controls,
+  charts and goals work unchanged. `scripts/gas-check.ts` checks it against hand calculations. Elevation is ignored;
+  tees, three-way valves and jet pumps are plain junctions; no water hammer or thermal layer for gases.
 - **Jet pump (ejector)**: three ports, and both of its internal links depend on heads elsewhere in the network — the
   nozzle sees motive − suction, the entrainment curve scales with motive − discharge — which no single EPANET element
   can express. The engine wraps EPANET in a relaxed fixed-point: solve, read those heads, rebuild the nozzle's K and
@@ -93,10 +102,10 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **36 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **39 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
   valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
-  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump). `scripts/control-sim.ts` runs the loops closed
+  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli
@@ -119,7 +128,8 @@ fly deploy                             # build remotely and ship
 
 ```
 src/model/     types + defaults, units, physics (pure, SI)
-src/engine/    inp.ts (compile) · epanet.ts (steady engine) · transient.ts (water-hammer engine)
+src/engine/    inp.ts (compile) · epanet.ts (steady engine) · gas.ts (gas engine)
+               transient.ts (water-hammer engine) · thermal.ts (heat layer)
                worker.ts + client.ts (threading)
                analysis.ts (curves, grade line)
 src/experiments.ts   rig builder + the experiment catalogue

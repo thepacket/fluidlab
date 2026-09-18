@@ -6,7 +6,8 @@ import type { TransientEvent, TransientResult } from './engine/transient'
 import { EXPERIMENTS, NODE_SIZE, PORT_Y, type LabEdge, type LabNode } from './experiments'
 import { EMPTY_CONTROL, PV_CONSUMERS, PV_SOURCES, SIGNAL_CONSUMERS, sameControl, stepControl, type ControlState } from './model/control'
 import { catalogueSpec } from './model/catalog'
-import { VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from './model/physics'
+import { receiverRate } from './engine/gas'
+import { P_ATM, VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from './model/physics'
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
 import { METRIC, type UnitPrefs } from './model/units'
 
@@ -386,6 +387,7 @@ export const useLab = create<State>((set, get) => ({
     const clocked = s.nodes.some(usesClock)
     const dt = dtReal * (clocked ? s.timeScale : 1)
     const levels = { ...s.levels }
+    const fluid = FLUIDS.find((f) => f.id === s.fluidId) ?? FLUIDS[0]
     let moved = false
     for (const n of s.nodes) {
       if (n.data.kind !== 'tank' && n.data.kind !== 'vessel') continue
@@ -395,6 +397,14 @@ export const useLab = create<State>((set, get) => ({
       // storage is integrated as volume, so tanks of any shape (and gas-cushioned vessels) fill correctly
       let cur: number
       let next: number
+      if (n.data.kind === 'vessel' && fluid.gas) {
+        // a receiver: gas in raises the pressure (isothermal), p·V = m·Z·R·T
+        const key = `${n.id}:gas`
+        const was = levels[key] ?? P_ATM + p.initPressure
+        levels[key] = Math.max(P_ATM, was + receiverRate(fluid, p.volume, r.outflow) * dt)
+        if (Math.abs(levels[key] - was) > 1e-3) moved = true
+        continue
+      }
       if (n.data.kind === 'vessel') {
         cur = levels[n.id] ?? vesselWater(p, p.initPressure) // a vessel's state is its water volume, m³
         next = Math.min(p.volume * VESSEL_FILL_LIMIT, Math.max(0, cur + r.outflow * dt))

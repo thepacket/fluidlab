@@ -296,6 +296,15 @@ input:focus {
   border-color: transparent;
   color: #fff;
 }
+.gas-badge {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font: 600 10px var(--mono);
+  letter-spacing: 0.08em;
+  color: #fab219;
+  border: 1px solid rgba(250, 178, 25, 0.45);
+  background: rgba(250, 178, 25, 0.08);
+}
 .solver {
   display: flex;
   align-items: center;

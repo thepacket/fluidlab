@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { gradeLine, pipeCurve, pumpCurve, type XY } from '../engine/analysis'
 import { solver } from '../engine/client'
+import { compressorRatio } from '../engine/gas'
 import { DEMAND_PATTERNS, demandFactor, dischargeDevice, LOSS_DEVICES, PUMP_TYPES, PIPE_STANDARDS, TRIMS, VALVE_BODIES, lossDevice } from '../model/catalog'
 import { PV_SOURCES, fmtClock, timerState } from '../model/control'
 import {
@@ -36,17 +37,18 @@ interface Field {
   type?: 'number' | 'slider' | 'toggle' | 'select'
   options?: { id: string; name: string }[]
   max?: number
-  show?: (p: Props) => boolean
+  /** `gas` = the working fluid is a gas, which changes what several parts mean */
+  show?: (p: Props, gas: boolean) => boolean
   hint?: string
 }
 
 const elevation: Field = { key: 'elevation', label: 'Elevation', q: 'length' }
 const FIELDS: Record<Kind | 'pipe', Field[]> = {
   reservoir: [
-    { key: 'sourceType', label: 'Source', q: 'none', type: 'select', options: SOURCE_TYPES },
-    { key: 'head', label: 'Water surface head', q: 'head', show: (p) => (p.sourceType ?? 'surface') === 'surface' },
-    { key: 'pressure', label: 'Mains pressure', q: 'pressure', show: (p) => p.sourceType === 'mains' },
-    { key: 'elevation', label: 'Elevation of the connection', q: 'length', show: (p) => p.sourceType === 'mains' },
+    { key: 'sourceType', label: 'Source', q: 'none', type: 'select', options: SOURCE_TYPES, show: (_p, gas) => !gas },
+    { key: 'head', label: 'Water surface head', q: 'head', show: (p, gas) => !gas && (p.sourceType ?? 'surface') === 'surface' },
+    { key: 'pressure', label: 'Supply pressure', q: 'pressure', show: (p, gas) => gas || p.sourceType === 'mains' },
+    { key: 'elevation', label: 'Elevation of the connection', q: 'length', show: (p, gas) => !gas && p.sourceType === 'mains' },
     { key: 'staticLevel', label: 'Static water level', q: 'head', show: (p) => p.sourceType === 'well' },
     { key: 'ratedDrawdown', label: 'Drawdown', q: 'head', show: (p) => p.sourceType === 'well' },
     { key: 'ratedYield', label: '… when yielding', q: 'flow', show: (p) => p.sourceType === 'well' },
@@ -99,12 +101,13 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
   pump: [
     { key: 'on', label: 'Power', q: 'none', type: 'toggle' },
     { key: 'speed', label: 'Speed (VFD)', q: 'percent', type: 'slider', max: 1.5 },
-    { key: 'pumpType', label: 'Curve shape', q: 'none', type: 'select', options: PUMP_TYPES },
+    { key: 'pumpType', label: 'Curve shape', q: 'none', type: 'select', options: PUMP_TYPES, show: (_p, gas) => !gas },
     { key: 'designFlow', label: 'Design flow', q: 'flow' },
-    { key: 'designHead', label: 'Design head', q: 'head' },
+    { key: 'designHead', label: 'Design head', q: 'head', show: (_p, gas) => !gas },
+    { key: 'pressureRatio', label: 'Design pressure ratio (abs.)', q: 'none', show: (_p, gas) => gas },
     { key: 'bepEfficiency', label: 'Best efficiency', q: 'percent' },
     { key: 'reliefHead', label: 'Internal relief lifts at', q: 'head', show: (p) => p.pumpType === 'pd' },
-    { key: 'npshr', label: 'NPSH required', q: 'head' },
+    { key: 'npshr', label: 'NPSH required', q: 'head', show: (_p, gas) => !gas },
     { key: 'motorEfficiency', label: 'Motor efficiency', q: 'percent' },
     { key: 'tariff', label: 'Electricity price (per kWh)', q: 'none' },
     elevation,
@@ -493,6 +496,23 @@ function PumpChart({ id }: { id: string }) {
   }, [s.results, id])
   const p = node.data.props
   const speed = p.speed * (s.controls[id] ?? 1) // what the drive is actually doing, controller included
+  if (s.results.gas) {
+    // a compressor's map: absolute pressure ratio against standard flow
+    const qMax = p.designFlow * 2 * Math.max(0.05, speed)
+    const map = (sp: number) => Array.from({ length: 41 }, (_, i) => ({ x: toDisplay((qMax * i) / 40, 'flow', s.units), y: compressorRatio((qMax * i) / 40, p, sp) })).filter((pt) => pt.y >= 1)
+    return (
+      <Chart
+        series={[
+          { name: `Compressor @ ${Math.round(speed * 100)} %`, color: SERIES.blue, points: map(Math.max(0.05, speed)), area: true },
+          ...(system.length > 1 ? [{ name: 'System', color: SERIES.orange, points: system.map((pt) => ({ x: toDisplay(pt.x, 'flow', s.units), y: pt.y })) }] : []),
+        ]}
+        markers={d?.ratio && d.flow > 1e-9 ? [{ x: toDisplay(d.flow, 'flow', s.units), y: d.ratio, label: `ratio ${d.ratio.toFixed(2)}`, color: '#ffffff' }] : []}
+        xLabel={`Standard flow (${unitLabel('flow', s.units)})`}
+        yLabel="Pressure ratio (abs.)"
+        yMinZero={false}
+      />
+    )
+  }
   const cv = (pts: { x: number; y: number }[]) => pts.map((pt) => ({ x: toDisplay(pt.x, 'flow', s.units), y: toDisplay(pt.y, 'head', s.units) }))
   const series: Series[] = [{ name: `Pump @ ${Math.round(speed * 100)} %`, color: SERIES.blue, points: cv(pumpCurve(p, Math.max(0.05, speed))), area: true }]
   if (Math.abs(speed - 1) > 0.01) series.push({ name: 'Pump @ 100 %', color: SERIES.blue, points: cv(pumpCurve(p, 1)), dashed: true })
@@ -993,8 +1013,8 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
             <span>{unitLabel('flow', u)}</span>
           </div>
           <div>
-            <b>{fmt(d.dH, 'head', u)}</b>
-            <span>head {unitLabel('head', u)}</span>
+            <b>{d.ratio !== undefined ? d.ratio.toFixed(2) : fmt(d.dH, 'head', u)}</b>
+            <span>{d.ratio !== undefined ? 'pressure ratio' : `head ${unitLabel('head', u)}`}</span>
           </div>
           <div>
             <b>{fmt(d.shaftPower, 'power', u)}</b>
@@ -1037,7 +1057,8 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
               </>
             )
           })()}
-        <Row label="NPSH available" value={fmtU(d.npsha, 'head', u)} tone={d.npsha !== undefined && d.npsha < npshr ? 'bad' : 'good'} />
+        {d.ratio !== undefined && <Row label="Pressure ratio (abs.)" value={d.ratio.toFixed(2)} />}
+        {!s.results.gas && <Row label="NPSH available" value={fmtU(d.npsha, 'head', u)} tone={d.npsha !== undefined && d.npsha < npshr ? 'bad' : 'good'} />}
       </>
     )
   }
@@ -1197,6 +1218,7 @@ export function Inspector() {
   const remove = useLab((s) => s.remove)
   const rotate = useLab((s) => s.rotate)
   const [tab, setTab] = useState('main')
+  const gasMode = useLab((s) => !!FLUIDS.find((f) => f.id === s.fluidId)?.gas)
 
   if (!id || (!node && !edge)) return <Overview />
   if (edge?.type === 'signal') {
@@ -1296,7 +1318,7 @@ export function Inspector() {
         {active === 'main' && kind === 'pump' && (
           <>
             <PumpChart id={id} />
-            <EfficiencyChart id={id} />
+            {!gasMode && <EfficiencyChart id={id} />}
           </>
         )}
         {active === 'main' && kind === 'pipe' && <PipeChart id={id} />}
@@ -1315,7 +1337,7 @@ export function Inspector() {
         {active === 'grade' && <GradeChart id={id} />}
       </section>
 
-      {node && (kind === 'pump' || kind === 'outlet' || kind === 'leak' || (kind === 'valve' && (props.valveType === 'throttle' || props.valveType === 'float'))) && (
+      {node && !gasMode && (kind === 'pump' || kind === 'outlet' || kind === 'leak' || (kind === 'valve' && (props.valveType === 'throttle' || props.valveType === 'float'))) && (
         <section>
           <h4>Water hammer</h4>
           <SurgePanel key={id} id={id} kind={kind as Kind} />
@@ -1327,7 +1349,7 @@ export function Inspector() {
         {kind === 'valve' && props.valveType === 'throttle' && <KvField props={props} onChange={(patch) => updateNode(id, patch)} />}
         {kind === 'pipe' && <PipeSizePicker props={props} onChange={(patch) => updateEdge(id, patch)} />}
         {FIELDS[kind]
-          .filter((f) => !f.show || f.show(props))
+          .filter((f) => !f.show || f.show(props, gasMode))
           .map((f) => (
             <FieldRow key={f.key} f={f} props={props} pvq={pvq} onChange={(patch) => (node ? updateNode(id, patch) : updateEdge(id, patch))} />
           ))}
@@ -1390,9 +1412,20 @@ function Overview() {
             ))}
           </select>
         </div>
-        <Row label="Density ρ" value={`${fluid.density} kg/m³`} />
+        <Row label={fluid.gas ? 'Density at 15 °C, 1 atm' : 'Density ρ'} value={`${fluid.density.toPrecision(4)} kg/m³`} />
         <Row label="Viscosity μ" value={`${(fluid.dynamicViscosity * 1000).toPrecision(3)} mPa·s`} />
-        <Row label="Vapour pressure" value={`${(fluid.vaporPressure / 1000).toPrecision(3)} kPa abs`} />
+        {fluid.gas ? (
+          <>
+            <Row label="Molar mass" value={`${(fluid.gas.molarMass * 1000).toPrecision(4)} g/mol`} />
+            <Row label="Heat-capacity ratio γ" value={String(fluid.gas.gamma)} />
+            <p className="muted">
+              Gas mode: a separate solver (isothermal, p₁² − p₂² ∝ ṁ²). Flows are standard volumes (15 °C, 1 atm); reservoirs are pressure sources, pumps are compressors, pressure vessels are
+              receivers, PRVs are regulators.
+            </p>
+          </>
+        ) : (
+          <Row label="Vapour pressure" value={`${(fluid.vaporPressure / 1000).toPrecision(3)} kPa abs`} />
+        )}
       </section>
       <p className="muted tip">Click any pipe or component to see its live readings, curves and properties.</p>
     </aside>

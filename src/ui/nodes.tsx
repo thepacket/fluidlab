@@ -155,7 +155,8 @@ export const ReservoirNode = memo(({ id, data, selected }: NodeProps<LabNode>) =
   const units = useLab((s) => s.units)
   const r = useLab((s) => s.results.nodes[id])
   const q = Math.abs(r?.outflow ?? 0)
-  const type: string = data.props.sourceType ?? 'surface'
+  const gas = useLab((st) => !!st.results.gas)
+  const type: string = gas ? 'mains' : (data.props.sourceType ?? 'surface')
   return (
     <Shell id={id} kind="reservoir" selected={selected} label={data.label} sub={q > 1e-8 ? `${r!.outflow < 0 ? '↑' : '↓'} ${fmtU(q, 'flow', units)}` : undefined}>
       <svg width="132" height="96" viewBox="0 0 132 96">
@@ -183,7 +184,7 @@ export const ReservoirNode = memo(({ id, data, selected }: NodeProps<LabNode>) =
           <tspan className="svg-unit"> {unitLabel(type === 'mains' ? 'pressure' : 'head', units)}</tspan>
         </text>
         <text x="66" y="76" className="svg-caption">
-          {type === 'mains' ? 'MAINS' : type === 'well' ? 'PUMPING LEVEL' : 'HEAD'}
+          {gas ? 'GAS SUPPLY' : type === 'mains' ? 'MAINS' : type === 'well' ? 'PUMPING LEVEL' : 'HEAD'}
         </text>
         {type === 'mains' && <path d="M2,48 H130" stroke="#8aa0c6" strokeWidth="7" opacity=".35" />}
         {type === 'well' && <path d="M40,4 V92 M92,4 V92" stroke="#c98500" strokeWidth="2" strokeDasharray="3 4" opacity=".7" />}
@@ -262,13 +263,22 @@ export const VesselNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const units = useLab((s) => s.units)
   const p = data.props
   const water = useLab((s) => s.levels[id] ?? vesselWater(p, p.initPressure))
+  const gasCharge = useLab((st) => (st.results.gas ? st.results.nodes[id]?.pressure : undefined))
   const r = useLab((s) => s.results.nodes[id])
-  const frac = Math.min(1, Math.max(0, water / Math.max(1e-9, p.volume)))
-  const y = 112 - frac * 100 // the bladder rises as water comes in
-  const pressure = vesselPressure(p, water)
+  // as a gas receiver it holds no water: the tint alone shows how hard it is charged
+  const frac = gasCharge !== undefined ? Math.min(1, gasCharge / 1e6) : Math.min(1, Math.max(0, water / Math.max(1e-9, p.volume)))
+  const y = gasCharge !== undefined ? 124 : 112 - frac * 100 // the bladder rises as water comes in
+  const gasP = useLab((st) => (st.results.gas ? st.results.nodes[id]?.pressure : undefined))
+  const pressure = gasP ?? vesselPressure(p, water)
   const net = r?.outflow ?? 0
   return (
-    <Shell id={id} kind="vessel" selected={selected} label={data.label} sub={`${Math.abs(net) < 1e-7 ? '' : net > 0 ? '▲ ' : '▼ '}${(water * 1000).toFixed(0)} L water`}>
+    <Shell
+      id={id}
+      kind="vessel"
+      selected={selected}
+      label={data.label}
+      sub={`${Math.abs(net) < 1e-7 ? '' : net > 0 ? '▲ ' : '▼ '}${gasCharge !== undefined ? `${(p.volume * 1000).toFixed(0)} L receiver` : `${(water * 1000).toFixed(0)} L water`}`}
+    >
       <svg width="92" height="124" viewBox="0 0 92 124">
         <defs>
           <clipPath id={`vc-${id}`}>

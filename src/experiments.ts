@@ -1438,4 +1438,121 @@ export const EXPERIMENTS: Experiment[] = [
         .pipe('m', 'dst', { length: 6, diameter: 0.04 }, ['out', 'b'])
         .done(),
   },
+  {
+    id: 'air-main',
+    no: '37',
+    title: 'Compressed-air main',
+    concept: 'Gas networks · p² instead of head',
+    formula: 'p₁² − p₂² = (f·L/D) · ṁ²·Z·R·T / A²',
+    brief:
+      'Same bench, different physics: the working fluid is now air, and a separate solver takes over. A gas expands as it loses pressure, so it speeds up along the pipe and the loss grows faster than for water — squared absolute pressures take the place of heads. Flows are standard volumes, the way gas is metered. Here a compressor charges a receiver under a pressure switch, and three tools hang off a main that is too small.',
+    steps: [
+      'Watch the receiver cycle between the switch’s cut-in and cut-out.',
+      'Read the gauge at the far tool: tools are rated at 600 kPa, and every 100 kPa lost is wasted compressor power.',
+      'Upsize the main (pipe standard → nominal size). Click the nozzles: they are choked, so their flow only follows the pressure behind them.',
+    ],
+    goal: {
+      text: 'Keep the far tool at 600 kPa or more with all three tools running',
+      check: (r) => {
+        const p = (r.nodes['gf']?.pressure ?? 0) / 1000
+        return { done: p >= 600, readout: `${p.toFixed(0)} kPa at the far tool` }
+      },
+    },
+    fluidId: 'air',
+    timeScale: 10,
+    select: 'gf',
+    build: () => {
+      const main = { length: 20, std: 'steel40', size: 'DN15 · ½″', diameter: 0.0158, material: 'steel', roughness: 0.045e-3 }
+      const tool = { nozzleDiameter: 0.004, cd: 0.9 }
+      return new Rig()
+        .add('atm', 'reservoir', 80, 470, { sourceType: 'mains', pressure: 0 }, 'Intake')
+        .add('c', 'pump', 250, 470, { designFlow: 150 / 3600, pressureRatio: 9, bepEfficiency: 0.72 }, 'Compressor')
+        .add('rx', 'vessel', 430, 300, { volume: 0.5, initPressure: 700e3, precharge: 0 }, 'Receiver')
+        .add('ps', 'switch', 250, 170, { action: 'fill', low: 650e3, high: 750e3, pvKind: 'vessel' }, 'PS1')
+        .add('j1', 'junction', 620, 470)
+        .add('j2', 'junction', 800, 470)
+        .add('gf', 'gauge', 980, 470, {}, 'Far end')
+        .add('t1', 'outlet', 620, 640, tool, 'Tool 1')
+        .add('t2', 'outlet', 800, 640, tool, 'Tool 2')
+        .add('t3', 'outlet', 1150, 470, tool, 'Tool 3')
+        .turn('t1', 90)
+        .turn('t2', 90)
+        .pipe('atm', 'c', { length: 1, diameter: 0.05 })
+        .pipe('c', 'rx', { length: 3, diameter: 0.025 }, ['out', 'l'])
+        .pipe('rx', 'j1', main, ['r', 'l'], 'Main 1')
+        .pipe('j1', 'j2', main, ['r', 'l'], 'Main 2')
+        .pipe('j2', 'gf', main, ['r', 'l'], 'Main 3')
+        .pipe('j1', 't1', { length: 3, diameter: 0.0158 }, ['b', 'l'])
+        .pipe('j2', 't2', { length: 3, diameter: 0.0158 }, ['b', 'l'])
+        .pipe('gf', 't3', { length: 3, diameter: 0.0158 })
+        .wire('rx', 'ps', ['pv', 'cin'])
+        .wire('ps', 'c')
+        .done()
+    },
+  },
+  {
+    id: 'gas-service',
+    no: '38',
+    title: 'Gas service & regulator',
+    concept: 'Pressure tiers · sizing for a few pascals',
+    formula: 'Q ∝ √(p₁² − p₂²)',
+    brief:
+      'Natural gas arrives in the street at 400 kPa and is used indoors at about 2.5 kPa — a regulator does the stepping down, with a little droop as demand rises, just like the real spring-loaded kind. Indoors the whole pressure budget is a couple of hundred pascals, which is why gas fitters size pipe from tables rather than by eye.',
+    steps: ['Read the appliance pressures with everything running.', 'Click the house pipe: how much of the 2.5 kPa does it eat?', 'Upsize it until every appliance sees at least 2.1 kPa.'],
+    goal: {
+      text: 'Give every appliance at least 2.1 kPa at full load',
+      check: (r) => {
+        const p = ['boiler', 'cooker', 'fire'].map((k) => (r.nodes[k]?.pressure ?? 0) / 1000)
+        return { done: Math.min(...p) >= 2.1, readout: `lowest ${Math.min(...p).toFixed(2)} kPa` }
+      },
+    },
+    fluidId: 'natgas',
+    select: 'run',
+    build: () => {
+      const rig = new Rig()
+        .add('street', 'reservoir', 80, 300, { sourceType: 'mains', pressure: 400e3 }, 'Street main')
+        .add('reg', 'valve', 280, 300, { valveType: 'prv', pressureSetting: 2500, diameter: 0.025, kOpen: 2 }, 'Regulator')
+        .add('m', 'meter', 470, 300, { diameter: 0.025, meterType: 'pd' }, 'Gas meter')
+        .add('j', 'junction', 700, 300)
+        .add('boiler', 'outlet', 950, 150, { mode: 'demand', demand: 3.2 / 3600 }, 'Boiler')
+        .add('cooker', 'outlet', 950, 300, { mode: 'demand', demand: 1.1 / 3600 }, 'Cooker')
+        .add('fire', 'outlet', 950, 450, { mode: 'demand', demand: 0.8 / 3600 }, 'Gas fire')
+        .pipe('street', 'reg', { length: 6, diameter: 0.025, material: 'pex' }, [], 'Service pipe')
+        .pipe('reg', 'm', { length: 1, diameter: 0.025, material: 'copper' })
+      rig.pipe('m', 'j', { length: 18, diameter: 0.0138, material: 'copper', roughness: 0.0015e-3, std: 'copperL', size: '½″' }, ['out', 'l'], 'House run')
+      rig.edges[rig.edges.length - 1].id = 'run'
+      return rig
+        .pipe('j', 'boiler', { length: 4, diameter: 0.0199, material: 'copper' }, ['t', 'l'])
+        .pipe('j', 'cooker', { length: 3, diameter: 0.0138, material: 'copper' }, ['r', 'l'])
+        .pipe('j', 'fire', { length: 5, diameter: 0.0138, material: 'copper' }, ['b', 'l'])
+        .done()
+    },
+  },
+  {
+    id: 'blowdown',
+    no: '39',
+    title: 'Choked blowdown',
+    concept: 'Sonic flow through a nozzle',
+    formula: 'p_back / p_up < (2/(γ+1))^(γ/(γ−1)) ≈ 0.53',
+    brief:
+      'Open a charged receiver to atmosphere. While the pressure behind the nozzle is more than about 1.9 times the pressure in front of it, the jet is sonic and nothing downstream can make it flow faster: the flow depends only on the upstream pressure. Below that ratio it becomes an ordinary nozzle, and the flow tails off.',
+    steps: [
+      'Press play and select the receiver: watch its pressure decay.',
+      'Select the nozzle: its trend is a straight echo of the receiver pressure while choked — then it bends.',
+      'Try hydrogen: far lighter, so the same nozzle passes far more standard volume.',
+    ],
+    fluidId: 'air',
+    timeScale: 1,
+    select: 'rx',
+    build: () =>
+      new Rig()
+        .add('rx', 'vessel', 250, 300, { volume: 0.2, initPressure: 800e3, precharge: 0 }, 'Receiver')
+        .add('v', 'valve', 500, 380, { diameter: 0.025, body: 'ball', kOpen: 0.05 }, 'Vent valve')
+        .add('g', 'gauge', 680, 380, {}, 'Upstream')
+        .add('out', 'outlet', 880, 380, { nozzleDiameter: 0.005, cd: 0.9 }, 'Nozzle')
+        .pipe('rx', 'v', { length: 1, diameter: 0.025 }, ['r', 'in'])
+        .pipe('v', 'g', { length: 1, diameter: 0.025 })
+        .pipe('g', 'out', { length: 1, diameter: 0.025 })
+        .done(),
+  },
 ]

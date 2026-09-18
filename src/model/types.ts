@@ -89,6 +89,8 @@ export interface Fluid {
   density: number // kg/m³
   dynamicViscosity: number // Pa·s
   vaporPressure: number // Pa (absolute)
+  /** present for gases: the fluid is then solved by the gas engine, and `density` is its standard density */
+  gas?: { molarMass: number; gamma: number; z: number; temperature: number }
 }
 
 export const FLUIDS: Fluid[] = [
@@ -98,6 +100,12 @@ export const FLUIDS: Fluid[] = [
   { id: 'glycol40', name: 'Glycol / water 40 %', density: 1055, dynamicViscosity: 2.9e-3, vaporPressure: 1700 },
   { id: 'diesel', name: 'Diesel', density: 832, dynamicViscosity: 2.8e-3, vaporPressure: 400 },
   { id: 'oil', name: 'Light oil · ISO 32', density: 870, dynamicViscosity: 28e-3, vaporPressure: 10 },
+  // gases — density is at standard conditions (15 °C, 1 atm)
+  { id: 'air', name: 'Compressed air', density: 1.225, dynamicViscosity: 1.81e-5, vaporPressure: 0, gas: { molarMass: 0.028964, gamma: 1.4, z: 1, temperature: 288.15 } },
+  { id: 'natgas', name: 'Natural gas', density: 0.7359, dynamicViscosity: 1.1e-5, vaporPressure: 0, gas: { molarMass: 0.0174, gamma: 1.31, z: 0.998, temperature: 288.15 } },
+  { id: 'nitrogen', name: 'Nitrogen', density: 1.1847, dynamicViscosity: 1.76e-5, vaporPressure: 0, gas: { molarMass: 0.028013, gamma: 1.4, z: 1, temperature: 288.15 } },
+  { id: 'hydrogen', name: 'Hydrogen', density: 0.0853, dynamicViscosity: 8.8e-6, vaporPressure: 0, gas: { molarMass: 0.002016, gamma: 1.41, z: 1.0006, temperature: 288.15 } },
+  { id: 'co2', name: 'Carbon dioxide', density: 1.8613, dynamicViscosity: 1.47e-5, vaporPressure: 0, gas: { molarMass: 0.04401, gamma: 1.29, z: 0.994, temperature: 288.15 } },
 ]
 
 /** roughness in m; waveSpeed = pressure-wave celerity in a water-filled pipe of that material, m/s */
@@ -185,6 +193,7 @@ export function defaultProps(kind: Kind): Props {
         reliefHead: 80,
         motorEfficiency: 0.9,
         tariff: 0.15,
+        pressureRatio: 2.5,
       }
     case 'valve':
       return {
@@ -287,6 +296,8 @@ export interface DeviceResult {
   velocity?: number
   // catalogue loss devices
   ratedShare?: number
+  /** compressor: absolute discharge ÷ suction pressure */
+  ratio?: number
   /** where a self-acting valve (float valve) has put itself, 0‥1 */
   position?: number
   // valves: flow coefficient at the current position (m³/h per √bar)
@@ -303,6 +314,8 @@ export interface Warning {
   text: string
 }
 export interface Results {
+  /** solved by the gas engine: flows are standard volume flows, heads are metres of water gauge */
+  gas?: boolean
   /** water temperatures and heat duties, when the rig has a boiler (see engine/thermal.ts) */
   thermal?: import('../engine/thermal').Thermal
   ok: boolean
