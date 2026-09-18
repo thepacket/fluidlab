@@ -4,7 +4,7 @@ import { solver } from './engine/client'
 import { EXPERIMENTS, NODE_SIZE, PORT_Y, type LabEdge, type LabNode } from './experiments'
 import { EMPTY_CONTROL, PV_CONSUMERS, PV_SOURCES, SIGNAL_CONSUMERS, sameControl, stepControl, type ControlState } from './model/control'
 import { lossDevice } from './model/catalog'
-import { area } from './model/physics'
+import { VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from './model/physics'
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
 import { METRIC, type UnitPrefs } from './model/units'
 
@@ -79,12 +79,17 @@ let lastTagAt = 0
 const snapshot = (s: Snapshot): Snapshot => ({ nodes: s.nodes, edges: s.edges, fluidId: s.fluidId, experimentId: s.experimentId, projectName: s.projectName })
 let uid = Date.now() % 100000
 
-export const model = (s: Pick<State, 'nodes' | 'edges' | 'fluidId' | 'levels' | 'controls'>): Model => ({
+/** Does this component make lab time matter (so the accelerated clock applies)? */
+export const usesClock = (n: LabNode) => n.data.kind === 'tank' || n.data.kind === 'vessel' || isControl(n.data.kind) || (!!n.data.props.pattern && n.data.props.pattern !== 'constant')
+
+export const model = (s: Pick<State, 'nodes' | 'edges' | 'fluidId' | 'levels' | 'controls' | 'simTime'>): Model => ({
   nodes: s.nodes,
   edges: s.edges,
   fluid: FLUIDS.find((f) => f.id === s.fluidId) ?? FLUIDS[0],
   levels: s.levels,
   controls: s.controls,
+  // demand patterns follow the clock; minute steps are plenty and avoid a re-solve on every tick
+  time: s.nodes.some((n) => n.data.props.pattern && n.data.props.pattern !== 'constant') ? Math.floor(s.simTime / 60) * 60 : 0,
 })
 
 /**
@@ -124,6 +129,7 @@ const signature = (s: State) =>
     s.fluidId,
     s.levels,
     s.controls,
+    model(s).time,
   ])
 
 function nextLabel(nodes: LabNode[], kind: Kind, prefixOverride?: string) {
@@ -336,18 +342,26 @@ export const useLab = create<State>((set, get) => ({
     const s = get()
     if (!s.running || !s.results.ok) return
     // tanks and timers live on the accelerated lab clock; a purely steady rig just counts real seconds
-    const clocked = s.nodes.some((n) => n.data.kind === 'tank' || isControl(n.data.kind))
+    const clocked = s.nodes.some(usesClock)
     const dt = dtReal * (clocked ? s.timeScale : 1)
     const levels = { ...s.levels }
     let moved = false
     for (const n of s.nodes) {
-      if (n.data.kind !== 'tank') continue
+      if (n.data.kind !== 'tank' && n.data.kind !== 'vessel') continue
       const r = s.results.nodes[n.id]
       if (!r) continue
       const p = n.data.props
-      const cur = levels[n.id] ?? p.initLevel
-      const next = Math.min(p.maxLevel, Math.max(p.minLevel, cur + (r.outflow * dt) / area(p.diameter)))
-      if (Math.abs(next - cur) > 1e-7) moved = true
+      // storage is integrated as volume, so tanks of any shape (and gas-cushioned vessels) fill correctly
+      let cur: number
+      let next: number
+      if (n.data.kind === 'vessel') {
+        cur = levels[n.id] ?? vesselWater(p, p.initPressure) // a vessel's state is its water volume, m³
+        next = Math.min(p.volume * VESSEL_FILL_LIMIT, Math.max(0, cur + r.outflow * dt))
+      } else {
+        cur = levels[n.id] ?? p.initLevel
+        next = Math.max(p.minLevel, tankLevel(p, tankVolume(p, cur) + r.outflow * dt))
+      }
+      if (Math.abs(next - cur) > 1e-9) moved = true
       levels[n.id] = next
     }
     // one controller scan per tick, on the measurements of the network as last solved

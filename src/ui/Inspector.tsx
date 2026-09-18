@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { gradeLine, pipeCurve, pumpCurve, type XY } from '../engine/analysis'
 import { solver } from '../engine/client'
-import { LOSS_DEVICES, PIPE_STANDARDS, TRIMS, VALVE_BODIES, lossDevice } from '../model/catalog'
+import { DEMAND_PATTERNS, demandFactor, LOSS_DEVICES, PIPE_STANDARDS, TRIMS, VALVE_BODIES, lossDevice } from '../model/catalog'
 import { PV_SOURCES, fmtClock, timerState } from '../model/control'
-import { beta, elementLossFraction } from '../model/physics'
+import { TANK_SHAPES, beta, elementLossFraction, tankHeight, tankVolume, vesselPressure, vesselWater } from '../model/physics'
 import { ELEMENT_TYPES, FLUIDS, KIND_META, MATERIALS, ROTATABLE, VALVE_TYPES, isControl, type Kind, type Props } from '../model/types'
 import { fmt, fmtNum, fmtU, toDisplay, toSI, unitLabel, type Quantity } from '../model/units'
 import { model, selectedId, useLab } from '../store'
@@ -26,13 +26,23 @@ const elevation: Field = { key: 'elevation', label: 'Elevation', q: 'length' }
 const FIELDS: Record<Kind | 'pipe', Field[]> = {
   reservoir: [{ key: 'head', label: 'Water surface head', q: 'head' }],
   tank: [
-    { key: 'diameter', label: 'Tank diameter', q: 'length' },
+    { key: 'shape', label: 'Shape', q: 'none', type: 'select', options: TANK_SHAPES },
+    { key: 'diameter', label: 'Diameter', q: 'length' },
+    { key: 'length', label: 'Drum length', q: 'length', show: (p) => p.shape === 'drum' },
     { key: 'initLevel', label: 'Initial level', q: 'length' },
     { key: 'maxLevel', label: 'Maximum level', q: 'length' },
     { key: 'minLevel', label: 'Minimum level', q: 'length' },
     { ...elevation, label: 'Base elevation' },
   ],
-  junction: [elevation, { key: 'demand', label: 'Demand (draw-off)', q: 'flow' }],
+  junction: [elevation, { key: 'demand', label: 'Base demand (draw-off)', q: 'flow' }, { key: 'pattern', label: 'Daily pattern', q: 'none', type: 'select', options: DEMAND_PATTERNS }],
+  vessel: [
+    { key: 'volume', label: 'Total volume', q: 'volume' },
+    { key: 'precharge', label: 'Gas pre-charge', q: 'pressure' },
+    { key: 'initPressure', label: 'Starting pressure', q: 'pressure' },
+    { key: 'polytropic', label: 'Polytropic index n', q: 'none' },
+    elevation,
+  ],
+  leak: [{ key: 'holeDiameter', label: 'Equivalent hole', q: 'diameter' }, { key: 'cd', label: 'Discharge coeff. Cd', q: 'none' }, elevation],
   gauge: [elevation],
   outlet: [
     {
@@ -47,7 +57,8 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     },
     { key: 'nozzleDiameter', label: 'Nozzle bore', q: 'diameter', show: (p) => p.mode === 'nozzle' },
     { key: 'cd', label: 'Discharge coeff. Cd', q: 'none', show: (p) => p.mode === 'nozzle' },
-    { key: 'demand', label: 'Demand', q: 'flow', show: (p) => p.mode === 'demand' },
+    { key: 'demand', label: 'Base demand', q: 'flow', show: (p) => p.mode === 'demand' },
+    { key: 'pattern', label: 'Daily pattern', q: 'none', type: 'select', options: DEMAND_PATTERNS, show: (p) => p.mode === 'demand' },
     elevation,
   ],
   pump: [
@@ -63,7 +74,9 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'valveType', label: 'Type', q: 'none', type: 'select', options: VALVE_TYPES },
     { key: 'body', label: 'Body', q: 'none', type: 'select', options: VALVE_BODIES, show: (p) => p.valveType === 'throttle' },
     { key: 'trim', label: 'Characteristic', q: 'none', type: 'select', options: TRIMS, show: (p) => p.valveType === 'throttle' },
-    { key: 'opening', label: 'Opening', q: 'percent', type: 'slider', max: 1, show: (p) => p.valveType === 'throttle' },
+    { key: 'opening', label: 'Opening', q: 'percent', type: 'slider', max: 1, show: (p) => p.valveType === 'throttle' || p.valveType === 'float' },
+    { key: 'closeLevel', label: 'Shuts at tank level', q: 'length', show: (p) => p.valveType === 'float' },
+    { key: 'band', label: 'Fully open this far below', q: 'length', show: (p) => p.valveType === 'float' },
     { key: 'pressureSetting', label: 'Pressure setpoint', q: 'pressure', show: (p) => p.valveType === 'prv' || p.valveType === 'psv' },
     { key: 'flowSetting', label: 'Flow setpoint', q: 'flow', show: (p) => p.valveType === 'fcv' },
     { key: 'diameter', label: 'Bore', q: 'diameter' },
@@ -398,7 +411,7 @@ function PipeChart({ id }: { id: string }) {
 function trendQuantity(kind: Kind | 'pipe'): [Quantity, string] {
   if (kind !== 'pipe' && isControl(kind)) return ['none', 'Output']
   if (kind === 'tank') return ['length', 'Level']
-  if (kind === 'junction' || kind === 'gauge') return ['pressure', 'Pressure']
+  if (kind === 'junction' || kind === 'gauge' || kind === 'vessel') return ['pressure', 'Pressure']
   if (kind === 'dpgauge' || kind === 'element') return ['pressure', 'Differential']
   return ['flow', 'Flow']
 }
@@ -558,6 +571,30 @@ function LoopCharts({ id, kind }: { id: string; kind: Kind }) {
       />
       <Chart series={[{ name: 'Output', color: '#9085e9', points: pts(id, (v) => v * 100), area: true, step: kind !== 'pid' }]} xLabel="Lab time (min)" yLabel="Output (%)" height={120} empty=" " />
     </>
+  )
+}
+
+/** A node's demand over the day, with the lab clock marked on it. */
+function PatternChart({ pattern, base }: { pattern: string; base: number }) {
+  const t = useLab((s) => s.simTime)
+  const units = useLab((s) => s.units)
+  const points = useMemo(() => Array.from({ length: 97 }, (_, i) => ({ x: i / 4, y: toDisplay(base * demandFactor(pattern, i * 900), 'flow', units) })), [pattern, base, units])
+  const hour = (((t / 3600) % 24) + 24) % 24
+  return (
+    <Chart
+      series={[{ name: 'Demand', color: SERIES.blue, points, area: true }]}
+      markers={[
+        {
+          x: hour,
+          y: toDisplay(base * demandFactor(pattern, t), 'flow', units),
+          label: `${String(Math.floor(hour)).padStart(2, '0')}:${String(Math.floor((hour % 1) * 60)).padStart(2, '0')}`,
+          color: '#ffffff',
+        },
+      ]}
+      xLabel="Time of day (h)"
+      yLabel={`Demand (${unitLabel('flow', units)})`}
+      height={160}
+    />
   )
 }
 
@@ -726,11 +763,35 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
         <div>
           <b>{fmt(Math.abs(n!.outflow), 'flow', u)}</b>
           <span>
-            {kind === 'tank' ? (n!.outflow >= 0 ? 'filling' : 'draining') : kind === 'reservoir' ? (n!.outflow <= 0 ? 'supplying' : 'receiving') : 'out'} {unitLabel('flow', u)}
+            {kind === 'tank' || kind === 'vessel'
+              ? n!.outflow >= 0
+                ? 'filling'
+                : 'draining'
+              : kind === 'leak'
+                ? 'leaking'
+                : kind === 'reservoir'
+                  ? n!.outflow <= 0
+                    ? 'supplying'
+                    : 'receiving'
+                  : 'out'}{' '}
+            {unitLabel('flow', u)}
           </span>
         </div>
       </div>
-      {level !== undefined && <Row label="Level" value={`${fmtU(level, 'length', u)} · ${(((level * Math.PI * node!.data.props.diameter ** 2) / 4) * 1000).toFixed(0)} L`} />}
+      {level !== undefined && <Row label="Level" value={`${fmtU(level, 'length', u)} of ${fmtU(tankHeight(node!.data.props), 'length', u)}`} />}
+      {level !== undefined && <Row label="Stored" value={`${fmtU(tankVolume(node!.data.props, level), 'volume', u)} of ${fmtU(tankVolume(node!.data.props, 1e9), 'volume', u)}`} />}
+      {kind === 'vessel' &&
+        (() => {
+          const vp = node!.data.props
+          const water = s.levels[id] ?? vesselWater(vp, vp.initPressure)
+          return (
+            <>
+              <Row label="Water held" value={fmtU(water, 'volume', u)} />
+              <Row label="Gas cushion" value={`${fmtU(vp.volume - water, 'volume', u)} at ${fmtU(vesselPressure(vp, water), 'pressure', u)}`} />
+            </>
+          )
+        })()}
+      {kind === 'leak' && <Row label="Lost per day" value={`${(n!.outflow * 86400).toFixed(1)} m³`} tone={n!.outflow > 1e-7 ? 'warn' : 'good'} />}
       <Row label="Elevation" value={fmtU(n!.elevation, 'length', u)} />
     </>
   )
@@ -790,7 +851,11 @@ export function Inspector() {
         ? [['main', 'Loop']]
         : kind !== 'pipe' && isControl(kind)
           ? [['trend', 'Trend']]
-          : [...(kind === 'pump' ? [['main', 'Pump curve']] : kind === 'pipe' ? [['main', 'ΔP (Q)']] : []), ['trend', 'Trend'], ['grade', 'Grade line']]
+          : [
+              ...(kind === 'pump' ? [['main', 'Pump curve']] : kind === 'pipe' ? [['main', 'ΔP (Q)']] : props.pattern && props.pattern !== 'constant' ? [['main', 'Daily pattern']] : []),
+              ['trend', 'Trend'],
+              ['grade', 'Grade line'],
+            ]
   const active = tabs.find((t) => t[0] === tab) ? tab : tabs[0][0]
 
   return (
@@ -834,6 +899,7 @@ export function Inspector() {
         {active === 'main' && kind === 'pipe' && <PipeChart id={id} />}
         {active === 'trend' && <TrendChart id={id} kind={kind} />}
         {active === 'main' && kind === 'timer' && <ScheduleChart id={id} />}
+        {active === 'main' && (kind === 'junction' || kind === 'outlet') && <PatternChart pattern={props.pattern} base={props.demand} />}
         {active === 'main' && (kind === 'switch' || kind === 'pid') && <LoopCharts id={id} kind={kind} />}
         {active === 'grade' && <GradeChart id={id} />}
       </section>

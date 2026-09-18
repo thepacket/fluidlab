@@ -116,3 +116,68 @@ export function elementInferredFlow(dp: number, p: Props, fluid: Fluid) {
   const b = beta(p)
   return p.cd * area(b * p.diameter) * Math.sqrt((2 * Math.max(0, dp)) / (fluid.density * (1 - b ** 4)))
 }
+
+// ---- storage geometry ---------------------------------------------------------------------
+// The app integrates storage itself (volume += Q·dt), so any shape works: the solver only ever sees a level.
+
+export const TANK_SHAPES = [
+  { id: 'cylinder', name: 'Vertical cylinder' },
+  { id: 'cone', name: 'Cone (apex down)' },
+  { id: 'sphere', name: 'Sphere' },
+  { id: 'drum', name: 'Horizontal drum' },
+]
+
+/** Highest level the shape can physically hold. */
+export const tankHeight = (p: Props) => (p.shape === 'sphere' || p.shape === 'drum' ? Math.min(p.maxLevel, p.diameter) : p.maxLevel)
+
+/** Stored volume (m³) at level h. */
+export function tankVolume(p: Props, level: number): number {
+  const D = p.diameter
+  const h = Math.min(Math.max(0, level), tankHeight(p))
+  switch (p.shape) {
+    case 'cone': {
+      // radius grows linearly from the apex to D/2 at maxLevel
+      const r = (D / 2) * (h / Math.max(1e-9, p.maxLevel))
+      return (Math.PI * r * r * h) / 3
+    }
+    case 'sphere':
+      return (Math.PI * h * h * (3 * (D / 2) - h)) / 3
+    case 'drum': {
+      const R = D / 2
+      const seg = R * R * Math.acos(Math.min(1, Math.max(-1, (R - h) / R))) - (R - h) * Math.sqrt(Math.max(0, 2 * R * h - h * h))
+      return seg * (p.length ?? 2)
+    }
+    default:
+      return area(D) * h
+  }
+}
+
+/** Level (m) that holds volume v — bisection on the monotonic volume curve. */
+export function tankLevel(p: Props, v: number): number {
+  let lo = 0
+  let hi = tankHeight(p)
+  if (v >= tankVolume(p, hi)) return hi
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2
+    if (tankVolume(p, mid) < v) lo = mid
+    else hi = mid
+  }
+  return (lo + hi) / 2
+}
+
+// ---- pressure vessel (hydropneumatic / bladder tank) --------------------------------------------
+// Gas cushion: (p + p_atm) · V_gas^n = (p_pre + p_atm) · V_total^n, with V_gas = V_total − V_water.
+
+/** the vessel is never allowed to fill completely — the gas cushion can't be squeezed to nothing */
+export const VESSEL_FILL_LIMIT = 0.92
+
+/** Gauge pressure (Pa) of the gas cushion when the vessel holds `water` m³. */
+export function vesselPressure(p: Props, water: number): number {
+  const w = Math.min(Math.max(0, water), p.volume * VESSEL_FILL_LIMIT)
+  return (p.precharge + P_ATM) * Math.pow(p.volume / (p.volume - w), p.polytropic ?? 1.2) - P_ATM
+}
+/** Water volume (m³) the vessel holds when it sits at gauge pressure `pressure`. */
+export function vesselWater(p: Props, pressure: number): number {
+  if (pressure <= p.precharge) return 0
+  return Math.min(p.volume * VESSEL_FILL_LIMIT, p.volume * (1 - Math.pow((p.precharge + P_ATM) / (pressure + P_ATM), 1 / (p.polytropic ?? 1.2))))
+}

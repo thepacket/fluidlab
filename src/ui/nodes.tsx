@@ -3,7 +3,7 @@ import { memo, useEffect, type ReactNode } from 'react'
 import { NODE_SIZE, PORT_Y, type LabNode } from '../experiments'
 import { lossDevice, type Glyph } from '../model/catalog'
 import { PV_CONSUMERS, PV_SOURCES, fmtClock, timerState } from '../model/control'
-import { beta, fittingK, valveK } from '../model/physics'
+import { beta, fittingK, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
 import { CONTROLLABLE, ROTATABLE, isControl, type Kind } from '../model/types'
 import { fmt, fmtU, toSI, unitLabel } from '../model/units'
 import { useLab } from '../store'
@@ -64,7 +64,7 @@ function Ports({ kind, rot }: { kind: Kind; rot: number }) {
     <>
       <Handle id="l" type="source" position={Position.Left} className="port" style={{ top: y }} />
       <Handle id="r" type="source" position={Position.Right} className="port" style={{ top: y }} />
-      {kind !== 'reservoir' && kind !== 'tank' && <Handle id="t" type="source" position={Position.Top} className="port" />}
+      {kind !== 'reservoir' && kind !== 'tank' && kind !== 'vessel' && <Handle id="t" type="source" position={Position.Top} className="port" />}
       <Handle id="b" type="source" position={Position.Bottom} className="port" />
     </>
   )
@@ -169,14 +169,22 @@ export const ReservoirNode = memo(({ id, data, selected }: NodeProps<LabNode>) =
 
 // ---- tank -------------------------------------------------------------------
 
+/** Outline of each tank shape in the 112×136 box, with the y of its full and empty marks. */
+const TANK_ART: Record<string, { d: string; top: number; bottom: number }> = {
+  cylinder: { d: 'M16,20 a10,10 0 0 1 10,-10 h60 a10,10 0 0 1 10,10 v96 a10,10 0 0 1 -10,10 h-60 a10,10 0 0 1 -10,-10 z', top: 14, bottom: 124 },
+  cone: { d: 'M8,10 H104 L62,126 H50 Z', top: 12, bottom: 126 },
+  sphere: { d: 'M56,14 a52,52 0 1 0 0.010,0 z', top: 16, bottom: 118 },
+  drum: { d: 'M44,32 h24 a38,38 0 0 1 0,76 h-24 a38,38 0 0 1 0,-76 z', top: 33, bottom: 108 },
+}
+
 export const TankNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const units = useLab((s) => s.units)
   const level = useLab((s) => s.levels[id] ?? data.props.initLevel)
   const r = useLab((s) => s.results.nodes[id])
   const p = data.props
-  const frac = Math.min(1, Math.max(0, level / Math.max(0.01, p.maxLevel)))
-  const top = 14
-  const bottom = 124
+  const art = TANK_ART[p.shape] ?? TANK_ART.cylinder
+  const frac = Math.min(1, Math.max(0, level / Math.max(0.01, tankHeight(p))))
+  const { top, bottom } = art
   const y = bottom - frac * (bottom - top)
   const net = r?.outflow ?? 0
   const trend = Math.abs(net) < 1e-7 ? '' : net > 0 ? '▲' : '▼'
@@ -189,26 +197,97 @@ export const TankNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
             <stop offset="1" stopColor="#1749c4" />
           </linearGradient>
           <clipPath id={`tc-${id}`}>
-            <rect x="16" y="10" width="80" height="116" rx="10" />
+            <path d={art.d} />
           </clipPath>
         </defs>
-        <rect x="16" y="10" width="80" height="116" rx="10" fill="#0a1526" />
+        <path d={art.d} fill="#0a1526" />
         <g clipPath={`url(#tc-${id})`}>
           <g style={{ transform: `translateY(${y}px)`, transition: 'transform .25s linear' }}>
             <path className="wave wave-slow" d={wave(-3, 112, 140)} fill="#2b7fe0" opacity=".5" />
             <path className="wave" d={wave(0, 112, 140)} fill={`url(#tw-${id})`} opacity=".92" />
           </g>
-          <rect x="22" y="10" width="9" height="116" fill="#fff" opacity=".07" />
+          <rect x="22" y="0" width="9" height="136" fill="#fff" opacity=".07" />
         </g>
-        <rect x="16" y="10" width="80" height="116" rx="10" fill="none" stroke="#5a7099" strokeWidth="2.5" />
-        {[0.25, 0.5, 0.75].map((t) => (
-          <line key={t} x1="86" x2="95" y1={bottom - t * (bottom - top)} y2={bottom - t * (bottom - top)} stroke="#8aa0c6" strokeWidth="1.5" opacity=".7" />
-        ))}
+        <path d={art.d} fill="none" stroke="#5a7099" strokeWidth="2.5" strokeLinejoin="round" />
         <path d="M10,126 H102 M26,126 V134 M86,126 V134" stroke="#5a7099" strokeWidth="2.5" strokeLinecap="round" />
-        <text x="56" y="74" className="svg-readout big">
+        <text x="56" y={p.shape === 'cone' ? 58 : 74} className="svg-readout big">
           {Math.round(frac * 100)}
           <tspan className="svg-unit">%</tspan>
         </text>
+      </svg>
+    </Shell>
+  )
+})
+
+// ---- pressure vessel -------------------------------------------------------------------
+
+export const VesselNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const p = data.props
+  const water = useLab((s) => s.levels[id] ?? vesselWater(p, p.initPressure))
+  const r = useLab((s) => s.results.nodes[id])
+  const frac = Math.min(1, Math.max(0, water / Math.max(1e-9, p.volume)))
+  const y = 112 - frac * 100 // the bladder rises as water comes in
+  const pressure = vesselPressure(p, water)
+  const net = r?.outflow ?? 0
+  return (
+    <Shell id={id} kind="vessel" selected={selected} label={data.label} sub={`${Math.abs(net) < 1e-7 ? '' : net > 0 ? '▲ ' : '▼ '}${(water * 1000).toFixed(0)} L water`}>
+      <svg width="92" height="124" viewBox="0 0 92 124">
+        <defs>
+          <clipPath id={`vc-${id}`}>
+            <rect x="12" y="8" width="68" height="108" rx="30" />
+          </clipPath>
+          <linearGradient id={`vw-${id}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#4fd4ff" />
+            <stop offset="1" stopColor="#1749c4" />
+          </linearGradient>
+        </defs>
+        <g clipPath={`url(#vc-${id})`}>
+          <rect x="12" y="8" width="68" height="108" fill="#1a1630" />
+          {/* the gas cushion brightens as it is squeezed */}
+          <rect x="12" y="8" width="68" height="108" fill="#9085e9" opacity={0.12 + 0.45 * frac} />
+          <g style={{ transform: `translateY(${y}px)`, transition: 'transform .25s linear' }}>
+            <rect x="0" y="0" width="92" height="124" fill={`url(#vw-${id})`} />
+            <path d="M12,0 Q46,-14 80,0" fill="none" stroke="#e8d9ff" strokeWidth="3" />
+          </g>
+        </g>
+        <rect x="12" y="8" width="68" height="108" rx="30" fill="none" stroke="#5a7099" strokeWidth="2.5" />
+        <path d="M46,8 V2 M40,2 H52" stroke="#8aa0c6" strokeWidth="2.5" strokeLinecap="round" />
+        <path d="M24,116 V122 M68,116 V122" stroke="#5a7099" strokeWidth="2.5" strokeLinecap="round" />
+        <text x="46" y="56" className="svg-readout">
+          {fmt(pressure, 'pressure', units)}
+        </text>
+        <text x="46" y="68" className="svg-caption">
+          {unitLabel('pressure', units).toUpperCase()}
+        </text>
+      </svg>
+    </Shell>
+  )
+})
+
+// ---- leaky joint ----------------------------------------------------------------------
+
+export const LeakNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
+  const units = useLab((s) => s.units)
+  const r = useLab((s) => s.results.nodes[id])
+  const paused = useLab((s) => !s.running)
+  const c = usePressureColor(r?.pressure)
+  const q = r?.outflow ?? 0
+  return (
+    <Shell id={id} kind="leak" selected={selected} label={data.label} sub={r ? `${fmtU(q, 'flow', units)} lost` : undefined}>
+      <svg width="44" height="44" viewBox="0 0 44 44" style={{ overflow: 'visible' }}>
+        <circle cx="22" cy="22" r="13" fill="#04070d" />
+        <circle cx="22" cy="22" r="10" fill={c} style={{ filter: `drop-shadow(0 0 4px ${c})` }} />
+        <path d="M17,15 l4,5 l-3,3 l5,6" fill="none" stroke="#04070d" strokeWidth="2" strokeLinejoin="round" />
+        {q > 1e-8 &&
+          [-1, 0, 1].map((k) => (
+            <path
+              key={k}
+              className="spray"
+              d={`M24,28 Q${30 + k * 5},40 ${32 + k * 9},56`}
+              style={{ animationDuration: '.7s', animationDelay: `${-k * 0.2}s`, animationPlayState: paused ? 'paused' : 'running' }}
+            />
+          ))}
       </svg>
     </Shell>
   )
@@ -390,7 +469,7 @@ export const PumpNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
 
 // ---- valve ------------------------------------------------------------------
 
-const VALVE_TAG: Record<string, string> = { prv: 'PRV', psv: 'PSV', fcv: 'FCV' }
+const VALVE_TAG: Record<string, string> = { prv: 'PRV', psv: 'PSV', fcv: 'FCV', float: 'FLT' }
 
 export const ValveNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const units = useLab((s) => s.units)
@@ -402,24 +481,21 @@ export const ValveNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const cIn = usePressureColor(d?.pIn)
   const cOut = usePressureColor(d?.pOut)
   const cmd = useLab((s) => s.controls[id])
-  const position = p.opening * (cmd ?? 1) // where the plug actually is: its own setting, scaled by any command
-  const held = cmd !== undefined && (type === 'throttle' ? position <= 0.001 : cmd < 0.5)
-  const open = held ? 0 : type === 'throttle' ? position : d?.status === 'closed' ? 0 : 1
+  // where the plug actually is: its own setting, scaled by any command — or wherever its float has put it
+  const position = type === 'float' ? (d?.position ?? p.opening) : p.opening * (cmd ?? 1)
+  const throttling = type === 'throttle' || type === 'float'
+  const held = cmd !== undefined && (throttling ? position <= 0.001 : cmd < 0.5)
+  const open = held ? 0 : throttling ? position : d?.status === 'closed' ? 0 : 1
   const K = valveK(position, p.kOpen, p.trim)
   let sub: string
   if (held) sub = 'SHUT · held'
+  else if (type === 'float') sub = position <= 0.001 ? 'float up · shut' : `float · ${Math.round(position * 100)} %`
   else if (type === 'throttle') sub = position <= 0.001 ? 'CLOSED' : `${Math.round(position * 100)} %${cmd !== undefined ? ' auto' : ''} · K ${K > 999 ? K.toExponential(1) : K.toFixed(1)}`
   else if (type === 'check') sub = d?.status === 'closed' ? 'seated' : 'open'
   else if (type === 'fcv') sub = `set ${fmtU(p.flowSetting, 'flow', units)}`
   else sub = `set ${fmtU(p.pressureSetting, 'pressure', units)}`
   const body =
-    d?.status === 'closed' || open <= 0.001
-      ? '#ff5d7a'
-      : type === 'throttle'
-        ? `color-mix(in oklab, #fab219 ${Math.round((1 - open) * 100)}%, #3ddc84)`
-        : d?.status === 'active'
-          ? '#fab219'
-          : '#3ddc84'
+    d?.status === 'closed' || open <= 0.001 ? '#ff5d7a' : throttling ? `color-mix(in oklab, #fab219 ${Math.round((1 - open) * 100)}%, #3ddc84)` : d?.status === 'active' ? '#fab219' : '#3ddc84'
   return (
     <Shell
       id={id}
@@ -1008,6 +1084,8 @@ export const LampNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
 export const nodeTypes = {
   reservoir: ReservoirNode,
   tank: TankNode,
+  vessel: VesselNode,
+  leak: LeakNode,
   junction: JunctionNode,
   outlet: OutletNode,
   gauge: GaugeNode,

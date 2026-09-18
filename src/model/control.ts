@@ -15,6 +15,7 @@ import type { Quantity } from './units'
 export const PV_SOURCES: Partial<Record<Kind, { quantity: Quantity; name: string; tag: string }>> = {
   tank: { quantity: 'length', name: 'Level', tag: 'L' },
   gauge: { quantity: 'pressure', name: 'Pressure', tag: 'P' },
+  vessel: { quantity: 'pressure', name: 'Pressure', tag: 'P' },
   meter: { quantity: 'flow', name: 'Flow', tag: 'F' },
   dpgauge: { quantity: 'pressure', name: 'Differential', tag: 'dP' },
 }
@@ -88,7 +89,7 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 function readPV(src: ModelNode, results?: Results, levels?: Record<string, number>): number | undefined {
   if (src.data.kind === 'tank') return levels?.[src.id] ?? src.data.props.initLevel
   if (!results?.ok) return undefined
-  if (src.data.kind === 'gauge') return results.nodes[src.id]?.pressure
+  if (src.data.kind === 'gauge' || src.data.kind === 'vessel') return results.nodes[src.id]?.pressure
   const d = results.devices[src.id]
   if (!d) return undefined
   return src.data.kind === 'meter' ? Math.abs(d.flow) : d.pIn - d.pOut

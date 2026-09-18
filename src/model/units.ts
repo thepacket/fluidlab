@@ -1,6 +1,6 @@
 // Units engine: SI internally → conversion → display. Never store display units.
 
-export type Quantity = 'length' | 'diameter' | 'roughness' | 'pressure' | 'flow' | 'head' | 'velocity' | 'power' | 'time' | 'none' | 'percent'
+export type Quantity = 'length' | 'diameter' | 'roughness' | 'pressure' | 'flow' | 'head' | 'velocity' | 'power' | 'time' | 'volume' | 'none' | 'percent'
 
 interface UnitDef {
   id: string
@@ -48,6 +48,11 @@ export const UNITS: Record<Exclude<Quantity, 'none' | 'percent'>, UnitDef[]> = {
     { id: 'm/s', label: 'm/s', factor: 1 },
     { id: 'ft/s', label: 'ft/s', factor: 0.3048 },
   ],
+  volume: [
+    { id: 'L', label: 'L', factor: 1e-3 },
+    { id: 'm3', label: 'm³', factor: 1 },
+    { id: 'gal', label: 'US gal', factor: 3.785412e-3 },
+  ],
   time: [
     { id: 's', label: 's', factor: 1 },
     { id: 'min', label: 'min', factor: 60 },
@@ -72,6 +77,7 @@ export const METRIC: UnitPrefs = {
   velocity: 'm/s',
   power: 'W',
   time: 'min',
+  volume: 'L',
 }
 export const US: UnitPrefs = {
   length: 'ft',
@@ -83,6 +89,7 @@ export const US: UnitPrefs = {
   velocity: 'ft/s',
   power: 'hp',
   time: 'min',
+  volume: 'gal',
 }
 
 function def(q: Quantity, prefs: UnitPrefs): UnitDef {

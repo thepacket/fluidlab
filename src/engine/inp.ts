@@ -1,7 +1,7 @@
 // EPANET adapter, part 1: translate a FluidLab model into an EPANET .inp file.
 // Units: LPS / SI  →  flow L/s, length m, diameter mm, roughness mm (D-W), pressure m.
-import { lossDevice } from '../model/catalog'
-import { G, area, elementK, fittingK, ratedDp, valveK } from '../model/physics'
+import { demandFactor, lossDevice } from '../model/catalog'
+import { G, area, elementK, fittingK, ratedDp, tankHeight, valveK, vesselPressure, vesselWater } from '../model/physics'
 import { isControl, isInline, type Model, type Warning } from '../model/types'
 
 export interface Compiled {
@@ -24,6 +24,36 @@ const n = (v: number) => (Math.abs(v) < 1e-12 ? '0' : Number(v.toPrecision(8)).t
 
 /** A controller's 0‥1 command for this device; 1 when nothing is wired to it. It scales the device's own setting. */
 export const command = (model: Model, id: string) => model.controls?.[id] ?? 1
+/**
+ * A float valve closes as the tank it feeds fills: wide open a band below its closing level, shut at it.
+ * "The tank it feeds" is whichever tank sits on the far end of a pipe from its outlet port.
+ */
+export function floatTank(model: Model, valveId: string) {
+  for (const e of model.edges) {
+    if (e.type === 'signal') continue
+    const other = e.source === valveId && e.sourceHandle === 'out' ? e.target : e.target === valveId && e.targetHandle === 'out' ? e.source : undefined
+    const tank = other && model.nodes.find((x) => x.id === other && x.data.kind === 'tank')
+    if (tank) return tank
+  }
+  return undefined
+}
+
+/** Where a throttling valve's plug actually is, 0‥1: its own opening, scaled by a controller or by its float. */
+export function valvePosition(model: Model, id: string): number {
+  const nd = model.nodes.find((x) => x.id === id)
+  if (!nd) return 0
+  const p = nd.data.props
+  let pos = p.opening * command(model, id)
+  if (p.valveType === 'float') {
+    const tank = floatTank(model, id)
+    if (tank) {
+      const level = model.levels?.[tank.id] ?? tank.data.props.initLevel
+      pos *= Math.min(1, Math.max(0, (p.closeLevel - level) / Math.max(1e-6, p.band)))
+    }
+  }
+  return pos
+}
+
 /** Held off / shut by its controller. */
 export const commandedOff = (model: Model, id: string) => command(model, id) < 0.5
 
@@ -72,7 +102,7 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
   const reached = new Set<string>()
   const queue: string[] = []
   model.nodes.forEach((nd) => {
-    if (nd.data.kind === 'reservoir' || nd.data.kind === 'tank') queue.push(nodeIds[nd.id])
+    if (nd.data.kind === 'reservoir' || nd.data.kind === 'tank' || nd.data.kind === 'vessel') queue.push(nodeIds[nd.id])
   })
   while (queue.length) {
     const cur = queue.pop()!
@@ -114,9 +144,20 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
     if (k === 'reservoir') R.push(`${nodeIds[nd.id]} ${n(p.head)}`)
     else if (k === 'tank') {
       const min = Math.max(0, p.minLevel)
-      const max = Math.max(min + 0.01, p.maxLevel)
+      const max = Math.max(min + 0.01, tankHeight(p))
       const lvl = Math.min(max, Math.max(min, model.levels?.[nd.id] ?? p.initLevel))
       T.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n(lvl)} ${n(min)} ${n(max)} ${n(Math.max(0.05, p.diameter))} 0`)
+    } else if (k === 'vessel') {
+      // A fixed-head node whose head is set by the gas cushion. The stub pipe lets an empty vessel refuse to give
+      // water (check valve towards the vessel) exactly as an empty tank would.
+      const id = nodeIds[nd.id]
+      const water = model.levels?.[nd.id] ?? vesselWater(p, p.initPressure)
+      J.push(`${id} ${n(p.elevation)} 0`)
+      R.push(`${id}gas ${n(p.elevation + vesselPressure(p, water) / rhoG)}`)
+      P.push(`${id}s ${id} ${id}gas 0.05 100 0.0015 0 ${water <= 1e-9 ? 'CV' : 'OPEN'}`)
+    } else if (k === 'leak') {
+      J.push(`${nodeIds[nd.id]} ${n(p.elevation)} 0`)
+      EM.push(`${nodeIds[nd.id]} ${n(Math.max(p.cd * area(p.holeDiameter) * Math.sqrt(2 * G) * 1000, 1e-6))}`)
     } else if (k === 'relief') {
       // A PSV holds its upstream side at the set pressure by venting — exactly a modulating relief valve.
       // EPANET won't join a valve straight to a reservoir, hence the stub pipe to "atmosphere".
@@ -126,10 +167,10 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
       V.push(`${id}v ${id} ${id}m ${n(p.diameter * 1000)} PSV ${n(p.setPressure / rhoG)} 0`)
       P.push(`${id}s ${id}m ${id}atm 0.05 ${n(Math.max(p.diameter, 0.05) * 1000)} 0.0015 0 CV`)
     } else if (k === 'junction' || k === 'gauge') {
-      J.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n((p.demand ?? 0) * 1000)}`)
+      J.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n((p.demand ?? 0) * demandFactor(p.pattern, model.time ?? 0) * 1000)}`)
     } else if (k === 'outlet') {
       if (off(nd.id)) J.push(`${nodeIds[nd.id]} ${n(p.elevation)} 0`)
-      else if (p.mode === 'demand') J.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n(p.demand * 1000)}`)
+      else if (p.mode === 'demand') J.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n(p.demand * demandFactor(p.pattern, model.time ?? 0) * 1000)}`)
       else {
         J.push(`${nodeIds[nd.id]} ${n(p.elevation)} 0`)
         const c = p.cd * area(p.nozzleDiameter) * Math.sqrt(2 * G) * 1000
@@ -165,7 +206,7 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
       } else {
         const dia = n(p.diameter * 1000)
         const shut = off(nd.id)
-        if (shut && p.valveType !== 'check' && p.valveType !== 'throttle') ST.push(`${d.link} CLOSED`)
+        if (shut && p.valveType !== 'check' && p.valveType !== 'throttle' && p.valveType !== 'float') ST.push(`${d.link} CLOSED`)
         switch (p.valveType) {
           case 'check':
             P.push(`${d.link} ${d.a} ${d.b} 0.05 ${dia} 0.0015 ${n(p.kOpen)} ${shut ? 'CLOSED' : 'CV'}`)
@@ -180,7 +221,7 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
             V.push(`${d.link} ${d.a} ${d.b} ${dia} FCV ${n(p.flowSetting * 1000)} ${n(p.kOpen)}`)
             break
           default: {
-            const K = valveK(p.opening * command(model, nd.id), p.kOpen, p.trim)
+            const K = valveK(valvePosition(model, nd.id), p.kOpen, p.trim)
             V.push(`${d.link} ${d.a} ${d.b} ${dia} TCV ${n(isFinite(K) ? K : 1e9)} 0`)
             if (!isFinite(K)) ST.push(`${d.link} CLOSED`)
           }

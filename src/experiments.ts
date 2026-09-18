@@ -13,6 +13,8 @@ export const NODE_SIZE: Record<Kind, [number, number]> = {
   meter: [104, 56],
   element: [120, 64],
   dpgauge: [96, 96],
+  vessel: [92, 124],
+  leak: [44, 44],
   fitting: [96, 64],
   relief: [84, 64],
   timer: [96, 104],
@@ -35,6 +37,8 @@ export const PORT_Y: Record<Kind, number> = {
   meter: 0.5,
   element: 0.5,
   dpgauge: 0.8,
+  vessel: 0.86,
+  leak: 0.5,
   fitting: 0.5,
   relief: 0.5,
   timer: 0.54,
@@ -845,6 +849,148 @@ export const EXPERIMENTS: Experiment[] = [
         .pipe('g', 'rv', { length: 1, diameter: 0.025 }, ['t', 'l'])
         .pipe('g', 'v', { length: 3, diameter: 0.04 })
         .pipe('v', 'out', { length: 6, diameter: 0.04 })
+        .done(),
+  },
+  {
+    id: 'vessel',
+    no: '23',
+    title: 'Pressure vessel',
+    concept: 'A gas cushion as a buffer',
+    formula: '(p + p_atm) · V_gasⁿ = constant',
+    brief:
+      'A domestic booster set: the pressure switch starts the pump at 200 kPa and stops it at 350 kPa, and the bladder vessel supplies the tap in between. The vessel is what decides how often the pump starts — and this one is far too small, so the pump short-cycles itself to an early grave.',
+    steps: [
+      'Select PS1 and watch the pressure saw-tooth on its Loop chart; count the pump starts.',
+      'Select the vessel: see how little water it actually holds between cut-in and cut-out.',
+      'Enlarge the vessel (or fix its pre-charge, which should sit just below cut-in).',
+    ],
+    goal: {
+      text: 'Get the pump down to 6 starts or fewer over the last 20 lab-minutes',
+      check: (_r, _n, _l, history) => {
+        const now = history.length ? history[history.length - 1].t : 0
+        const recent = history.filter((h) => h.t > now - 1200)
+        let starts = 0
+        for (let i = 1; i < recent.length; i++) if ((recent[i].v['p'] ?? 0) > 1e-6 && (recent[i - 1].v['p'] ?? 0) <= 1e-6) starts++
+        const full = history.length > 1 && now - history[0].t >= 1160
+        return { done: full && starts <= 6, readout: full ? `${starts} starts / 20 min` : `${starts} starts · recording…` }
+      },
+    },
+    timeScale: 20,
+    select: 'pv',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 90, 480, { head: 1 }, 'Break tank')
+        .add('p', 'pump', 280, 480, { designFlow: 60 * LPM, designHead: 38 })
+        .add('j', 'junction', 470, 480)
+        .add('pv', 'vessel', 470, 300, { volume: 0.024, precharge: 120e3, initPressure: 300e3 }, 'PV1')
+        .add('ps', 'switch', 250, 230, { action: 'fill', low: 200e3, high: 350e3, pvKind: 'vessel' }, 'PS1')
+        .add('out', 'outlet', 760, 480, { nozzleDiameter: 0.006 }, 'Tap')
+        .pipe('src', 'p', { length: 2, diameter: 0.04 })
+        .pipe('p', 'j', { length: 2, diameter: 0.032 })
+        .pipe('j', 'pv', { length: 0.5, diameter: 0.032 }, ['t', 'b'])
+        .pipe('j', 'out', { length: 15, diameter: 0.02 })
+        .wire('pv', 'ps', ['pv', 'cin'])
+        .wire('ps', 'p')
+        .done(),
+  },
+  {
+    id: 'night-flow',
+    no: '24',
+    title: 'Night flow & leakage',
+    concept: 'Demand patterns · pressure management',
+    formula: 'Q_leak = Cd · A · √(2p/ρ)',
+    brief:
+      'The street’s demand follows a residential day: two peaks, and almost nothing at 3 a.m. The inlet meter never drops to that “almost nothing”, because a leaking joint runs around the clock — and it runs hardest at night, when demand is low and pressure is high. Utilities find leaks exactly this way, and tame them by lowering pressure.',
+    steps: [
+      'Let a day run (1200×). Compare the inlet meter at 03:00 with the houses’ demand: the gap is the leak.',
+      'Select the leaky joint: see what it loses per day.',
+      'You cannot dig up the street today. Lower the PRV setpoint instead — leakage falls with √p.',
+    ],
+    goal: {
+      text: 'Without touching the leak, cut it below 9 L/min while the houses keep at least 150 kPa',
+      check: (r, nodes) => {
+        const leak = (r.nodes['lk']?.outflow ?? 0) / LPM
+        const p = (r.nodes['h']?.pressure ?? 0) / 1000
+        const untouched = Math.abs((nodes.find((n) => n.id === 'lk')?.data.props.holeDiameter ?? 0) - 0.004) < 1e-6
+        return { done: untouched && leak < 9 && p >= 150, readout: `leak ${leak.toFixed(1)} L/min · houses ${p.toFixed(0)} kPa` }
+      },
+    },
+    timeScale: 1200,
+    select: 'prv',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 90, 440, { head: 50 }, 'Service reservoir')
+        .add('m', 'meter', 290, 440, { diameter: 0.05 }, 'Inlet meter')
+        .add('prv', 'valve', 470, 440, { valveType: 'prv', pressureSetting: 400e3, diameter: 0.05, kOpen: 1 }, 'PRV')
+        .add('lk', 'leak', 660, 440, { holeDiameter: 0.004 }, 'Leaky joint')
+        .add('h', 'junction', 880, 440, { demand: 25 * LPM, pattern: 'residential' }, 'Houses')
+        .pipe('src', 'm', { length: 50, diameter: 0.08 })
+        .pipe('m', 'prv', { length: 5, diameter: 0.05 })
+        .pipe('prv', 'lk', { length: 80, diameter: 0.05 })
+        .pipe('lk', 'h', { length: 120, diameter: 0.04 })
+        .done(),
+  },
+  {
+    id: 'shapes',
+    no: '25',
+    title: 'Tank shapes',
+    concept: 'Same head, different volume',
+    formula: 'A(h) · dh/dt = −Cd · a · √(2gh)',
+    brief:
+      'Two tanks, equally tall and equally wide at the top, drain through identical nozzles. The outflow depends only on the level — but how fast the level falls depends on how much water sits at that level. The cone holds a third of the cylinder’s volume, nearly all of it near the top.',
+    steps: [
+      'Press play and watch both levels. Which empties first, and by how much?',
+      'Select each tank and compare their level trends: the cylinder’s slows down, the cone’s speeds up.',
+      'Try a sphere or a horizontal drum — fastest change where the vessel is narrowest.',
+    ],
+    timeScale: 60,
+    select: 'cone',
+    build: () =>
+      new Rig()
+        .add('cyl', 'tank', 250, 260, { shape: 'cylinder', diameter: 1.2, initLevel: 2, maxLevel: 2, elevation: 1 }, 'Cylinder')
+        .add('o1', 'outlet', 250, 520, { nozzleDiameter: 0.012 })
+        .add('cone', 'tank', 640, 260, { shape: 'cone', diameter: 1.2, initLevel: 2, maxLevel: 2, elevation: 1 }, 'Cone')
+        .add('o2', 'outlet', 640, 520, { nozzleDiameter: 0.012 })
+        .turn('o1', 90)
+        .turn('o2', 90)
+        .pipe('cyl', 'o1', { length: 1, diameter: 0.025 }, ['b', 'l'])
+        .pipe('cone', 'o2', { length: 1, diameter: 0.025 }, ['b', 'l'])
+        .done(),
+  },
+  {
+    id: 'float-valve',
+    no: '26',
+    title: 'Float valve',
+    concept: 'Self-acting level control',
+    formula: 'opening ∝ (h_shut − h) / band',
+    brief:
+      'The valve in every cistern: a float rides the water and closes the inlet as the level rises — a proportional controller with no wires at all. This one has been set to shut above the rim, so the header tank simply overflows.',
+    steps: [
+      'Select the float valve: it finds the tank on its outlet side by itself.',
+      'Set “shuts at tank level” below the rim and watch the level settle where inflow meets demand.',
+      'Widen the band: gentler valve action, but the level sags further under heavy demand.',
+    ],
+    goal: {
+      text: 'Hold the header tank between 60 % and 80 % for 15 lab-minutes',
+      check: (_r, nodes, levels, history) => {
+        const tank = nodes.find((n) => n.id === 't')
+        if (!tank) return { done: false, readout: '—' }
+        const max = tank.data.props.maxLevel
+        const held = heldFor(history, 't', 0.6 * max, 0.8 * max)
+        return { done: held >= 15, readout: `${(((levels['t'] ?? tank.data.props.initLevel) / max) * 100).toFixed(0)} % · ${Math.min(15, held).toFixed(0)}/15 min` }
+      },
+    },
+    timeScale: 60,
+    select: 'fv',
+    build: () =>
+      new Rig()
+        .add('src', 'reservoir', 90, 300, { head: 30 }, 'Mains')
+        .add('fv', 'valve', 330, 300, { valveType: 'float', diameter: 0.02, kOpen: 4, closeLevel: 2.6, band: 0.3 }, 'Float valve')
+        .add('t', 'tank', 580, 300, { elevation: 6, diameter: 1, initLevel: 1.2, maxLevel: 2.4 }, 'Header tank')
+        .add('out', 'outlet', 860, 480, { mode: 'demand', demand: 18 * LPM, pattern: 'residential' }, 'Building')
+        .pipe('src', 'fv', { length: 20, diameter: 0.025 })
+        .pipe('fv', 't', { length: 3, diameter: 0.025 }, ['out', 'l'])
+        .pipe('t', 'out', { length: 12, diameter: 0.032 }, ['r', 'l'])
         .done(),
   },
 ]

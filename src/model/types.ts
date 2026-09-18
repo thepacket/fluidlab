@@ -1,7 +1,26 @@
 // FluidLab model layer. Everything here is stored in SI (m, m³/s, Pa, kg, s).
 
 export type Kind =
-  'reservoir' | 'tank' | 'junction' | 'outlet' | 'gauge' | 'pump' | 'valve' | 'meter' | 'element' | 'dpgauge' | 'fitting' | 'relief' | 'timer' | 'manual' | 'switch' | 'pid' | 'logic' | 'lamp'
+  | 'reservoir'
+  | 'tank'
+  | 'junction'
+  | 'outlet'
+  | 'gauge'
+  | 'pump'
+  | 'valve'
+  | 'meter'
+  | 'element'
+  | 'dpgauge'
+  | 'fitting'
+  | 'relief'
+  | 'vessel'
+  | 'leak'
+  | 'timer'
+  | 'manual'
+  | 'switch'
+  | 'pid'
+  | 'logic'
+  | 'lamp'
 
 /** two-port components: compiled to a link between two hidden junctions */
 export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter', 'element', 'dpgauge', 'fitting']
@@ -52,6 +71,8 @@ export interface Model {
   fluid: Fluid
   /** live tank levels (m), keyed by node id; falls back to initLevel */
   levels?: Record<string, number>
+  /** lab time (s) — only matters to demand patterns, and is quantised so it doesn't force constant re-solves */
+  time?: number
   /** 0‥1 commands from controllers, keyed by device id; absent = uncontrolled. A command scales the device's own setting. */
   controls?: Record<string, number>
 }
@@ -95,6 +116,7 @@ export const VALVE_TYPES = [
   { id: 'prv', name: 'Pressure reducing (PRV)' },
   { id: 'psv', name: 'Pressure sustaining (PSV)' },
   { id: 'fcv', name: 'Flow control (FCV)' },
+  { id: 'float', name: 'Float valve (fills a tank)' },
 ]
 
 export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: string }> = {
@@ -109,6 +131,8 @@ export const KIND_META: Record<Kind, { name: string; prefix: string; blurb: stri
   element: { name: 'Venturi / orifice', prefix: 'FE', blurb: 'Differential-pressure flow element' },
   dpgauge: { name: 'Differential gauge', prefix: 'DP', blurb: 'ΔP between two tapping points' },
   fitting: { name: 'Loss device', prefix: 'FT', blurb: 'Fittings and equipment from the catalogue' },
+  vessel: { name: 'Pressure vessel', prefix: 'PV', blurb: 'Bladder tank: stores water against a gas cushion' },
+  leak: { name: 'Leaky joint', prefix: 'LK', blurb: 'A junction that loses water with pressure' },
   relief: { name: 'Relief valve', prefix: 'RV', blurb: 'Lifts above its set pressure, vents to atmosphere' },
   timer: { name: 'Timer', prefix: 'TM', blurb: 'Switches pumps, valves and taps on a schedule' },
   manual: { name: 'Manual switch', prefix: 'HS', blurb: 'Click it on the bench to start / stop' },
@@ -123,17 +147,17 @@ export function defaultProps(kind: Kind): Props {
     case 'reservoir':
       return { head: 10 }
     case 'tank':
-      return { elevation: 0, diameter: 1.2, initLevel: 0.5, minLevel: 0, maxLevel: 2.5 }
+      return { elevation: 0, shape: 'cylinder', diameter: 1.2, length: 2, initLevel: 0.5, minLevel: 0, maxLevel: 2.5 }
     case 'junction':
-      return { elevation: 0, demand: 0 }
+      return { elevation: 0, demand: 0, pattern: 'constant' }
     case 'gauge':
       return { elevation: 0 }
     case 'outlet':
-      return { elevation: 0, mode: 'nozzle', nozzleDiameter: 0.012, cd: 0.9, demand: 0.0005 }
+      return { elevation: 0, mode: 'nozzle', nozzleDiameter: 0.012, cd: 0.9, demand: 0.0005, pattern: 'constant' }
     case 'pump':
       return { elevation: 0, on: true, speed: 1, designFlow: 0.001, designHead: 20, bepEfficiency: 0.68, npshr: 2.5 }
     case 'valve':
-      return { elevation: 0, valveType: 'throttle', diameter: 0.04, opening: 1, kOpen: 2.5, pressureSetting: 150000, flowSetting: 0.0005, strokeTime: 0 }
+      return { closeLevel: 2, band: 0.3, elevation: 0, valveType: 'throttle', diameter: 0.04, opening: 1, kOpen: 2.5, pressureSetting: 150000, flowSetting: 0.0005, strokeTime: 0 }
     case 'meter':
       return { elevation: 0, diameter: 0.04 }
     case 'element':
@@ -142,6 +166,10 @@ export function defaultProps(kind: Kind): Props {
       return { elevation: 0 }
     case 'fitting':
       return { elevation: 0, variant: 'elbow90', diameter: 0.04, k: 0.75 }
+    case 'vessel':
+      return { elevation: 0, volume: 0.1, precharge: 180e3, initPressure: 250e3, polytropic: 1.2 }
+    case 'leak':
+      return { elevation: 0, holeDiameter: 0.004, cd: 0.6 }
     case 'relief':
       return { elevation: 0, setPressure: 400e3, diameter: 0.025 }
     case 'timer':
@@ -202,6 +230,8 @@ export interface DeviceResult {
   velocity?: number
   // catalogue loss devices
   ratedShare?: number
+  /** where a self-acting valve (float valve) has put itself, 0‥1 */
+  position?: number
   // valves: flow coefficient at the current position (m³/h per √bar)
   kv?: number
   // venturi / orifice

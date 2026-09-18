@@ -17,9 +17,9 @@ const item = (kind: Kind): PaletteItem => ({ key: kind, kind, name: KIND_META[ki
 const catalogue = (group: string) => LOSS_DEVICES.filter((d) => d.group === group).map((d): PaletteItem => ({ key: `fitting:${d.id}`, kind: 'fitting', name: d.name, blurb: d.blurb }))
 
 const GROUPS: { name: string; items: PaletteItem[] }[] = [
-  { name: 'Sources & storage', items: (['reservoir', 'tank'] as Kind[]).map(item) },
+  { name: 'Sources & storage', items: (['reservoir', 'tank', 'vessel'] as Kind[]).map(item) },
   { name: 'Pumps & valves', items: (['pump', 'valve', 'relief'] as Kind[]).map(item) },
-  { name: 'Nodes', items: (['junction', 'outlet'] as Kind[]).map(item) },
+  { name: 'Nodes', items: (['junction', 'outlet', 'leak'] as Kind[]).map(item) },
   { name: 'Instruments', items: (['gauge', 'dpgauge', 'meter', 'element'] as Kind[]).map(item) },
   { name: 'Control', items: (['manual', 'timer', 'switch', 'pid', 'logic', 'lamp'] as Kind[]).map(item) },
   { name: 'Fittings', items: catalogue('Fittings') },

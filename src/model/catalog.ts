@@ -171,3 +171,26 @@ export const PIPE_STANDARDS: PipeStandard[] = [
     ].map(([label, id]) => ({ label: label as string, id: id as number })),
   },
 ]
+
+// ---- demand patterns ---------------------------------------------------------------------------
+// 24 hourly multipliers on a node's base demand, each averaging ≈ 1 over the day. Lab time 00:00:00 is midnight.
+
+export const DEMAND_PATTERNS: { id: string; name: string; factors: number[] }[] = [
+  { id: 'constant', name: 'Constant', factors: Array(24).fill(1) },
+  {
+    id: 'residential',
+    name: 'Residential (morning + evening peaks)',
+    factors: [0.35, 0.28, 0.25, 0.25, 0.32, 0.6, 1.35, 1.9, 1.6, 1.2, 1.05, 1.0, 1.05, 0.95, 0.9, 0.95, 1.1, 1.45, 1.8, 1.65, 1.3, 0.95, 0.65, 0.45],
+  },
+  { id: 'commercial', name: 'Commercial (office hours)', factors: [0.25, 0.22, 0.2, 0.2, 0.22, 0.3, 0.6, 1.1, 1.7, 1.9, 1.9, 1.85, 1.7, 1.8, 1.85, 1.8, 1.6, 1.2, 0.8, 0.55, 0.4, 0.33, 0.28, 0.25] },
+  { id: 'industrial', name: 'Industrial (two shifts)', factors: [0.5, 0.5, 0.5, 0.5, 0.5, 0.7, 1.4, 1.45, 1.45, 1.45, 1.4, 1.2, 1.4, 1.45, 1.45, 1.4, 1.4, 1.45, 1.45, 1.4, 1.35, 1.2, 0.6, 0.5] },
+]
+
+/** Multiplier at lab time t (s), interpolated between the hourly values so demand ramps rather than steps. */
+export function demandFactor(patternId: string | undefined, t: number): number {
+  const f = DEMAND_PATTERNS.find((x) => x.id === patternId)?.factors
+  if (!f || patternId === 'constant') return 1
+  const h = (((t / 3600) % 24) + 24) % 24
+  const i = Math.floor(h)
+  return f[i] + (f[(i + 1) % 24] - f[i]) * (h - i)
+}

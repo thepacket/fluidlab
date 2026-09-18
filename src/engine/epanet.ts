@@ -4,7 +4,7 @@ import { LinkProperty, NodeProperty, Project, Workspace } from 'epanet-js'
 import { lossDevice } from '../model/catalog'
 import { G, P_ATM, area, fittingK, kvOf, ratedDp, elementInferredFlow, elementTapDp, frictionFactor, pumpEfficiency, pumpMaxFlow, regimeOf, reynolds, valveK } from '../model/physics'
 import { EMPTY_RESULTS, isControl, type Model, type Results, type Warning } from '../model/types'
-import { command, commandedOff, compile, type Overrides } from './inp'
+import { command, commandedOff, compile, floatTank, valvePosition, type Overrides } from './inp'
 
 /** Any solver FluidLab can plug in (EPANET today; water-hammer / gas later). */
 export interface HydraulicEngine {
@@ -68,10 +68,12 @@ class EpanetEngine implements HydraulicEngine {
           const idx = project.getNodeIndex(eid)
           const h = project.getNodeValue(idx, NodeProperty.Head)
           const elevation = kind === 'reservoir' ? p.head : p.elevation
-          const demand = project.getNodeValue(idx, NodeProperty.Demand) / 1000
+          const rawDemand = project.getNodeValue(idx, NodeProperty.Demand) / 1000
+          const demand = Math.abs(rawDemand) < 1e-7 ? 0 : rawDemand // residual seepage through "closed" links is solver noise
           const pressure = kind === 'reservoir' ? 0 : (h - elevation) * rhoG
           const vented = kind === 'relief' ? flowOf(`${eid}v`) : 0
-          res.nodes[nd.id] = { head: h, pressure, elevation, outflow: kind === 'relief' ? vented : demand }
+          // a vessel's "outflow" follows the tank convention: positive = filling
+          res.nodes[nd.id] = { head: h, pressure, elevation, outflow: kind === 'relief' ? vented : kind === 'vessel' ? flowOf(`${eid}s`) : demand }
           if (vented > 1e-8)
             warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: lifting — venting ${(vented * 60000).toFixed(0)} L/min to hold ${(p.setPressure / 1000).toFixed(0)} kPa` })
           if (kind !== 'reservoir' && kind !== 'tank' && pressure + P_ATM < fluid.vaporPressure)
@@ -125,8 +127,10 @@ class EpanetEngine implements HydraulicEngine {
             }
             if (kind === 'valve' && p.valveType !== 'throttle' && commandedOff(model, nd.id)) dev.status = 'closed'
             else if (kind === 'valve') {
-              if (p.valveType === 'throttle') {
-                dev.K = valveK(p.opening * command(model, nd.id), p.kOpen, p.trim)
+              if (p.valveType === 'throttle' || p.valveType === 'float') {
+                dev.position = valvePosition(model, nd.id)
+                dev.K = valveK(dev.position, p.kOpen, p.trim)
+                if (p.valveType === 'float' && !floatTank(model, nd.id)) warnings.push({ id: nd.id, level: 'warn', text: `${nd.data.label}: a float valve needs a tank piped to its outlet` })
                 dev.kv = kvOf(dev.K, p.diameter)
                 dev.status = isFinite(dev.K) ? 'open' : 'closed'
               } else if (p.valveType === 'check') dev.status = q > 1e-9 ? 'open' : 'closed'

@@ -3,6 +3,7 @@
 import { engine } from '../src/engine/epanet'
 import { EXPERIMENTS, type LabNode } from '../src/experiments'
 import { EMPTY_CONTROL, stepControl } from '../src/model/control'
+import { VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from '../src/model/physics'
 import { EMPTY_RESULTS, FLUIDS, type Props, type Results } from '../src/model/types'
 
 await engine.ready()
@@ -17,13 +18,14 @@ function run(id: string, patch: Record<string, Props>, seconds: number, dt: numb
   let results: Results = EMPTY_RESULTS
   let starts = 0
   for (let t = 0; t < seconds; t += dt) {
-    results = engine.solve({ nodes, edges, fluid: FLUIDS[0], levels, controls: ctrl.commands } as never)
+    results = engine.solve({ nodes, edges, fluid: FLUIDS[0], levels, controls: ctrl.commands, time: Math.floor(t / 60) * 60 } as never)
     const before = ctrl
     ctrl = stepControl({ nodes, edges, t: t + dt, dt, results, levels, prev: ctrl })
     for (const n of nodes as LabNode[]) {
-      if (n.data.kind !== 'tank') continue
       const p = n.data.props
-      levels[n.id] = Math.min(p.maxLevel, Math.max(p.minLevel, (levels[n.id] ?? p.initLevel) + (results.nodes[n.id].outflow * dt) / ((Math.PI * p.diameter ** 2) / 4)))
+      const q = results.nodes[n.id]?.outflow ?? 0
+      if (n.data.kind === 'vessel') levels[n.id] = Math.min(p.volume * VESSEL_FILL_LIMIT, Math.max(0, (levels[n.id] ?? vesselWater(p, p.initPressure)) + q * dt))
+      if (n.data.kind === 'tank') levels[n.id] = Math.max(p.minLevel, tankLevel(p, tankVolume(p, levels[n.id] ?? p.initLevel) + q * dt))
     }
     if ((ctrl.commands.p ?? 0) >= 0.5 && (before.commands.p ?? 0) < 0.5) starts++
     const v: Record<string, number> = { ...levels }
@@ -49,3 +51,7 @@ console.log('18 pressure PID, Kp 4 Ti 1 (hunts?)', run('pressure-pid', { pic: { 
 console.log('19 flow PID, left in manual        ', run('flow-pid', {}, 600, 1))
 console.log('19 flow PID, auto as delivered     ', run('flow-pid', { fic: { auto: true } }, 600, 1))
 console.log('19 flow PID, auto Kp 3 Ti 2        ', run('flow-pid', { fic: { auto: true, kp: 3, ti: 2 } }, 600, 1))
+console.log('23 vessel, as delivered (24 L)     ', run('vessel', {}, 1500, 2))
+console.log('23 vessel, 300 L, pre-charge 180   ', run('vessel', { pv: { volume: 0.3, precharge: 180e3 } }, 1500, 2))
+console.log('26 float valve, as delivered       ', run('float-valve', {}, 7200, 6))
+console.log('26 float valve, shuts at 1.8 m     ', run('float-valve', { fv: { closeLevel: 1.8 } }, 7200, 6))

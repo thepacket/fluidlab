@@ -13,7 +13,7 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 
 ## What's in it
 
-- **Network editor** (React Flow): 18 components plus the catalogue, loose port-to-port pipes, snap grid, minimap, 90° rotation (`R`),
+- **Network editor** (React Flow): 20 components plus the catalogue, loose port-to-port pipes, snap grid, minimap, 90° rotation (`R`),
   undo/redo (`⌘Z` / `⇧⌘Z`, 100 steps, slider drags and typing coalesce into one step).
 - **Runs off the main thread**: EPANET lives in a Web Worker behind a latest-wins client (no backlog while dragging a
   slider); falls back to the main thread if workers are unavailable.
@@ -46,12 +46,17 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   Also from the catalogue: valve bodies (gate, globe, ball, butterfly…) with equal-%/linear/quick-opening trims and
   a Kv/Cv readout, and nominal pipe sizes (steel Sch 40, copper L, PVC Sch 40, PEX) that set bore, material and
   roughness together.
+- **Storage & sources**: the app integrates storage itself as *volume*, so tanks can be cylinders, cones, spheres or
+  horizontal drums, and a **pressure vessel** (gas cushion, polytropic) is a fixed-head node whose head follows the
+  gas law each tick. **Float valve**: a self-acting valve type that finds the tank on its outlet side and closes as
+  it fills. **Demand patterns**: 24 h residential / commercial / industrial multipliers on the lab clock (re-solved
+  per lab-minute). **Leaky joint**: a junction with an emitter, reporting loss per day.
 - **Relief valve**: a PSV venting to an atmospheric reservoir through a stub pipe — holds its set pressure by
   lifting just far enough.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **22 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **26 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
-  valve). `scripts/control-sim.ts` runs the loops closed
+  valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli

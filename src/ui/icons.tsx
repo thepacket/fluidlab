@@ -111,6 +111,20 @@ export function KindIcon({ kind }: { kind: Kind | 'pipe' | 'network' }) {
           <path d="M16 2v2M5.500 6l1.500 1.500M26.500 6L25 7.500" stroke="var(--accent)" />
         </>
       )}
+      {kind === 'vessel' && (
+        <>
+          <rect x="9" y="3" width="14" height="24" rx="7" />
+          <path d="M9 17q7-5 14 0" stroke="var(--accent)" />
+          <path d="M12 29h8M16 3V1" />
+        </>
+      )}
+      {kind === 'leak' && (
+        <>
+          <path d="M3 13h26" opacity=".5" />
+          <circle cx="16" cy="13" r="5" />
+          <path d="M16 20v2M12 21l-1.500 3M20 21l1.500 3M16 26v2" stroke="var(--accent)" />
+        </>
+      )}
       {kind === 'fitting' && (
         <>
           <path d="M3 20h13a6 6 0 0 0 6-6V3" />
