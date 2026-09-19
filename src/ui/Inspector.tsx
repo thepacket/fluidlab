@@ -28,8 +28,9 @@ import { ELEMENT_TYPES, FLUIDS, KIND_META, MATERIALS, ROTATABLE, VALVE_TYPES, de
 import { fmt, fmtNum, fmtU, toDisplay, toSI, unitLabel, type Quantity } from '../model/units'
 import { model, selectedId, useLab } from '../store'
 import { waterProfile } from '../engine/channel'
+import { roomLoss } from '../engine/thermal'
 import * as oc from '../model/openchannel'
-import { INSULATION, STEAM_LOADS, TRAP_STATES, TRAP_TYPES, WATER_INSULATION } from '../model/steam'
+import { INSULATION, STEAM_LOADS, TRAP_STATES, TRAP_TYPES, WATER_INSULATION, trapType } from '../model/steam'
 import { Chart, SERIES, type Marker, type Series } from './Chart'
 import { KindIcon } from './icons'
 
@@ -80,7 +81,12 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'minLevel', label: 'Minimum level', q: 'length' },
     { ...elevation, label: 'Base elevation' },
   ],
-  junction: [elevation, { key: 'demand', label: 'Base demand (draw-off)', q: 'flow' }, { key: 'pattern', label: 'Daily pattern', q: 'none', type: 'select', options: DEMAND_PATTERNS }],
+  junction: [
+    elevation,
+    { key: 'demand', label: 'Base demand (draw-off)', q: 'flow' },
+    { key: 'pattern', label: 'Daily pattern', q: 'none', type: 'select', options: DEMAND_PATTERNS },
+    { key: 'drop', label: 'Step down in the channel bed', q: 'length', hint: 'Reaches leaving this joint start this much lower', show: (_p, _g, _s, _t, wet) => wet },
+  ],
   vessel: [
     { key: 'volume', label: 'Total volume', q: 'volume' },
     { key: 'precharge', label: 'Gas pre-charge', q: 'pressure' },
@@ -218,6 +224,17 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'enabled', label: 'Enabled', q: 'none', type: 'toggle' },
     { key: 'repeat', label: 'Repeat', q: 'none', type: 'toggle' },
     { key: 'period', label: 'Repeat every (s)', q: 'none', show: (p) => p.repeat },
+    {
+      key: 'trigger',
+      label: 'With a signal wired to its input',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 'start', name: 'start on it, then run on' },
+        { id: 'run', name: 'run only while it is on' },
+      ],
+      hint: 'Wire a limit switch, timer or logic gate to the input and the sequence waits for it',
+    },
   ],
   schedule: [
     { key: 'enabled', label: 'Enabled', q: 'none', type: 'toggle' },
@@ -237,7 +254,17 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'supplyTemp', label: 'Flow temperature (°C)', q: 'none', show: (p) => p.variant === 'boiler' },
     { key: 'ratedHeat', label: 'Rated output (at 50 K excess)', q: 'power', show: (p) => p.ratedHeat !== undefined && p.variant !== 'boiler' },
     { key: 'ratedHeat', label: 'Maximum output (0 = unlimited)', q: 'power', show: (p) => p.variant === 'boiler' },
-    { key: 'roomTemp', label: 'Room temperature (°C)', q: 'none', show: (p) => p.ratedHeat !== undefined && p.variant !== 'boiler' },
+    { key: 'roomTemp', label: 'Room temperature (°C)', q: 'none', show: (p) => p.ratedHeat !== undefined && p.variant !== 'boiler' && !p.roomModel },
+    {
+      key: 'roomModel',
+      label: 'Model the room it heats',
+      q: 'none',
+      type: 'toggle',
+      show: (p) => p.ratedHeat !== undefined && p.variant !== 'boiler',
+      hint: 'The room warms with what the emitter gives and cools to outside; wire its reading to a thermostat',
+    },
+    { key: 'outsideTemp', label: 'Outside temperature (°C)', q: 'none', show: (p) => !!p.roomModel },
+    { key: 'roomLoss', label: 'Room heat loss (W per K)', q: 'none', show: (p) => !!p.roomModel },
     { key: 'fouling', label: 'Fouling', q: 'percent', type: 'slider', max: 0.95, show: (p) => !!lossDevice(p.variant).fouls },
     elevation,
   ],
@@ -337,7 +364,8 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
   thermo: [elevation],
   steamload: [
     { key: 'variant', label: 'Type', q: 'none', type: 'select', options: Object.entries(STEAM_LOADS).map(([id, d]) => ({ id, name: d.name })) },
-    { key: 'duty', label: 'Heat duty', q: 'power' },
+    { key: 'duty', label: 'Heat duty at full load', q: 'power' },
+    { key: 'load', label: 'Load', q: 'percent', type: 'slider', max: 1, hint: 'Its control valve throttles the steam to suit; a controller wired to the load scales this' },
     { key: 'processTemp', label: 'Process temperature (°C)', q: 'none', hint: 'The steam must be at least 5 °C hotter than this' },
     { key: 'backPressure', label: 'Condensate return pressure', q: 'pressure' },
   ],
@@ -1139,20 +1167,23 @@ function SequenceChart({ id }: { id: string }) {
   const targets = s.edges.filter((e) => e.type === 'signal' && e.source === id).map((e) => e.target)
   const steps: SequenceStep[] = p.steps ?? []
   const span = Math.max(p.repeat ? p.period : 0, ...steps.map((x) => x.at + x.ramp), 10) * (p.repeat ? 1 : 1.15)
-  const now = sequenceClock(p, s.simTime)
+  const clock = s.ctrl.mem[id]?.integral ?? s.simTime
+  const now = sequenceClock(p, clock)
   const colors = [SERIES.blue, SERIES.orange, SERIES.aqua]
-  const series: Series[] = targets.slice(0, 3).map((t, i) => ({
-    name: s.nodes.find((n) => n.id === t)?.data.label ?? t,
-    color: colors[i],
-    points: Array.from({ length: 121 }, (_, k) => ({ x: (span * k) / 120, y: sequenceValue({ ...p, repeat: false }, t, (span * k) / 120) * 100 })),
-  }))
-  const markers: Marker[] = targets.slice(0, 3).map((t, i) => ({ x: Math.min(now, span), y: sequenceValue(p, t, s.simTime) * 100, label: i === 0 ? fmtClock(now) : '', color: '#ffffff' }))
-  return (
-    <>
-      <Chart series={series} markers={markers} xLabel="Lab time (s)" yLabel="Command (%)" empty="Wire the block to a device and add a step" />
-      {targets.length > 3 && <p className="muted">Showing the first three of {targets.length} wired devices.</p>}
-    </>
-  )
+  // three series to a chart, as many charts as it takes: more lines than that in one plot cannot be told apart
+  const groups: string[][] = []
+  for (let i = 0; i < targets.length; i += 3) groups.push(targets.slice(i, i + 3))
+  const chartFor = (group: string[]) => {
+    const series: Series[] = group.map((t, i) => ({
+      name: s.nodes.find((n) => n.id === t)?.data.label ?? t,
+      color: colors[i],
+      points: Array.from({ length: 121 }, (_, k) => ({ x: (span * k) / 120, y: sequenceValue({ ...p, repeat: false }, t, (span * k) / 120) * 100 })),
+    }))
+    const markers: Marker[] = group.map((t, i) => ({ x: Math.min(now, span), y: sequenceValue(p, t, clock) * 100, label: i === 0 ? fmtClock(now) : '', color: '#ffffff' }))
+    return <Chart key={group.join()} series={series} markers={markers} height={groups.length > 1 ? 150 : 190} xLabel="Sequence time (s)" yLabel="Command (%)" />
+  }
+  if (!targets.length) return <Chart series={[]} xLabel="Sequence time (s)" yLabel="Command (%)" empty="Wire the block to a device and add a step" />
+  return <>{groups.map(chartFor)}</>
 }
 
 function CurvePoints({ props, onChange }: { props: Props; onChange: (patch: Props) => void }) {
@@ -1250,7 +1281,13 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
             <span>{unitLabel('pressure', u)}</span>
           </div>
         </div>
-        <Row label="Heat delivered" value={fmtU(x.duty, 'power', u)} />
+        <Row label="Heat delivered" value={`${fmtU(x.duty, 'power', u)}  ·  ${(x.fraction * 100).toFixed(0)} % load`} />
+        <Row label="Steam space, after its control valve" value={`${fmtU(x.space, 'pressure', u)}  ·  ${x.tSat.toFixed(0)} °C`} tone={x.stalled ? 'bad' : undefined} />
+        <Row
+          label="Stalls below"
+          value={x.stallAt > 0 ? `${(x.stallAt * 100).toFixed(0)} % load` : 'never — it can always drain'}
+          tone={x.fraction <= x.stallAt ? 'bad' : x.stallAt > 0.5 ? 'warn' : 'good'}
+        />
         <Row label="Margin over the process" value={`${(x.tSat - node!.data.props.processTemp).toFixed(0)} K`} tone={x.short ? 'bad' : 'good'} />
         <Row label="Condensate to drain" value={kgh(x.steam + x.carryover)} />
         <Row label="… of which arrived from the pipework" value={kgh(x.carryover)} tone={x.carryover > 0.03 * x.steam ? 'warn' : undefined} />
@@ -1287,6 +1324,8 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
         />
         <Row label="Loading" value={x.capacity > 0 ? `${((x.load / x.capacity) * 100).toFixed(0)} % of capacity` : '—'} />
         <Row label="Flash steam at the outlet" value={`${(x.flash * 100).toFixed(1)} %`} />
+        <Row label="Arrives while the pipework warms up" value={`${x.warmup.toFixed(1)} kg`} />
+        <p className="muted">{trapType(node!.data.props.trapType).note}</p>
         {st.returns.backPressure[id] !== undefined && (
           <Row label="Back-pressure from the return line" value={fmtU(st.returns.backPressure[id], 'pressure', u)} tone={st.returns.backPressure[id] > 0.5 * n.pressure ? 'warn' : undefined} />
         )}
@@ -1482,6 +1521,7 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
             <Row label="Steam temperature" value={`${st.links[id].tSat.toFixed(0)} °C`} />
             <Row label="Heat lost to the room" value={fmtU(st.links[id].heatLoss, 'power', u)} />
             <Row label="Condensate formed" value={kgh(st.links[id].condensate)} />
+            <Row label="Condensate made warming it up from cold" value={`${st.links[id].warmup.toFixed(1)} kg`} />
           </>
         )}
       </>
@@ -1617,6 +1657,7 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
         {s.results.thermal?.devices[id] && Math.abs(s.results.thermal.devices[id].heat) > 1 && (
           <>
             <Row label="Water temperature" value={`${s.results.thermal.devices[id].tIn.toFixed(1)} → ${s.results.thermal.devices[id].tOut.toFixed(1)} °C`} />
+            {s.results.thermal.rooms?.[id] !== undefined && <Row label="Room temperature" value={`${s.results.thermal.rooms[id].toFixed(1)} °C`} />}
             <Row
               label={s.results.thermal.devices[id].heat > 0 ? 'Heat put into the water' : 'Heat given to the room'}
               value={fmtU(Math.abs(s.results.thermal.devices[id].heat), 'power', u)}
@@ -1879,6 +1920,7 @@ export function Inspector() {
               props={{
                 conduit: 'pipe',
                 ...(wet && (kind === 'tank' || kind === 'reservoir') ? { channelInvert: oc.lakeSill(kind, props) } : {}),
+                ...(kind === 'fitting' && props.roomModel ? { roomLoss: roomLoss(props), outsideTemp: 0 } : {}),
                 ...props,
                 insulation: String(props.insulation ?? (steamMode ? 0 : 'none')),
               }}

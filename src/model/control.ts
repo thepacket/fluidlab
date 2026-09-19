@@ -20,11 +20,12 @@ export const PV_SOURCES: Partial<Record<Kind, { quantity: Quantity; name: string
   dpgauge: { quantity: 'pressure', name: 'Differential', tag: 'dP' },
   weir: { quantity: 'flow', name: 'Flow', tag: 'F' },
   thermo: { quantity: 'temperature', name: 'Temperature', tag: 'T' },
+  fitting: { quantity: 'temperature', name: 'Room temperature', tag: 'T' },
 }
 /** controllers that read a measurement */
 export const PV_CONSUMERS: Kind[] = ['switch', 'pid']
 /** control blocks that read other controllers' outputs */
-export const SIGNAL_CONSUMERS: Kind[] = ['logic', 'lamp', 'stager']
+export const SIGNAL_CONSUMERS: Kind[] = ['logic', 'lamp', 'stager', 'sequence']
 /** control blocks with an output */
 export const SIGNAL_SOURCES: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'stager', 'schedule', 'sequence']
 
@@ -52,13 +53,18 @@ export const sequenceClock = (p: Props, t: number) => (p.repeat && p.period > 0 
  */
 export function sequenceValue(p: Props, target: string, t: number): number {
   const steps = ((p.steps ?? []) as SequenceStep[]).filter((s) => s.target === target || s.target === 'all').sort((a, b) => a.at - b.at)
-  let cur = (_tt: number): number => 1
-  for (const s of steps) {
-    const before = cur
-    const from = before(s.at)
-    cur = (tt) => (tt < s.at ? before(tt) : s.ramp > 0 ? from + (clamp01(s.value) - from) * Math.min(1, (tt - s.at) / s.ramp) : clamp01(s.value))
+  const chain = (start: number) => {
+    let cur = (_tt: number): number => start
+    for (const s of steps) {
+      const before = cur
+      const from = before(s.at)
+      cur = (tt) => (tt < s.at ? before(tt) : s.ramp > 0 ? from + (clamp01(s.value) - from) * Math.min(1, (tt - s.at) / s.ramp) : clamp01(s.value))
+    }
+    return cur
   }
-  return cur(sequenceClock(p, t))
+  // a repeating sequence picks each cycle up where the last one left off, so a ramp can carry across the wrap
+  const start = p.repeat && p.period > 0 && steps.length ? chain(1)(p.period) : 1
+  return chain(start)(sequenceClock(p, t))
 }
 
 // ---- timer -----------------------------------------------------------------------
@@ -128,6 +134,7 @@ function readPV(src: ModelNode, results?: Results, levels?: Record<string, numbe
   if (!results?.ok) return undefined
   if (src.data.kind === 'gauge' || src.data.kind === 'vessel') return results.nodes[src.id]?.pressure
   if (src.data.kind === 'thermo') return results.thermal?.nodes[src.id]
+  if (src.data.kind === 'fitting') return results.thermal?.rooms?.[src.id]
   if (src.data.kind === 'weir') return results.nodes[src.id]?.extra?.flow
   const d = results.devices[src.id]
   if (!d) return undefined
@@ -150,12 +157,6 @@ export function stepControl({ nodes, edges, t, dt, results, levels, prev = EMPTY
     if (n.data.kind === 'timer') next.out[n.id] = timerState(p, t).on ? 1 : 0
     else if (n.data.kind === 'manual') next.out[n.id] = p.on ? 1 : 0
     else if (n.data.kind === 'schedule') next.out[n.id] = scheduleValue(p, t)
-    else if (n.data.kind === 'sequence') {
-      // every wired device gets its own command; the block's own output is their average, for the trend
-      const mine = wires.filter((w) => w.source === n.id)
-      for (const w of mine) next.wire[w.id] = live(n) ? sequenceValue(p, w.target, t) : 1
-      next.out[n.id] = mine.length ? mine.reduce((s, w) => s + next.wire[w.id], 0) / mine.length : 0
-    }
   }
   for (const n of nodes) {
     const p = n.data.props
@@ -250,6 +251,25 @@ export function stepControl({ nodes, edges, t, dt, results, levels, prev = EMPTY
       const share = Math.min(1, Math.max(0, demand * N - (running - 1)))
       next.wire[w.id] = k >= running ? 0 : p.trim ? floor + (1 - floor) * share : 1
     }
+  }
+
+  // 2b. event sequences. Left alone, a sequence runs on the lab clock. With something wired to its input it waits for
+  // that signal: 'start' lets it run on once triggered, 'run' lets its clock advance only while the signal is on —
+  // so "when the tank reaches 2 m, then…" is a limit switch wired to a sequence.
+  for (const n of nodes) {
+    if (n.data.kind !== 'sequence') continue
+    const p = n.data.props
+    const gate = wires.find((w) => w.target === n.id && w.targetHandle === 'cin')
+    const was = prev.mem[n.id] ?? { integral: 0, lastError: 0 }
+    const on = gate ? (next.out[gate.source] ?? 0) >= 0.5 : true
+    const started = !gate || on || (p.trigger !== 'run' && was.lastError === 1)
+    const running = gate ? (p.trigger === 'run' ? on : started) : true
+    const elapsed = gate ? was.integral + (running ? dt : 0) : t
+    next.mem[n.id] = { integral: elapsed, lastError: started ? 1 : 0 }
+    // every wired device gets its own command; the block's own output is their average, for the trend
+    const mine = wires.filter((w) => w.source === n.id)
+    for (const w of mine) next.wire[w.id] = live(n) ? sequenceValue(p, w.target, elapsed) : 1
+    next.out[n.id] = mine.length ? mine.reduce((s, w) => s + next.wire[w.id], 0) / mine.length : 0
   }
 
   // 3. commands: the strongest live signal arriving at each device wins

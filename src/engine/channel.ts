@@ -82,7 +82,7 @@ interface Structure {
 }
 
 /** `feeds`: discharge (m³/s) arriving from the pipework at outlets that empty into a channel. */
-export function solveChannel(model: Model, feeds: Record<string, number> = {}): Results | null {
+export function solveChannel(model: Model, feeds: Record<string, number> = {}, draws: Record<string, number> = {}): Results | null {
   const edges = model.edges.filter((e) => isChannel(e))
   if (!edges.length) return null
   const t0 = performance.now()
@@ -116,6 +116,7 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}): 
     }
   }
   const ids = [...adj.keys()]
+  const dropAt = (id: string) => (kindOf(id) === 'junction' ? Math.max(0, byId.get(id)!.data.props.drop ?? 0) : 0)
   // a lake is where water ends up if every reach at it runs downhill towards it; otherwise it is a source
   const lakeSink = (id: string) => isLake(id) && adj.get(id)!.every((m) => z(m) > z(id))
   const terminal = (id: string) => kindOf(id) === 'outfall' || lakeSink(id) || (adj.get(id)!.length === 1 && kindOf(id) !== 'inflow' && kindOf(id) !== 'outlet' && !isLake(id))
@@ -139,7 +140,8 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}): 
     const p = { ...e.data!.props }
     if (p.lining !== 'custom') p.manningN = lining(p.lining).n
     const L = Math.max(0.1, p.length)
-    reaches.push({ e, p, up, dn, zu: z(up), zd: z(dn), dx: L / STATIONS, s0: (z(up) - z(dn)) / L, q: 0, yc: 0, yn: null, sub: [], sup: [], y: [] })
+    const zu = z(up) - dropAt(up) // a junction can be a step in the bed: reaches leaving it start that much lower
+    reaches.push({ e, p, up, dn, zu, zd: z(dn), dx: L / STATIONS, s0: (zu - z(dn)) / L, q: 0, yc: 0, yn: null, sub: [], sup: [], y: [] })
   }
   if (res.excluded.length) warnings.push({ level: 'info', text: 'Greyed-out channel parts have nowhere to drain to — add an outfall' })
   const leaving = (id: string) => reaches.filter((r) => r.up === id)
@@ -149,6 +151,7 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}): 
   // ---- 2. discharges --------------------------------------------------------------------------------
   const share = new Map<string, number>() // at a fork: fraction taken by the first branch
   const bracket = new Map<string, [number, number]>()
+  const shares = new Map<string, number[]>() // three branches or more: the fraction each one takes
   const outflow = new Map<string, number>()
   const lakeQ = new Map<string, number>() // what each source lake is giving, found by iteration below
   const route = () => {
@@ -160,11 +163,12 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}): 
       if (nd.data.kind === 'outlet') total += Math.max(0, feeds[id] ?? 0)
       total += lakeQ.get(id) ?? 0
       if (nd.data.kind === 'junction') total -= p.demand ?? 0
+      total -= draws[id] ?? 0 // pipework tapping the channel here (negative: discharging into it)
       total = Math.max(0, total)
       const outs = leaving(id)
       outflow.set(id, outs.length ? 0 : total)
       outs.forEach((r, i) => {
-        r.q = outs.length === 1 ? total : outs.length === 2 ? total * (i === 0 ? share.get(id)! : 1 - share.get(id)!) : total / outs.length
+        r.q = outs.length === 1 ? total : outs.length === 2 ? total * (i === 0 ? share.get(id)! : 1 - share.get(id)!) : total * shares.get(id)![i]
         r.yc = criticalDepth(r.q, r.p)
         r.yn = normalDepth(r.q, r.p, r.s0)
       })
@@ -173,7 +177,11 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}): 
   for (const id of order) {
     const outs = leaving(id)
     if (outs.length === 2) (share.set(id, 0.5), bracket.set(id, [0, 1]))
-    if (outs.length > 2) warnings.push({ id, level: 'info', text: `${byId.get(id)!.data.label}: more than two branches — the flow is simply divided equally` })
+    if (outs.length > 2)
+      shares.set(
+        id,
+        outs.map(() => 1 / outs.length),
+      )
   }
 
   // ---- 3. subcritical pass --------------------------------------------------------------------------
@@ -252,7 +260,14 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}): 
     const a = Math.max(1e-4, p.opening * command(model, id))
     const b = Math.max(0.01, p.width)
     const y1 = gateDepth(b, a, q)
-    if (y1 <= a * 1.001 && tw <= a) return tail // the gate lip is clear of the water
+    if (y1 <= a * 1.001 && tw <= a) {
+      // The flow would pass under the lip without touching it — unless the channel's own depth reaches the gate, in
+      // which case the surface hangs on the lip: just deep enough to touch, no deeper.
+      if (!approach || approach.yn === null || approach.yn <= a) return tail
+      st.yUp = a
+      st.headOver = 0
+      return zs + a
+    }
     const jet = Math.min(GATE_CC * a, d.yc)
     st.submerged = specificForce(q, d.p, tw) > specificForce(q, d.p, jet) && tw > jet
     if (st.submerged) {
@@ -289,6 +304,11 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}): 
 
   const core = () => {
     for (const id of bracket.keys()) (share.set(id, 0.5), bracket.set(id, [0, 1]))
+    for (const [id, f] of shares)
+      shares.set(
+        id,
+        f.map(() => 1 / f.length),
+      )
     for (let pass = 0; pass < 40; pass++) {
       route()
       subPass()
@@ -301,6 +321,21 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}): 
         const mid = (next[0] + next[1]) / 2
         moved = Math.max(moved, Math.abs(mid - share.get(id)!))
         share.set(id, mid)
+      }
+      // three branches or more: nudge every branch towards the one water level they must share at the fork.
+      // A branch's level rises roughly as ⅔·depth/flow (exact for critical flow), which is a good enough slope to step with.
+      for (const [id, f] of shares) {
+        const outs = leaving(id)
+        const total = outs.reduce((s, r) => s + r.q, 0)
+        if (total <= 0) continue
+        const stage = outs.map((r) => r.zu + r.sub[0])
+        const k = outs.map((r) => (0.67 * Math.max(r.sub[0], 0.01)) / Math.max(r.q, 1e-4 * total))
+        const common = outs.reduce((s, _, i) => s + stage[i] / k[i], 0) / outs.reduce((s, _, i) => s + 1 / k[i], 0)
+        const q = outs.map((r, i) => Math.max(0, r.q + (0.7 * (common - stage[i])) / k[i]))
+        const sum = q.reduce((s, v) => s + v, 0) || 1
+        const next = q.map((v) => v / sum)
+        moved = Math.max(moved, ...next.map((v, i) => Math.abs(v - f[i])))
+        shares.set(id, next)
       }
       if (moved < 1e-5) break
     }
@@ -316,7 +351,7 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}): 
         }
         let start = r.yc
         if (st?.yUp != null) start = st.toe ?? r.yc
-        else if (feeder && feeder.q > 0 && feeder.y[STATIONS] < feeder.yc * 0.99) start = superDepth(r.q, r.p, specificEnergy(feeder.q, feeder.p, feeder.y[STATIONS]))
+        else if (feeder && feeder.q > 0 && (feeder.y[STATIONS] < feeder.yc * 0.99 || dropAt(id) > 0)) start = superDepth(r.q, r.p, specificEnergy(feeder.q, feeder.p, feeder.y[STATIONS]) + dropAt(id)) // a step in the bed hands its height over as energy
         r.sup = stationsDown(r, start)
         r.y = r.sub.map((ys, i) => (r.sup[i] < r.yc * 0.999 && specificForce(r.q, r.p, r.sup[i]) > specificForce(r.q, r.p, ys) * (1 + 1e-9) ? r.sup[i] : ys))
       }
@@ -442,6 +477,7 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}): 
         pressure: nd.data.kind === 'tank' ? (lakeLevel(id) - p.elevation) * rhoG : 0,
         elevation: nd.data.kind === 'tank' ? p.elevation : lakeLevel(id),
         outflow: ins.reduce((s, r) => s + r.q, 0) - outs.reduce((s, r) => s + r.q, 0),
+        extra: { channelNet: ins.reduce((s, r) => s + r.q, 0) - outs.reduce((s, r) => s + r.q, 0) },
       }
       continue
     }

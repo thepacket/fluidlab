@@ -24,14 +24,14 @@ const artTransform = (rot: number) => (rot === 180 ? 'scaleX(-1)' : rot ? `rotat
 const upright = (rot: number, cx: number, cy: number) => (rot === 180 ? `translate(${2 * cx} 0) scale(-1 1)` : rot ? `rotate(${-rot} ${cx} ${cy})` : undefined)
 
 /** Command input for anything a controller can switch. It takes whichever side the fluid ports leave free. */
-function ControlPort({ kind, rot }: { kind: Kind; rot: number }) {
-  if (!CONTROLLABLE.includes(kind)) return null
+function ControlPort({ kind, rot, force }: { kind: Kind; rot: number; force?: boolean }) {
+  if (!CONTROLLABLE.includes(kind) && !force) return null
   return <Handle id="ctl" type="source" position={rot === 180 ? Position.Top : side(Position.Top, rot)} className="port port-signal" />
 }
 
 /** Measurement output: wiring it turns a gauge, meter or tank into a transmitter. */
-function MeasurementPort({ kind, rot }: { kind: Kind; rot: number }) {
-  if (!PV_SOURCES[kind]) return null
+function MeasurementPort({ kind, rot, show }: { kind: Kind; rot: number; show?: boolean }) {
+  if (!PV_SOURCES[kind] || show === false) return null
   // the plain gauge already has a fluid port top-centre, so its transmitter lug sits off to the side
   return (
     <Handle
@@ -48,7 +48,7 @@ function Ports({ kind, rot }: { kind: Kind; rot: number }) {
   if (isControl(kind))
     return (
       <>
-        {kind !== 'timer' && kind !== 'manual' && kind !== 'schedule' && kind !== 'sequence' && (
+        {kind !== 'timer' && kind !== 'manual' && kind !== 'schedule' && (
           <Handle id="cin" type="source" position={Position.Left} className={`port port-signal ${PV_CONSUMERS.includes(kind) ? 'port-pv' : ''}`} />
         )}
         {kind !== 'lamp' && <Handle id="sig" type="source" position={Position.Right} className="port port-signal" />}
@@ -105,7 +105,7 @@ function Ports({ kind, rot }: { kind: Kind; rot: number }) {
     <>
       <Handle id="l" type="source" position={Position.Left} className="port" style={{ top: y }} />
       <Handle id="r" type="source" position={Position.Right} className="port" style={{ top: y }} />
-      {kind !== 'reservoir' && kind !== 'vessel' && kind !== 'inflow' && kind !== 'outfall' && <Handle id="t" type="source" position={Position.Top} className="port" />}
+      {kind !== 'reservoir' && kind !== 'vessel' && kind !== 'inflow' && kind !== 'outfall' && kind !== 'steamload' && <Handle id="t" type="source" position={Position.Top} className="port" />}
       <Handle id="b" type="source" position={Position.Bottom} className="port" />
     </>
   )
@@ -120,9 +120,12 @@ interface ShellProps {
   sub?: ReactNode
   children: ReactNode
   extra?: ReactNode
+  /** a part of a kind that is not normally commanded, or does not normally measure, which this one does (a boiler; a radiator with a room) */
+  ctl?: boolean
+  pv?: boolean
 }
 
-function Shell({ id, kind, selected, label, rot = 0, sub, children, extra }: ShellProps) {
+function Shell({ id, kind, selected, label, rot = 0, sub, children, extra, ctl, pv }: ShellProps) {
   const warn = useLab((s) => s.results.warnings.find((w) => w.id === id && w.level !== 'info'))
   const off = useLab((s) => s.results.excluded.includes(id))
   const updateInternals = useUpdateNodeInternals()
@@ -136,8 +139,8 @@ function Shell({ id, kind, selected, label, rot = 0, sub, children, extra }: She
         {children}
       </div>
       <Ports kind={kind} rot={rot} />
-      <ControlPort kind={kind} rot={rot} />
-      <MeasurementPort kind={kind} rot={rot} />
+      <ControlPort kind={kind} rot={rot} force={ctl} />
+      <MeasurementPort kind={kind} rot={rot} show={pv} />
       <div className="eq-label">
         <b>{label}</b>
         {sub && <span>{sub}</span>}
@@ -1024,11 +1027,21 @@ export const FittingNode = memo(({ id, data, selected }: NodeProps<LabNode>) => 
       ? `K ${fittingK(p, spec.byDiameters).K.toFixed(2)}${dp !== undefined ? ` · ${fmtU(dp, 'pressure', units)}` : ''}`
       : `${dp !== undefined ? `Δp ${fmtU(dp, 'pressure', units)}` : spec.name}${p.fouling > 0.02 ? ` · ${Math.round(p.fouling * 100)} % fouled` : ''}`
   const heat = useLab((st) => st.results.thermal?.devices[id])
+  const room = useLab((st) => st.results.thermal?.rooms?.[id])
   const thermalSub = heat && Math.abs(heat.heat) > 1 ? `${heat.tIn.toFixed(0)} → ${heat.tOut.toFixed(0)} °C · ${(Math.abs(heat.heat) / 1000).toFixed(2)} kW` : undefined
   // a bend or tee leaves through the top of its box; everything else runs straight through
   const bent = spec.glyph === 'elbow' || spec.glyph === 'elbow45' || spec.glyph === 'tee'
   return (
-    <Shell id={id} kind="fitting" rot={rot} selected={selected} label={data.label} sub={thermalSub ?? sub}>
+    <Shell
+      id={id}
+      kind="fitting"
+      rot={rot}
+      selected={selected}
+      label={data.label}
+      sub={room !== undefined ? `room ${room.toFixed(1)} °C${thermalSub ? ` · ${thermalSub.split(' · ')[1]}` : ''}` : (thermalSub ?? sub)}
+      ctl={spec.id === 'boiler'}
+      pv={!!p.roomModel}
+    >
       <svg width="96" height="64" viewBox="0 0 96 64">
         <rect x="0" y="22" width="32" height="20" fill="#04070d" />
         <rect x="0" y="25" width="32" height="14" fill={cIn} />
@@ -1444,6 +1457,13 @@ const WATER = '#2b8fe6'
 /** px per metre, so the tallest thing in the picture fills ~48 px */
 const depthScale = (...heights: number[]) => 48 / Math.max(0.25, ...heights)
 
+/** Water in the channel artwork follows the pressure overlay (depth, here), and is plain blue otherwise. */
+const useWaterColor = (p: number | undefined) => {
+  const overlay = useLab((s) => s.overlay)
+  const pMax = useLab((s) => s.results.pMax)
+  return overlay === 'pressure' && p !== undefined ? pressureColor(p, pMax) : WATER
+}
+
 function Bed({ width }: { width: number }) {
   return (
     <>
@@ -1459,6 +1479,7 @@ export const InflowNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const units = useLab((s) => s.units)
   const r = useLab((s) => s.results.nodes[id])
   const paused = useLab((s) => !s.running)
+  const water = useWaterColor(r?.pressure)
   const q = Math.abs(r?.outflow ?? 0)
   const d = (r?.extra?.depth ?? 0) * depthScale(r?.extra?.depth ?? 0, 0.5)
   return (
@@ -1468,8 +1489,8 @@ export const InflowNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
         <circle cx="21" cy="34" r="10" fill="#04070d" stroke="#5a7099" strokeWidth="2" />
         {q > 0 && (
           <>
-            <path d={`M21,28 H40 Q56,28 58,${BED - d} V${BED} H21 Z`} fill={WATER} opacity=".85" />
-            <rect x="38" y={BED - d} width="66" height={d} fill={WATER} opacity=".85" />
+            <path d={`M21,28 H40 Q56,28 58,${BED - d} V${BED} H21 Z`} fill={water} opacity=".85" />
+            <rect x="38" y={BED - d} width="66" height={d} fill={water} opacity=".85" />
             <path
               className="pipe-flow"
               d={`M22,34 H40 Q54,34 56,${BED - d / 2} H104`}
@@ -1492,6 +1513,7 @@ export const WeirNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const units = useLab((s) => s.units)
   const r = useLab((s) => s.results.nodes[id])
   const paused = useLab((s) => !s.running)
+  const water = useWaterColor(r?.pressure)
   const p = data.props
   const x = r?.extra
   const flume = p.variant === 'parshall'
@@ -1511,10 +1533,10 @@ export const WeirNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
       <svg width="112" height="88" viewBox="0 0 112 88" style={{ overflow: 'visible' }}>
         {wet && (
           <>
-            <rect x="0" y={BED - up} width={broad ? 40 : 52} height={up} fill={WATER} opacity=".85" />
+            <rect x="0" y={BED - up} width={broad ? 40 : 52} height={up} fill={water} opacity=".85" />
             <path
               d={`M${broad ? 40 : 52},${BED - up} Q${broad ? 66 : 62},${BED - up} ${broad ? 74 : 66},${BED - Math.max(dn, 2)} H112 V${BED} H${broad ? 40 : 56} V${BED - c} Z`}
-              fill={WATER}
+              fill={water}
               opacity=".85"
             />
             <path
@@ -1547,6 +1569,7 @@ export const GateNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
   const r = useLab((s) => s.results.nodes[id])
   const cmd = useLab((s) => s.controls[id])
   const paused = useLab((s) => !s.running)
+  const water = useWaterColor(r?.pressure)
   const x = r?.extra
   const a = data.props.opening * (cmd ?? 1)
   const k = depthScale(a * 2, x?.depthUp ?? 0, x?.depthDn ?? 0)
@@ -1557,8 +1580,8 @@ export const GateNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
       <svg width="112" height="96" viewBox="0 0 112 96" style={{ overflow: 'visible' }}>
         {wet && (
           <>
-            <rect x="0" y={BED - up} width="53" height={up} fill={WATER} opacity=".85" />
-            <path d={`M59,${BED - Math.min(lip, Math.max(dn, 2))} Q70,${BED - dn} 80,${BED - dn} H112 V${BED} H59 Z`} fill={WATER} opacity=".85" />
+            <rect x="0" y={BED - up} width="53" height={up} fill={water} opacity=".85" />
+            <path d={`M59,${BED - Math.min(lip, Math.max(dn, 2))} Q70,${BED - dn} 80,${BED - dn} H112 V${BED} H59 Z`} fill={water} opacity=".85" />
             <path
               className="pipe-flow"
               d={`M2,${BED - up / 2} Q44,${BED - up / 2} 54,${BED - lip / 2} H112`}
@@ -1584,6 +1607,7 @@ export const OutfallNode = memo(({ id, data, selected }: NodeProps<LabNode>) => 
   const units = useLab((s) => s.units)
   const r = useLab((s) => s.results.nodes[id])
   const paused = useLab((s) => !s.running)
+  const water = useWaterColor(r?.pressure)
   const mode: string = data.props.mode
   const q = r?.outflow ?? 0
   const d = (r?.extra?.depth ?? 0) * depthScale(r?.extra?.depth ?? 0, 0.5)
@@ -1592,7 +1616,7 @@ export const OutfallNode = memo(({ id, data, selected }: NodeProps<LabNode>) => 
       <svg width="104" height="84" viewBox="0 0 104 84" style={{ overflow: 'visible' }}>
         {mode === 'free' ? (
           <>
-            {q > 0 && <path d={`M0,${BED - d} H44 Q62,${BED - d} 66,96 H56 Q54,${BED} 44,${BED} H0 Z`} fill={WATER} opacity=".85" />}
+            {q > 0 && <path d={`M0,${BED - d} H44 Q62,${BED - d} 66,96 H56 Q54,${BED} 44,${BED} H0 Z`} fill={water} opacity=".85" />}
             {q > 0 && (
               <path
                 className="pipe-flow"
@@ -1609,7 +1633,7 @@ export const OutfallNode = memo(({ id, data, selected }: NodeProps<LabNode>) => 
           </>
         ) : (
           <>
-            <rect x="0" y={BED - Math.max(d, 3)} width="104" height={Math.max(d, 3)} fill={WATER} opacity=".85" />
+            <rect x="0" y={BED - Math.max(d, 3)} width="104" height={Math.max(d, 3)} fill={water} opacity=".85" />
             {mode === 'level' && <path d={`M70,${BED - Math.max(d, 3) - 8} l5,8 l5,-8 z`} fill="#fab219" />}
             <Bed width={104} />
           </>
@@ -1711,10 +1735,11 @@ export const ThermoNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
 // ---- event sequence -----------------------------------------------------------------------------
 
 export const SequenceNode = memo(({ id, data, selected }: NodeProps<LabNode>) => {
-  const t = useLab((s) => s.simTime)
+  const t = useLab((s) => s.ctrl.mem[id]?.integral ?? s.simTime) // its own clock: it may be waiting for a trigger
   const labels = useLab(useShallow((s) => Object.fromEntries(s.nodes.map((n) => [n.id, n.data.label]))))
   const p = data.props
   const steps = [...((p.steps ?? []) as SequenceStep[])].sort((a, b) => a.at - b.at)
+  const waiting = useLab((s) => s.edges.some((e) => e.type === 'signal' && e.target === id && e.targetHandle === 'cin') && !(s.ctrl.mem[id]?.lastError === 1))
   const now = sequenceClock(p, t)
   const span = Math.max(p.repeat ? p.period : 0, ...steps.map((s) => s.at + s.ramp), 10) * (p.repeat ? 1 : 1.1)
   const x = (tt: number) => 12 + Math.min(1, tt / span) * 108
@@ -1729,11 +1754,13 @@ export const SequenceNode = memo(({ id, data, selected }: NodeProps<LabNode>) =>
       sub={
         !on
           ? 'disabled'
-          : next
-            ? `in ${fmtClock(next.at - now)}: ${next.target === 'all' ? 'all' : (labels[next.target] ?? '?')} → ${Math.round(next.value * 100)} %`
-            : steps.length
-              ? 'sequence complete'
-              : 'no steps yet'
+          : waiting
+            ? 'waiting for its trigger'
+            : next
+              ? `in ${fmtClock(next.at - now)}: ${next.target === 'all' ? 'all' : (labels[next.target] ?? '?')} → ${Math.round(next.value * 100)} %`
+              : steps.length
+                ? 'sequence complete'
+                : 'no steps yet'
       }
     >
       <svg width="132" height="92" viewBox="0 0 132 92">

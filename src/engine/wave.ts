@@ -44,6 +44,8 @@ export interface WaveState {
   through: Record<string, number>
   /** discharge of each reach as its cell faces actually pass it (cell-centre Q carries a small bias where friction is strong) */
   flux: Record<string, number>
+  /** what each tank or reservoir on the channels is gaining right now, m³/s */
+  lakes: Record<string, number>
 }
 
 const DRY = 1e-4
@@ -129,7 +131,7 @@ function structureFlow(kind: string, p: Props, opening: number, hu: number, hd: 
 
 /** Start from the steady water surface. */
 export function initWave(model: Model, results: Results): WaveState {
-  const st: WaveState = { reaches: {}, ponds: {}, through: {}, flux: {} }
+  const st: WaveState = { reaches: {}, ponds: {}, through: {}, flux: {}, lakes: {} }
   for (const g of geometry(model, results)) {
     const r = results.channel!.reaches[g.id]
     st.flux[g.id] = r.flow
@@ -151,7 +153,7 @@ export function stepWave(model: Model, results: Results, prev: WaveState | null,
   const geo = geometry(model, results)
   if (!geo.length) return null
   const fresh = initWave(model, results)
-  const st: WaveState = { reaches: {}, ponds: {}, through: {}, flux: {} }
+  const st: WaveState = { reaches: {}, ponds: {}, through: {}, flux: {}, lakes: {} }
   for (const g of geo) {
     const had = prev?.reaches[g.id]
     st.reaches[g.id] = had && had.a.length === g.n ? { a: [...had.a], q: [...had.q] } : fresh.reaches[g.id]
@@ -286,7 +288,10 @@ export function stepWave(model: Model, results: Results, prev: WaveState | null,
         s.q[i] = q
       }
     }
-    for (const id of nodeIds) if (!isLake(id)) st.ponds[id] = Math.max(0, st.ponds[id] + (pondIn.get(id)! * h) / pondArea.get(id)!)
+    for (const id of nodeIds) {
+      if (!isLake(id)) st.ponds[id] = Math.max(0, st.ponds[id] + (pondIn.get(id)! * h) / pondArea.get(id)!)
+      else st.lakes[id] = (st.lakes[id] ?? 0) + (pondIn.get(id)! * h) / dt // averaged over this call
+    }
     t += h
   }
   return st
@@ -343,6 +348,11 @@ export function waveView(model: Model, results: Results, st: WaveState): { chann
     const fwd = g.up === e.source
     const old = links[g.id]
     links[g.id] = { ...old, flow: fwd ? flow : -flow, velocity: v.reduce((a, b) => a + b, 0) / g.n, pStart: (fwd ? depth[0] : depth[g.n - 1]) * rhoG, pEnd: (fwd ? depth[g.n - 1] : depth[0]) * rhoG }
+  }
+  // a tank on the channels fills and drains at the live rate, not the settled one
+  for (const [id, net] of Object.entries(st.lakes)) {
+    const n = results.nodes[id]
+    if (n?.extra?.channelNet !== undefined) nodes[id] = { ...n, outflow: n.outflow - n.extra.channelNet + net }
   }
   for (const [id, n] of Object.entries(results.nodes)) {
     if (!n.extra || !('depthUp' in n.extra)) continue

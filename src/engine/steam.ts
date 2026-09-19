@@ -2,16 +2,31 @@
 // condense duty / h_fg, and pipes that condense what their surface loses). This pass follows the *condensate*:
 // where it forms, which trap it drains to, whether that trap can cope — and adds up where the boiler's heat went.
 import { G, P_ATM, area, frictionFactor } from '../model/physics'
-import { flashFraction, hWater, hf, hfg, hg, pSat, rhoSteam, pipeHeatLoss, tSat, throttledTemp, trapCapacity } from '../model/steam'
+import { flashFraction, hWater, hf, hfg, hg, pSat, rhoSteam, steamSpace, trapType, warmupCondensate, pipeHeatLoss, tSat, throttledTemp, trapCapacity } from '../model/steam'
 import { isControl, type Model, type Results } from '../model/types'
 import { pipeCondensate } from './gas'
+import { command } from './inp'
 import type { Thermal } from './thermal'
 
 export interface SteamResults {
   /** per pipe: heat lost to the room (W) and the condensate that makes (kg/s) */
-  links: Record<string, { heatLoss: number; condensate: number; tSat: number }>
-  loads: Record<string, { duty: number; steam: number; tSat: number; carryover: number; flash: number; short: boolean }>
-  traps: Record<string, { load: number; capacity: number; steamLoss: number; lossPower: number; costPerYear: number; flash: number }>
+  links: Record<string, { heatLoss: number; condensate: number; tSat: number; /** kg made warming the cold pipe up */ warmup: number }>
+  loads: Record<
+    string,
+    {
+      duty: number
+      steam: number
+      tSat: number
+      carryover: number
+      flash: number
+      short: boolean
+      /** load fraction, steam-space gauge pressure, and the load fraction below which it cannot drain */ fraction: number
+      space: number
+      stallAt: number
+      stalled: boolean
+    }
+  >
+  traps: Record<string, { load: number; capacity: number; steamLoss: number; lossPower: number; costPerYear: number; flash: number; /** kg arriving while the pipework warms up */ warmup: number }>
   boilers: Record<string, { steam: number; heat: number; fuel: number; /** °C, when returned condensate sets it */ feedTemp?: number }>
   /** °C just after each pressure-reducing or throttling valve (slightly superheated) */
   throttled: Record<string, number>
@@ -59,14 +74,15 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
   // ---- condensate made in the pipes, and the way the steam is flowing ----
   const downstream = new Map<string, { to: string; flow: number }[]>()
   const neighbours = new Map<string, string[]>()
-  const parcels: { at: string; kg: number; from: string }[] = []
+  const parcels: { at: string; kg: number; warm: number; from: string }[] = []
   for (const e of model.edges) {
     const l = res.links[e.id]
     if (e.type === 'signal' || !e.data || !l) continue
     const pMean = abs((l.pStart + l.pEnd) / 2)
     const condensate = pipeCondensate(e.data.props, pMean)
     const heatLoss = pipeHeatLoss(e.data.props, tSat(pMean)) * Math.max(0.01, e.data.props.length)
-    out.links[e.id] = { heatLoss, condensate, tSat: tSat(pMean) }
+    const warmup = warmupCondensate(e.data.props, pMean)
+    out.links[e.id] = { heatLoss, condensate, tSat: tSat(pMean), warmup }
     thermal.links[e.id] = { tStart: seen(tSat(abs(l.pStart))), tEnd: seen(tSat(abs(l.pEnd))) }
     out.totals.mainsLoss += heatLoss
     const [from, to] = l.flow >= 0 ? [e.source, e.target] : [e.target, e.source]
@@ -81,7 +97,7 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
       if (!neighbours.has(a)) neighbours.set(a, [])
       neighbours.get(a)!.push(b)
     }
-    parcels.push({ at: to, kg: condensate, from: e.data.label })
+    parcels.push({ at: to, kg: condensate, warm: warmup, from: e.data.label })
   }
 
   // ---- loads and traps ----
@@ -93,8 +109,21 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
     if (nd.data.kind === 'steamload') {
       const steam = Math.max(0, r.outflow)
       const short = tSat(pa) < p.processTemp + 5
-      out.loads[nd.id] = { duty: steam * hfg(pa), steam, tSat: tSat(pa), carryover: 0, flash: flashFraction(pa, P_ATM + (p.backPressure ?? 0)), short }
-      out.totals.useful += steam * hfg(pa)
+      const fraction = Math.min(1, Math.max(0, (p.load ?? 1) * command(model, nd.id)))
+      const space = steamSpace(pa, p.processTemp, fraction)
+      out.loads[nd.id] = {
+        duty: steam * hfg(space),
+        steam,
+        tSat: tSat(space),
+        carryover: 0,
+        flash: flashFraction(space, P_ATM + (p.backPressure ?? 0)),
+        short,
+        fraction,
+        space: space - P_ATM,
+        stallAt: 0,
+        stalled: false,
+      }
+      out.totals.useful += steam * hfg(space)
       if (short)
         res.warnings.push({
           id: nd.id,
@@ -106,7 +135,8 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
       const lossPower = steamLoss * (hg(pa) - hWater(feedTemp))
       out.traps[nd.id] = {
         load: 0,
-        capacity: p.state === 'closed' ? 0 : trapCapacity(p.orifice, pa - P_ATM - (p.backPressure ?? 0)),
+        capacity: p.state === 'closed' ? 0 : trapType(p.trapType).capacity * trapCapacity(p.orifice, pa - P_ATM - (p.backPressure ?? 0)),
+        warmup: 0,
         steamLoss,
         lossPower,
         costPerYear: (steamLoss * 3600 * HOURS * steamCost) / 1000,
@@ -138,6 +168,7 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
       const kind = byId.get(cur)?.data.kind
       if (working(cur)) {
         out.traps[cur].load += parcel.kg
+        out.traps[cur].warmup += parcel.warm
         break
       }
       if (kind === 'steamload' && out.loads[cur]) {
@@ -147,6 +178,7 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
       const drip = (neighbours.get(cur) ?? []).find(working)
       if (drip) {
         out.traps[drip].load += parcel.kg
+        out.traps[drip].warmup += parcel.warm
         break
       }
       visited.add(cur)
@@ -219,13 +251,20 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
       const p = link.e.data!.props
       const kg = mass.get(link.e.id) ?? 0
       // hot condensate dropping into a lower pressure flashes: the line carries a little steam that takes nearly all the room
-      const x = kg > 0 ? Math.min(1, Math.max(0, (enthalpy.get(link.e.id)! / kg - hf(pDown)) / hfg(pDown))) : 0
-      const rho = 1 / (x / rhoSteam(pDown) + (1 - x) / 950)
-      const v = kg / (rho * area(p.diameter))
-      const mu = 1 / (x / 1.3e-5 + (1 - x) / 2.8e-4)
-      const f = frictionFactor(Math.max(3000, (kg * p.diameter) / (area(p.diameter) * mu)), (p.roughness ?? 0.045e-3) / p.diameter)
       const lift = Math.max(0, (byId.get(link.to)?.data.props.elevation ?? 0) - (byId.get(id)?.data.props.elevation ?? 0)) * 950 * G
-      const dp = ((f * p.length) / p.diameter + (p.minorK ?? 0)) * 0.5 * rho * v * v + (kg > 0 ? lift : 0)
+      // the flash fraction, and with it the density, belongs to the pressure half-way along the line: a short relaxed loop settles it
+      let [x, v, f, dp] = [0, 0, 0, 0]
+      let mid = 0 // pressure rise to the middle of the line, relaxed so the loop settles instead of hunting
+      for (let pass = 0; pass < 25; pass++) {
+        mid += 0.5 * (dp / 2 - mid)
+        const pm = pDown + mid
+        x = kg > 0 ? Math.min(1, Math.max(0, (enthalpy.get(link.e.id)! / kg - hf(pm)) / hfg(pm))) : 0
+        const rho = 1 / (x / rhoSteam(pm) + (1 - x) / 950)
+        v = kg / (rho * area(p.diameter))
+        const mu = 1 / (x / 1.3e-5 + (1 - x) / 2.8e-4)
+        f = frictionFactor(Math.max(3000, (kg * p.diameter) / (area(p.diameter) * mu)), (p.roughness ?? 0.045e-3) / p.diameter)
+        dp = ((f * p.length) / p.diameter + (p.minorK ?? 0)) * 0.5 * rho * v * v + (kg > 0 ? lift : 0)
+      }
       pRet.set(id, pDown + dp)
       out.returns.links[link.e.id] = { flow: kg, flash: x, velocity: v, dp }
       const forward = link.e.source === id
@@ -266,19 +305,58 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
       if (!r || !nd) continue
       const pa = abs(r.pressure)
       if (out.traps[id]) {
-        out.traps[id].capacity = nd.data.props.state === 'closed' ? 0 : trapCapacity(nd.data.props.orifice, r.pressure - bp)
+        out.traps[id].capacity = nd.data.props.state === 'closed' ? 0 : trapType(nd.data.props.trapType).capacity * trapCapacity(nd.data.props.orifice, r.pressure - bp)
         out.traps[id].flash = flashFraction(pa, P_ATM + bp)
       }
-      if (out.loads[id]) {
-        out.loads[id].flash = flashFraction(pa, P_ATM + bp)
-        if (bp >= r.pressure - 5000 && out.loads[id].steam > 0)
-          res.warnings.push({
-            id,
-            level: 'error',
-            text: `${nd.data.label}: stalled — the return line stands at ${(bp / 1000).toFixed(0)} kPa, as much as the steam space, so its condensate cannot drain`,
-          })
-      }
+      if (out.loads[id]) out.loads[id].flash = flashFraction(abs(out.loads[id].space), P_ATM + bp)
     }
+  }
+  // stall: a load throttled back far enough has a steam space no hotter than it needs — and once that pressure is
+  // no more than what stands in the return, the condensate has nothing to push it out
+  for (const [id, l] of Object.entries(out.loads)) {
+    const nd = byId.get(id)!
+    const bp = out.returns.backPressure[id] ?? nd.data.props.backPressure ?? 0
+    const supply = abs(res.nodes[id].pressure)
+    const tp = nd.data.props.processTemp
+    l.stallAt = Math.min(1, Math.max(0, (tSat(P_ATM + bp) - tp) / Math.max(1, tSat(supply) - tp)))
+    l.stalled = l.steam > 0 && l.space <= bp + 2000
+    if (l.stalled)
+      res.warnings.push({
+        id,
+        level: 'error',
+        text: `${nd.data.label}: stalled — at ${(l.fraction * 100).toFixed(0)} % load its steam space is down to ${(l.space / 1000).toFixed(0)} kPa, no more than the ${(bp / 1000).toFixed(0)} kPa behind its trap, so the condensate cannot drain and the exchanger floods`,
+      })
+  }
+  // trap types are not interchangeable
+  for (const [id, t] of Object.entries(out.traps)) {
+    const nd = byId.get(id)!
+    if (nd.data.props.state !== 'ok') continue
+    const type = trapType(nd.data.props.trapType)
+    const bp = out.returns.backPressure[id] ?? nd.data.props.backPressure ?? 0
+    const working = type.workingLoss
+    t.steamLoss += working
+    t.lossPower += working * (hg(abs(res.nodes[id].pressure)) - hWater(feedTemp))
+    t.costPerYear += (working * 3600 * HOURS * steamCost) / 1000
+    out.totals.trapLoss += working * (hg(abs(res.nodes[id].pressure)) - hWater(feedTemp))
+    if (bp > type.maxBack * Math.max(1, res.nodes[id].pressure))
+      res.warnings.push({
+        id,
+        level: 'warn',
+        text: `${nd.data.label}: ${(bp / 1000).toFixed(0)} kPa of back-pressure is more than a ${type.name.toLowerCase()} trap tolerates (${(type.maxBack * 100).toFixed(0)} % of its inlet) — it will not shut, and blows steam`,
+      })
+    if (type.holdsBack && t.load > 0)
+      res.warnings.push({
+        id,
+        level: 'info',
+        text: `${nd.data.label}: a thermostatic trap waits for its condensate to cool before it opens, so water stands in the drip leg — on a main, fit a float or thermodynamic trap`,
+      })
+    const startUp = t.warmup / 900 + t.load // the usual quarter-hour warm-up
+    if (startUp > t.capacity && t.load <= t.capacity)
+      res.warnings.push({
+        id,
+        level: 'info',
+        text: `${nd.data.label}: fine once hot, but warming the pipework from cold sends it ${(startUp * 3600).toFixed(0)} kg/h for a quarter of an hour — more than the ${(t.capacity * 3600).toFixed(0)} kg/h it passes. Warm up slowly, or size for start-up`,
+      })
   }
   // a boiler fed with returned condensate starts from hotter water
   for (const [id, b] of Object.entries(out.boilers)) {

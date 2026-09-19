@@ -42,7 +42,7 @@ export const INLINE_KINDS: Kind[] = ['pump', 'valve', 'meter', 'element', 'dpgau
 export const CONTROL_KINDS: Kind[] = ['timer', 'manual', 'switch', 'pid', 'logic', 'lamp', 'stager', 'schedule', 'sequence']
 export const isControl = (k: Kind) => CONTROL_KINDS.includes(k)
 /** components a controller can switch */
-export const CONTROLLABLE: Kind[] = ['pump', 'valve', 'outlet', 'threeway', 'inflow', 'gate']
+export const CONTROLLABLE: Kind[] = ['pump', 'valve', 'outlet', 'threeway', 'inflow', 'gate', 'steamload']
 /** components that can be turned in 90° steps on the bench */
 export const ROTATABLE: Kind[] = ['pump', 'valve', 'meter', 'element', 'outlet', 'fitting', 'relief']
 export const isInline = (k: Kind) => INLINE_KINDS.includes(k)
@@ -219,7 +219,7 @@ export function defaultProps(kind: Kind): Props {
         maxLevel: 2.5,
       }
     case 'junction':
-      return { elevation: 0, demand: 0, pattern: 'constant' }
+      return { elevation: 0, demand: 0, pattern: 'constant', drop: 0 }
     case 'gauge':
     case 'thermo':
       return { elevation: 0 }
@@ -296,7 +296,7 @@ export function defaultProps(kind: Kind): Props {
     case 'lamp':
       return { color: 'red' }
     case 'sequence':
-      return { enabled: true, repeat: false, period: 120, steps: [] }
+      return { enabled: true, repeat: false, period: 120, trigger: 'start', steps: [] }
     case 'inflow':
       return { elevation: 1, flow: 0.1 }
     case 'weir':
@@ -304,7 +304,7 @@ export function defaultProps(kind: Kind): Props {
     case 'gate':
       return { elevation: 0, opening: 0.1, width: 0.5 }
     case 'steamload':
-      return { elevation: 0, variant: 'exchanger', duty: 200e3, processTemp: 120, backPressure: 0 }
+      return { elevation: 0, variant: 'exchanger', duty: 200e3, processTemp: 120, backPressure: 0, load: 1 }
     case 'trap':
       return { elevation: 0, trapType: 'float', orifice: 0.004, state: 'ok', backPressure: 0 }
     case 'outfall':

@@ -129,6 +129,42 @@ const truthy = (name: string, ok: boolean, note = '') => {
   check('the tank fills at the channel flow', res.nodes.T.outflow, 0.2, 1e-9)
 }
 
+// 9b. three branches: continuity, and one water level at the fork
+{
+  const nodes = [
+    node('I', 'inflow', { elevation: 1, flow: 1.2 }),
+    node('J', 'junction', { elevation: 0.9 }),
+    node('O1', 'outfall', { elevation: 0.8 }),
+    node('O2', 'outfall', { elevation: 0.8 }),
+    node('O3', 'outfall', { elevation: 0.8 }),
+  ]
+  const res = solveChannel(
+    rig(nodes, [
+      reach('a', 'I', 'J', { width: 3 }),
+      reach('b', 'J', 'O1', { length: 200, width: 1.5 }),
+      reach('c', 'J', 'O2', { length: 200, width: 0.7 }),
+      reach('d', 'J', 'O3', { length: 120, width: 1 }),
+    ]),
+  )!
+  const [b, c, d] = ['b', 'c', 'd'].map((k) => res.channel!.reaches[k])
+  check('three-way fork: continuity', b.flow + c.flow + d.flow, 1.2, 1e-6)
+  check('three-way fork: b and c agree on the level', b.depth[0], c.depth[0], 0.005)
+  check('three-way fork: c and d agree on the level', c.depth[0], d.depth[0], 0.005)
+}
+
+// 9c. a step down in the bed: critical at the brink above it, and the fall's height handed on as energy
+{
+  const m = rig(
+    [node('I', 'inflow', { elevation: 1.05, flow: 0.4 }), node('J', 'junction', { elevation: 1, drop: 0.6 }), node('O', 'outfall', { elevation: 0.38 })],
+    [reach('a', 'I', 'J', { length: 100, width: 1, bankHeight: 2 }), reach('b', 'J', 'O', { length: 40, width: 1, bankHeight: 2 })],
+  )
+  const res = solveChannel(m)!
+  const [a, b] = [res.channel!.reaches.a, res.channel!.reaches.b]
+  check('brink above the step is critical', a.depth[80], a.yc, 0.005)
+  check('bed of the lower reach starts a step lower', b.bed[0], 0.4, 1e-9)
+  truthy('water leaves the foot of the step supercritical', b.froude[0] > 1.5, `Fr ${b.froude[0].toFixed(2)}`)
+}
+
 // 10. pipework feeding a channel: what the outlet discharges is what the channel carries; a tank sums both sides
 {
   await engine.ready()
@@ -154,6 +190,32 @@ const truthy = (name: string, ok: boolean, note = '') => {
   check('the outlet keeps its own reading', res.nodes.Out.outflow, 0.05, 1e-6)
   check('the V-notch reads that flow', res.nodes.W.extra!.flow, 0.05, 1e-6)
   check('the tank gains channel inflow minus pipe draw-off', res.nodes.T.outflow, 0.05 - 0.01, 1e-4)
+}
+
+// 11. a pump drawing from a canal: the pipe side sees the canal's level as its suction head; the canal loses what it takes
+{
+  const m: Model = {
+    fluid: FLUIDS[0],
+    nodes: [
+      node('I', 'inflow', { elevation: 1, flow: 0.2 }),
+      node('J', 'junction', { elevation: 0.9 }),
+      node('O', 'outfall', { elevation: 0.8 }),
+      node('P', 'pump', { designFlow: 0.03, designHead: 15 }),
+      node('Use', 'outlet', { elevation: 8, mode: 'nozzle', nozzleDiameter: 0.06 }),
+    ],
+    edges: [
+      reach('a', 'I', 'J', { length: 100, width: 1 }),
+      reach('b', 'J', 'O', { length: 100, width: 1 }),
+      { id: 's', source: 'J', target: 'P', sourceHandle: 'b', targetHandle: 'in', data: { label: 's', props: { ...defaultPipeProps(), diameter: 0.15, length: 5 } } },
+      { id: 'd', source: 'P', target: 'Use', sourceHandle: 'out', targetHandle: 'l', data: { label: 'd', props: { ...defaultPipeProps(), diameter: 0.1, length: 60 } } },
+    ],
+  }
+  const res = engine.solve(m)
+  const q = res.devices.P.flow
+  truthy('a pump can draw from a canal', res.ok && q > 0.005, `${(q * 1000).toFixed(1)} L/s`)
+  check('the canal downstream carries what is left', res.channel!.reaches.b.flow, 0.2 - q, 2e-3)
+  const lost = res.nodes.J.head - res.devices.P.headIn // friction in 5 m of suction pipe: a few centimetres
+  truthy('pump suction head = canal water level, less the suction pipe’s friction', lost > 0 && lost < 0.1, `${(lost * 100).toFixed(1)} cm`)
 }
 
 if (failed) {

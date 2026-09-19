@@ -2183,4 +2183,107 @@ export const EXPERIMENTS: Experiment[] = [
       return rig
     },
   },
+  {
+    id: 'thermostat',
+    no: '56',
+    title: 'A room thermostat',
+    concept: 'On–off control of a slow process',
+    formula: 'C_room · dT/dt = Q̇_radiator − UA · (T_room − T_outside)',
+    brief:
+      'The radiator here heats a real room: it warms with what the radiator gives and leaks heat to a −5 °C night outside. Left running, the boiler would take it past 30 °C. A thermostat — a limit switch reading the room — switches the boiler off above its upper setting and on again below its lower one. Because the radiator stays hot for a while after the boiler stops, the room overshoots a little; the wider the band, the fewer starts and the bigger the swing.',
+    steps: [
+      'Press play and watch the room (on the radiator’s label) climb from cold.',
+      'Select the thermostat: it is set far too high. Bring its limits down to something comfortable.',
+      'Try a very narrow band and count how often the boiler now cycles.',
+    ],
+    goal: {
+      text: 'Hold the room between 19 and 22 °C for a full hour',
+      check: (r, _n, _l, history) => {
+        const held = heldFor(history, 'r:room', 19, 22)
+        return { done: held >= 60, readout: `room ${r.thermal?.rooms?.r?.toFixed(1) ?? '—'} °C · in band for ${Math.min(60, held).toFixed(0)}/60 min` }
+      },
+    },
+    timeScale: 300,
+    heatMode: 'live',
+    select: 'sw',
+    build: () => {
+      const cu = { diameter: 0.0199, std: 'copperL', size: '¾″', material: 'copper', roughness: 0.0015e-3 }
+      return new Rig()
+        .add('ev', 'vessel', 140, 200, { volume: 0.018, precharge: 100e3, initPressure: 150e3 }, 'Expansion')
+        .add('j', 'junction', 140, 440)
+        .add('p', 'pump', 300, 440, { pumpType: 'circulator', shutoffRatio: 1.15, runoutRatio: 2.5, designFlow: 12 * LPM, designHead: 4, npshr: 1 }, 'Circulator')
+        .add('b', 'fitting', 480, 440, { variant: 'boiler', ratedDp: 10e3, ratedFlow: 30 * LPM, exponent: 2, fouling: 0, diameter: 0.02, supplyTemp: 75, ratedHeat: 12000 }, 'Boiler')
+        .add(
+          'r',
+          'fitting',
+          860,
+          440,
+          { variant: 'radiator', ratedDp: 6e3, ratedFlow: 8 * LPM, exponent: 1.9, fouling: 0, diameter: 0.02, ratedHeat: 8000, roomTemp: 20, roomModel: true, outsideTemp: -5, roomLoss: 200 },
+          'Radiators',
+        )
+        .add('sw', 'switch', 660, 200, { action: 'fill', low: 26, high: 28, pvKind: 'fitting' }, 'Thermostat')
+        .pipe('ev', 'j', { length: 1, ...cu }, ['b', 't'])
+        .pipe('j', 'p', { length: 1, ...cu })
+        .pipe('p', 'b', { length: 2, ...cu })
+        .pipe('b', 'r', { length: 15, ...cu }, [], 'Supply')
+        .pipe('r', 'j', { length: 15, ...cu }, ['out', 'b'], 'Return')
+        .wire('r', 'sw', ['pv', 'cin'])
+        .wire('sw', 'b')
+        .done()
+    },
+  },
+  {
+    id: 'level-control',
+    no: '57',
+    title: 'Holding a canal level',
+    concept: 'A PID on a sluice gate',
+    formula: 'gate opens when the level is above its setpoint (reverse acting)',
+    brief:
+      'An irrigation offtake needs a steady water level in the canal, whatever the river sends. A level gauge upstream of a sluice gate feeds a PID controller that moves the gate: too high and it opens, too low and it closes. The loop is reverse acting — more output lowers the measurement — and the event sequence plays a day of changing river flow through it.',
+    steps: [
+      'Press play. The controller is in manual at a fixed opening, so the level follows the inflow up and down.',
+      'Select the controller and switch it to automatic.',
+      'In automatic it is far too slow for the river — shorten the integral time until it keeps up.',
+      'Then raise the gain and watch it start to hunt: near its seat a gate moves the level a great deal for a small movement, so this loop wants a gentle gain and lets the integral do the work.',
+    ],
+    goal: {
+      text: 'Hold the level at the gauge between 0.70 and 0.90 m for ten minutes while the inflow changes',
+      check: (r, _n, _l, history) => {
+        const held = heldFor(history, 'g', 0.7 * 998.2 * 9.80665, 0.9 * 998.2 * 9.80665)
+        const moving = new Set(history.slice(-300).map((h) => Math.round((h.v.in ?? 0) * 100))).size > 1
+        return { done: held >= 10 && moving, readout: `level ${(r.nodes.g?.extra?.depth ?? 0).toFixed(2)} m · in band for ${Math.min(10, held).toFixed(1)}/10 min` }
+      },
+    },
+    timeScale: 20,
+    select: 'lc',
+    build: () => {
+      const rig = new Rig()
+        .add('in', 'inflow', 120, 420, { elevation: 0.3, flow: 1.2 }, 'River')
+        .add('g', 'gauge', 460, 420, { elevation: 0.12 }, 'Level gauge')
+        .add('sg', 'gate', 700, 420, { elevation: 0.1, opening: 0.6, width: 1.5 }, 'Sluice gate')
+        .add('end', 'outfall', 980, 420, { elevation: 0 }, 'Downstream')
+        .add(
+          'lc',
+          'pid',
+          580,
+          170,
+          { auto: false, manualOut: 0.35, setpoint: 0.8 * 998.2 * 9.80665, span: 1.5 * 998.2 * 9.80665, kp: 0.15, ti: 40, reverse: true, pvKind: 'gauge' },
+          'Level controller',
+        )
+        .add('day', 'sequence', 200, 170, { repeat: true, period: 1200 }, 'River flow')
+        .channel('in', 'g', { length: 150, width: 1.5, bankHeight: 1.6 })
+        .channel('g', 'sg', { length: 60, width: 1.5, bankHeight: 1.6 }, ['r', 'in'])
+        .channel('sg', 'end', { length: 80, width: 1.5, bankHeight: 1.6 })
+        .wire('g', 'lc', ['pv', 'cin'])
+        .wire('lc', 'sg')
+        .wire('day', 'in')
+        .done()
+      rig.nodes.find((n) => n.id === 'day')!.data.props.steps = [
+        { at: 0, target: 'in', value: 0.5, ramp: 150 },
+        { at: 250, target: 'in', value: 1, ramp: 300 },
+        { at: 700, target: 'in', value: 0.4, ramp: 350 },
+      ]
+      return rig
+    },
+  },
 ]

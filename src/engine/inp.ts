@@ -46,6 +46,8 @@ export interface JetState {
 export interface Overrides {
   jets?: Record<string, JetState>
   pumpSpeed?: Record<string, number>
+  /** joints where pipework taps an open channel: the channel's water level there, which the pipe side sees as a fixed head */
+  heads?: Record<string, number>
 }
 
 const n = (v: number) => (Math.abs(v) < 1e-12 ? '0' : Number(v.toPrecision(8)).toString())
@@ -145,7 +147,7 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
   const reached = new Set<string>()
   const queue: string[] = []
   model.nodes.forEach((nd) => {
-    if (nd.data.kind === 'reservoir' || nd.data.kind === 'tank' || nd.data.kind === 'vessel') queue.push(nodeIds[nd.id])
+    if (nd.data.kind === 'reservoir' || nd.data.kind === 'tank' || nd.data.kind === 'vessel' || overrides.heads?.[nd.id] !== undefined) queue.push(nodeIds[nd.id])
   })
   while (queue.length) {
     const cur = queue.pop()!
@@ -253,6 +255,8 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
       R.push(`${id}atm ${n(p.elevation)}`)
       V.push(`${id}v ${id} ${id}m ${n(p.diameter * 1000)} PSV ${n(p.setPressure / rhoG)} 0`)
       P.push(`${id}s ${id}m ${id}atm 0.05 ${n(Math.max(p.diameter, 0.05) * 1000)} 0.0015 0 CV`)
+    } else if ((k === 'junction' || k === 'gauge' || k === 'thermo') && overrides.heads?.[nd.id] !== undefined) {
+      R.push(`${nodeIds[nd.id]} ${n(overrides.heads[nd.id])}`)
     } else if (k === 'junction' || k === 'gauge' || k === 'thermo') {
       J.push(`${nodeIds[nd.id]} ${n(p.elevation)} ${n((p.demand ?? 0) * demandFactor(p.pattern, model.time ?? 0) * 1000)}`)
     } else if (k === 'outlet') {

@@ -104,6 +104,22 @@ const march = (m: Model, seconds: number, dt: number, each?: (t: number, s: Heat
   check('energy: the mean fell by what was drawn off', layered.tanks.T, 60 - 45 / 2, 0.02)
 }
 
+// 5. a radiator with a room round it: the room settles where what it is given equals what it loses; boiler off, it goes cold
+{
+  const ex = EXPERIMENTS.find((e) => e.id === 'warm-up')!
+  const { nodes, edges } = ex.build()
+  Object.assign(nodes.find((n) => n.id === 'r')!.data.props, { roomModel: true, outsideTemp: -5, roomLoss: 320 })
+  Object.assign(nodes.find((n) => n.id === 'b')!.data.props, { ratedHeat: 12000 })
+  const m = { nodes, edges, fluid: water } as unknown as Model
+  const r = engine.solve(m)
+  const room = r.thermal!.rooms!.r
+  check('steady room: emitter output = loss to outside', -r.thermal!.devices.r.heat, 320 * (room + 5), 0.005)
+  const live = march(m, 24 * 3600, 10).s
+  check('live room warms up to the same temperature', live.rooms.r, room, 0.01)
+  const off = engine.solve({ ...m, controls: { b: 0 } } as Model)
+  check('boiler switched off by a controller: the room falls to outside', off.thermal!.rooms!.r, -5, 0.02)
+}
+
 if (failed) {
   console.error(`${failed} heat check(s) failed`)
   process.exit(1)

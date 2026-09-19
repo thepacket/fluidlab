@@ -86,12 +86,61 @@ export const INSULATION = [
 /** for water pipes the default is to leave heat loss out of the sums altogether */
 export const WATER_INSULATION = [{ id: 'none', name: 'Not counted (ideal pipe)' }, ...INSULATION]
 
+/**
+ * What sets the trap types apart: how much of the orifice's capacity they really give, the live steam they spend just
+ * working, how much back-pressure they tolerate (as a fraction of inlet pressure), and whether they hold condensate back.
+ */
 export const TRAP_TYPES = [
-  { id: 'float', name: 'Float & thermostatic' },
-  { id: 'bucket', name: 'Inverted bucket' },
-  { id: 'thermodynamic', name: 'Thermodynamic (disc)' },
-  { id: 'thermostatic', name: 'Balanced-pressure thermostatic' },
+  {
+    id: 'float',
+    name: 'Float & thermostatic',
+    capacity: 1,
+    workingLoss: 0,
+    maxBack: 0.9,
+    holdsBack: false,
+    note: 'Drains continuously at steam temperature — the first choice for heat exchangers and mains.',
+  },
+  { id: 'bucket', name: 'Inverted bucket', capacity: 0.85, workingLoss: 0.5 / 3600, maxBack: 0.8, holdsBack: false, note: 'Rugged and intermittent; spends a little steam through its vent hole.' },
+  {
+    id: 'thermodynamic',
+    name: 'Thermodynamic (disc)',
+    capacity: 0.7,
+    workingLoss: 1 / 3600,
+    maxBack: 0.8,
+    holdsBack: false,
+    note: 'Small and cheap for mains drips; will not shut against more than about 80 % back-pressure.',
+  },
+  {
+    id: 'thermostatic',
+    name: 'Balanced-pressure thermostatic',
+    capacity: 0.9,
+    workingLoss: 0,
+    maxBack: 0.9,
+    holdsBack: true,
+    note: 'Opens only once the condensate has cooled ~15 K, so it backs water up the leg: fine for tracing, wrong for mains.',
+  },
 ]
+export const trapType = (id: string) => TRAP_TYPES.find((t) => t.id === id) ?? TRAP_TYPES[0]
+
+/**
+ * Pressure in a heat exchanger's steam space (absolute). A control valve throttles the steam until the space is just
+ * hot enough for the load: at full load it takes all the supply offers, at part load the space cools towards the
+ * process temperature — and its pressure falls with it, which is what makes exchangers stall.
+ */
+export function steamSpace(pSupply: number, processTemp: number, load: number): number {
+  if (load >= 0.999) return pSupply
+  const t = processTemp + Math.max(0, load) * Math.max(0, tSat(pSupply) - processTemp)
+  return Math.min(pSupply, pSat(t))
+}
+/** Steam a load condenses (kg/s) at this supply pressure and load fraction. */
+export const loadSteam = (duty: number, pSupply: number, processTemp: number, load: number) => (load <= 0 ? 0 : (load * duty) / hfg(steamSpace(pSupply, processTemp, load)))
+
+/** Condensate made just bringing a cold steel pipe up to steam temperature, kg — the start-up load a drip trap must also clear. */
+export function warmupCondensate(p: Props, pAbs: number): number {
+  const t = Math.max(0.003, 0.06 * p.diameter)
+  const steel = Math.PI * (p.diameter + t) * t * 7850 * Math.max(0.01, p.length)
+  return (steel * 490 * Math.max(0, tSat(pAbs) - AMBIENT)) / hfg(pAbs)
+}
 export const TRAP_STATES = [
   { id: 'ok', name: 'Working' },
   { id: 'open', name: 'Failed open — blowing steam' },

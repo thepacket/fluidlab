@@ -126,3 +126,18 @@ const pipe = (id: string, s: string, t: string, sh: string, th: string, props = 
   console.log(`tee        ${ok}  branch loss ${got.toExponential(3)} Pa² · formula ${want.toExponential(3)}`)
   if (!ok) process.exit(1)
 }
+
+// 5. a riser with nothing flowing: natural gas is lighter than the air outside, so its gauge pressure climbs with height
+{
+  const gas = FLUIDS.find((f) => f.id === 'natgas')!
+  const m: Model = {
+    fluid: gas,
+    nodes: [node('S', 'reservoir', { pressure: 2000, elevation: 0 }), node('Top', 'junction', { elevation: 30, demand: 0 })],
+    edges: [pipe('riser', 'S', 'Top', 'r', 'l', { length: 30, diameter: 0.05 })],
+  }
+  const r = engine.solve(m)
+  const want = 2000 + (1.204 - (101325 + 2000) / zrt(gas)) * 9.80665 * 30
+  const ok = r.ok && Math.abs(r.nodes.Top.pressure - want) < 2
+  console.log(`riser      ${ok}  top of a 30 m riser ${r.nodes.Top.pressure.toFixed(1)} Pa · hand calculation ${want.toFixed(1)} Pa (2000 at the bottom)`)
+  if (!ok) process.exit(1)
+}

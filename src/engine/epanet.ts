@@ -101,14 +101,42 @@ class EpanetEngine implements HydraulicEngine {
     // tank or reservoir is a lake whose level the channel engine reads. Tanks add up what both sides take and give.
     const model = stripChannels(full)
     const piped = model.edges.some((e) => e.type !== 'signal')
-    const press = piped ? this.solvePressurised(model, overrides) : { ...EMPTY_RESULTS, ok: true }
+    // A joint with both pipes and reaches on it is a tap: the pipe side sees the channel's water level there as a fixed
+    // head, and the channel loses (or gains) whatever the pipes then take. Each needs the other's answer, so go round a few times.
+    const taps = full.nodes.filter(
+      (nd) => ['junction', 'gauge', 'thermo'].includes(nd.data.kind) && model.nodes.some((x) => x.id === nd.id) && full.edges.some((e) => isChannel(e) && (e.source === nd.id || e.target === nd.id)),
+    )
+    const draws: Record<string, number> = {}
     const feeds: Record<string, number> = {}
-    for (const nd of full.nodes) if (nd.data.kind === 'outlet' && press.ok) feeds[nd.id] = press.nodes[nd.id]?.outflow ?? 0
-    const open = solveChannel(full, feeds)!
+    let press: Results = { ...EMPTY_RESULTS, ok: true }
+    let open = solveChannel(full, feeds, draws)!
+    for (let pass = 0; pass < (taps.length ? 6 : 1) && piped; pass++) {
+      const heads = Object.fromEntries(taps.filter((nd) => open.nodes[nd.id]).map((nd) => [nd.id, open.nodes[nd.id].head]))
+      press = this.solvePressurised(model, taps.length ? { ...overrides, heads } : overrides)
+      let moved = 0
+      for (const nd of full.nodes) if (nd.data.kind === 'outlet' && press.ok) feeds[nd.id] = press.nodes[nd.id]?.outflow ?? 0
+      for (const nd of taps) {
+        const want = press.ok ? -(press.nodes[nd.id]?.outflow ?? 0) : 0
+        const next = (draws[nd.id] ?? 0) + 0.7 * (want - (draws[nd.id] ?? 0))
+        moved = Math.max(moved, Math.abs(next - (draws[nd.id] ?? 0)))
+        draws[nd.id] = next
+      }
+      open = solveChannel(full, feeds, draws)!
+      if (moved < 1e-6) break
+    }
     const nodes = { ...press.nodes }
     for (const [id, n] of Object.entries(open.nodes)) {
       const mine = press.nodes[id]
-      nodes[id] = !mine ? n : { ...mine, outflow: full.nodes.find((x) => x.id === id)?.data.kind === 'outlet' ? mine.outflow : mine.outflow + n.outflow }
+      const kind = full.nodes.find((x) => x.id === id)?.data.kind
+      if (!mine) nodes[id] = n
+      else if (taps.some((t) => t.id === id))
+        nodes[id] = { ...n, extra: { ...n.extra, drawOff: draws[id] ?? 0 } } // a tap reads as the channel joint it is
+      else
+        nodes[id] = {
+          ...mine,
+          outflow: kind === 'outlet' ? mine.outflow : mine.outflow + n.outflow,
+          extra: { ...mine.extra, ...(n.extra?.channelNet !== undefined ? { channelNet: n.extra.channelNet } : {}) },
+        }
     }
     return {
       ...press,

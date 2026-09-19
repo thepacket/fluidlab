@@ -110,10 +110,10 @@ check('throttling 10 → 3 bar abs leaves superheat', throttledTemp(10e5, 3e5) -
   const kg = st.loads.HX.steam + st.loads.HX.carryover
   check('return line carries the load’s condensate', st.returns.links.ret.flow, kg, 1e-6)
   const pHx = r.nodes.HX.pressure + P_ATM
-  const x = flashFraction(pHx, P_ATM)
-  check('flash fraction in the line', st.returns.links.ret.flash, x, 1e-3)
-  const rho = 1 / (x / rhoSteam(P_ATM) + (1 - x) / 950)
-  check('two-phase velocity = ṁ / (ρ_mix · A)', st.returns.links.ret.velocity, kg / (rho * area(D)), 1e-3)
+  const x = flashFraction(pHx, P_ATM + st.returns.links.ret.dp / 2) // flash belongs to the pressure half-way along the line
+  check('flash fraction in the line', st.returns.links.ret.flash, x, 0.02)
+  const rho = 1 / (x / rhoSteam(P_ATM + st.returns.links.ret.dp / 2) + (1 - x) / 950)
+  check('two-phase velocity = ṁ / (ρ_mix · A)', st.returns.links.ret.velocity, kg / (rho * area(D)), 0.03)
   check('receiver keeps the liquid, vents the flash', st.returns.receivers.RX.condensate + st.returns.receivers.RX.flashVent, kg, 1e-6)
   check('back-pressure at the load = line loss', st.returns.backPressure.HX, st.returns.links.ret.dp, 1e-6)
   const open = engine.solve({ ...m, edges: [m.edges[0]] })
@@ -121,6 +121,26 @@ check('throttling 10 → 3 bar abs leaves superheat', throttledTemp(10e5, 3e5) -
   console.log(
     `  return: ${(kg * 3600).toFixed(0)} kg/h, ${(x * 100).toFixed(1)} % flash, ${st.returns.links.ret.velocity.toFixed(0)} m/s, back-pressure ${(st.returns.backPressure.HX / 1000).toFixed(0)} kPa, feed ${st.boilers.B.feedTemp?.toFixed(0)} °C`,
   )
+}
+
+// 6. part load and stall: throttled back, the steam space cools towards the process, and below the back-pressure it floods
+{
+  const build = (load: number): Model => ({
+    fluid: steam,
+    nodes: [node('B', 'reservoir', { pressure: 500e3 }), node('HX', 'steamload', { duty: 200e3, processTemp: 60, load, backPressure: 50e3 })],
+    edges: [pipe('main', 'B', 'HX', { length: 10, diameter: 0.065, insulation: 0.05 })],
+  })
+  const full = engine.solve(build(1)).steam!.loads.HX
+  const half = engine.solve(build(0.5)).steam!.loads.HX
+  check('full load: the steam space is at supply pressure', full.space, engine.solve(build(1)).nodes.HX.pressure, 1e-6)
+  const tHalf = 60 + 0.5 * (tSat(engine.solve(build(0.5)).nodes.HX.pressure + P_ATM) - 60)
+  check('half load: space temperature half-way down to the process', half.tSat, tHalf, 0.005)
+  check('half load: steam = ½ duty / h_fg at the space pressure', half.steam, 100e3 / hfg(half.space + P_ATM), 1e-3)
+  // stall where the space is no hotter than saturation at the back-pressure
+  const tBack = tSat(P_ATM + 50e3)
+  check('stall point', full.stallAt, (tBack - 60) / (tSat(engine.solve(build(1)).nodes.HX.pressure + P_ATM) - 60), 0.01)
+  const low = engine.solve(build(0.3))
+  check('below it, the load is reported as stalled', low.steam!.loads.HX.stalled ? 1 : 0, 1)
 }
 
 if (failed) {

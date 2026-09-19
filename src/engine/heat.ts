@@ -11,7 +11,8 @@
 // recovering after a bath, and thermostats that have something real to control.
 import { area, tankVolume } from '../model/physics'
 import type { Model, ModelNode, Props, Results } from '../model/types'
-import { AMBIENT, CP, deviceOutlet, isBoiler, pipeUA, sourceTemp, thermalActive, thermalNetwork, thermalView, type Carrier, type Thermal } from './thermal'
+import { command } from './inp'
+import { AMBIENT, CP, deviceOutlet, hasRoom, isBoiler, roomLoss, roomMass, pipeUA, sourceTemp, thermalActive, thermalNetwork, thermalView, type Carrier, type Thermal } from './thermal'
 
 export interface HeatState {
   /** °C along each pipe, source → target */
@@ -24,10 +25,22 @@ export interface HeatState {
   devices: Record<string, number>
   /** stratified tanks: °C of each layer, bottom first */
   layers: Record<string, number[]>
+  /** °C of each modelled room, and what its emitter is really giving it right now (W) */
+  rooms: Record<string, number>
+  emitted: Record<string, number>
   balance: NonNullable<Thermal['balance']>
 }
 
-export const emptyHeat = (): HeatState => ({ cells: {}, points: {}, tanks: {}, devices: {}, layers: {}, balance: { input: 0, emitted: 0, pipeLoss: 0, tankLoss: 0, stored: 0 } })
+export const emptyHeat = (): HeatState => ({
+  cells: {},
+  points: {},
+  tanks: {},
+  devices: {},
+  layers: {},
+  rooms: {},
+  emitted: {},
+  balance: { input: 0, emitted: 0, pipeLoss: 0, tankLoss: 0, stored: 0 },
+})
 
 /** A stratified tank is this many stirred layers, stacked. */
 export const LAYERS = 10
@@ -58,7 +71,7 @@ export function stepHeat(model: Model, results: Results, prev: HeatState | null,
   const byId = new Map(model.nodes.map((n) => [n.id, n]))
   const edges = new Map(model.edges.map((e) => [e.id, e]))
   const old = prev ?? emptyHeat()
-  const st: HeatState = { cells: {}, points: {}, tanks: {}, devices: {}, layers: {}, balance: { input: 0, emitted: 0, pipeLoss: 0, tankLoss: 0, stored: 0 } }
+  const st: HeatState = { cells: {}, points: {}, tanks: {}, devices: {}, layers: {}, rooms: {}, emitted: {}, balance: { input: 0, emitted: 0, pipeLoss: 0, tankLoss: 0, stored: 0 } }
 
   // ---- carry the old state over; anything new starts at room temperature (pipes) or its own initial value ----
   for (const c of net.carriers) {
@@ -72,7 +85,10 @@ export function stepHeat(model: Model, results: Results, prev: HeatState | null,
     if (n.data.kind === 'tank' && n.data.props.stratified) st.layers[k] = old.layers[k]?.length === LAYERS ? [...old.layers[k]] : new Array(LAYERS).fill(old.tanks[k] ?? n.data.props.initTemp ?? 15)
   for (const [k, n] of net.fixed) st.tanks[k] = n.data.kind === 'tank' ? (old.tanks[k] ?? n.data.props.initTemp ?? 15) : sourceTemp(n)
   for (const k of net.points) st.points[k] = net.fixed.has(k) ? st.tanks[k] : (old.points[k] ?? AMBIENT)
+  for (const n of model.nodes) if (hasRoom(n)) st.rooms[n.id] = old.rooms[n.id] ?? n.data.props.outsideTemp ?? 0 // a cold house to start with
+  st.emitted = { ...old.emitted }
   if (dt <= 0) return st
+  const out = (n: ModelNode, tIn: number, q: number) => deviceOutlet(n, tIn, q, rhoCp, command(model, n.id), st.rooms[n.id])
 
   // ---- sub-steps: keep the Courant number of the fastest cell near one so fronts stay reasonably sharp ----
   let courant = 0
@@ -96,7 +112,7 @@ export function stepHeat(model: Model, results: Results, prev: HeatState | null,
       if (c.edge) {
         const cells = st.cells[c.edge]
         delivered.set(c, c.forward ? cells[cells.length - 1] : cells[0])
-      } else delivered.set(c, st.devices[c.through!] ?? deviceOutlet(byId.get(c.through!)!, st.points[c.from], c.q, rhoCp))
+      } else delivered.set(c, st.devices[c.through!] ?? out(byId.get(c.through!)!, st.points[c.from], c.q))
     }
     // 2. pipes: implicit upwind, cell by cell in the direction of flow, with the wall's mass and the loss to the room
     for (const c of net.carriers) {
@@ -120,7 +136,7 @@ export function stepHeat(model: Model, results: Results, prev: HeatState | null,
       if (!c.through) continue
       const n = byId.get(c.through)!
       const tIn = leaving(c)
-      const target = deviceOutlet(n, tIn, c.q, rhoCp)
+      const target = out(n, tIn, c.q)
       const cap = deviceCapacity(n)
       const before = st.devices[c.through]
       if (cap > 0) {
@@ -133,7 +149,16 @@ export function stepHeat(model: Model, results: Results, prev: HeatState | null,
       // what an emitter takes from the water first warms its own metal; only the rest reaches the room
       const soaking = cap > 0 && !isBoiler(n) ? (cap * (st.devices[c.through] - before)) / h : 0
       if (isBoiler(n)) bal.input += duty / steps
-      else if (n.data.kind === 'fitting' && n.data.props.ratedHeat > 0) bal.emitted += (-duty - soaking) / steps
+      else if (n.data.kind === 'fitting' && n.data.props.ratedHeat > 0) {
+        const giving = -duty - soaking
+        bal.emitted += giving / steps
+        st.emitted[c.through] = giving
+        // the room gains what the emitter gives and loses to outside in proportion to how much warmer it is
+        if (st.rooms[c.through] !== undefined) {
+          const p = n.data.props
+          st.rooms[c.through] += ((giving - roomLoss(p) * (st.rooms[c.through] - (p.outsideTemp ?? 0))) * h) / roomMass(p)
+        }
+      }
     }
     // 4. tanks: one stirred volume each
     for (const [k, n] of net.fixed) {
@@ -199,9 +224,7 @@ export function stepHeat(model: Model, results: Results, prev: HeatState | null,
       let sum = 0
       let q = 0
       for (const c of list) {
-        sum +=
-          c.q *
-          (c.edge ? (c.forward ? st.cells[c.edge][st.cells[c.edge].length - 1] : st.cells[c.edge][0]) : (st.devices[c.through!] ?? deviceOutlet(byId.get(c.through!)!, st.points[c.from], c.q, rhoCp)))
+        sum += c.q * (c.edge ? (c.forward ? st.cells[c.edge][st.cells[c.edge].length - 1] : st.cells[c.edge][0]) : (st.devices[c.through!] ?? out(byId.get(c.through!)!, st.points[c.from], c.q)))
         q += c.q
       }
       st.points[k] = sum / q
@@ -230,6 +253,9 @@ export function heatView(model: Model, results: Results, st: HeatState): Thermal
     const v = view.devices[id]
     if (d && v) view.devices[id] = { ...v, tOut, heat: Math.abs(d.flow) * model.fluid.density * CP * (tOut - v.tIn) }
   }
+  // an emitter reports what reaches the room, not what it takes from the water while its own metal is still warming
+  for (const [id, w] of Object.entries(st.emitted)) if (view.devices[id]) view.devices[id] = { ...view.devices[id], heat: -w }
+  if (Object.keys(st.rooms).length) view.rooms = st.rooms
   view.balance = st.balance
   if (Object.keys(st.layers).length) view.layers = st.layers
   return view

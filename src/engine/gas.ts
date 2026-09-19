@@ -15,7 +15,7 @@
 import { dischargeDevice, lossDevice } from '../model/catalog'
 import { G, P_ATM, area, elementK, fittingK, frictionFactor, meterK, ratedDp, regimeOf, valveK } from '../model/physics'
 import { EMPTY_RESULTS, isControl, isInline, type Fluid, type Model, type ModelNode, type Props, type Results, type Warning } from '../model/types'
-import { hfg, pipeHeatLoss, rhoSteam, tSat } from '../model/steam'
+import { hfg, loadSteam, pipeHeatLoss, rhoSteam, tSat } from '../model/steam'
 import { command, commandedOff, valvePosition, type Overrides } from './inp'
 
 const R_UNIVERSAL = 8.314462618
@@ -57,6 +57,7 @@ interface GNode {
   cdA: number // vent to atmosphere
   /** steam load: heat duty (W), met by condensing duty / h_fg(p) of steam */
   duty?: number
+  load?: { fraction: number; processTemp: number }
   /** steam condensing in the pipes that end here, kg/s */
   cond: number
   relief?: { set: number; cdA: number }
@@ -73,8 +74,11 @@ interface GLink {
   speed: number
   mdot: number
   pipe?: { length: number; diameter: number; roughness: number; minorK: number }
+  /** how much higher end b is than end a, m */
+  rise?: number
 }
 
+const RHO_AIR = 1.204 // kg/m³, the air outside at 20 °C
 const EPS = 1e5 // Pa²: smooths the square-root law where the pressure difference vanishes
 
 export function solveGas(model: Model, overrides: Overrides = {}): Results {
@@ -94,6 +98,7 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
     return n
   }
   const links: GLink[] = []
+  const elevationOf = (id: string) => model.nodes.find((n) => n.id === id)?.data.props.elevation ?? 0
   let ejector = false
   const onBore = (K: number, d: number) => K / area(d) ** 2
 
@@ -180,8 +185,10 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
       else if (p.mode === 'demand') n.demand = p.demand * rs
       // a K-factor is a water rating: Q = K√p = Cd·A·√(2p/ρ_w) gives the equivalent orifice
       else n.cdA = p.mode === 'kfactor' ? p.kFactor * Math.sqrt(500) : p.cd * area(p.nozzleDiameter)
-    } else if (kind === 'steamload') n.duty = fluid.steam ? Math.max(0, p.duty) : 0
-    else if (kind === 'trap') n.cdA = p.state === 'open' ? 0.7 * area(p.orifice) : 0
+    } else if (kind === 'steamload') {
+      n.duty = fluid.steam ? Math.max(0, p.duty) : 0
+      n.load = { fraction: Math.min(1, Math.max(0, (p.load ?? 1) * command(model, nd.id))), processTemp: p.processTemp ?? 100 }
+    } else if (kind === 'trap') n.cdA = p.state === 'open' ? 0.7 * area(p.orifice) : 0
     else if (kind === 'leak') n.cdA = p.active === false ? 0 : p.cd * area(p.holeDiameter)
     else if (kind === 'relief') n.relief = { set: P_ATM + p.setPressure, cdA: 0.7 * area(p.diameter) }
   }
@@ -205,6 +212,7 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
       speed: 0,
       mdot: 0,
       pipe: { length: Math.max(0.01, p.length), diameter: Math.max(1e-3, p.diameter), roughness: p.roughness, minorK: p.minorK || 0 },
+      rise: elevationOf(e.target) - elevationOf(e.source),
     })
   }
 
@@ -270,7 +278,11 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
   const sqrtLaw = (dPi: number, res: number, k: number) => (res > 0 ? dPi / Math.sqrt(res * k * (Math.abs(dPi) + EPS)) : dPi * 1e-3) // tiny res: near-rigid coupling
   const flow = (l: GLink, pa: number, pb: number): number => {
     if (l.kind === 'closed') return 0
-    const dPi = pa * pa - pb * pb
+    // Pressures here are gauge + one atmosphere, i.e. measured against the air outside at the same height. Going up a
+    // riser the gas column weighs less than that air column if the gas is lighter, so its gauge pressure *rises* with
+    // height (natural gas: about +5 Pa per metre) — enough to matter in a tall building on a 2 kPa service.
+    const lift = l.rise ? (RHO_AIR - (pa + pb) / 2 / zrtAt(pa, pb)) * G * l.rise : 0
+    const dPi = pa * pa - pb * pb + (pa + pb) * lift
     let m: number
     if (l.kind === 'compressor') m = rs * compressorFlow(pb / Math.max(1, pa), l.props, l.speed)
     else {
@@ -283,7 +295,10 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
     }
     return l.noReverse || l.kind === 'prv' || l.kind === 'psv' || l.kind === 'fcv' ? Math.max(0, m) : m
   }
-  const vent = (n: GNode, p: number) => (n.duty ? n.duty / hfg(p) : 0) + orificeFlow(n.cdA, p, P_ATM, fluid).mdot + (n.relief && p > n.relief.set ? orificeFlow(n.relief.cdA, p, P_ATM, fluid).mdot : 0)
+  const vent = (n: GNode, p: number) =>
+    (n.duty ? loadSteam(n.duty, p, n.load?.processTemp ?? 100, n.load?.fraction ?? 1) : 0) +
+    orificeFlow(n.cdA, p, P_ATM, fluid).mdot +
+    (n.relief && p > n.relief.set ? orificeFlow(n.relief.cdA, p, P_ATM, fluid).mdot : 0)
 
   const free = nodes.map((n, i) => (!n.fixed && reached.has(i) ? i : -1)).filter((i) => i >= 0)
   const residual = (P: Float64Array): Float64Array => {

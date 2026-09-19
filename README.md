@@ -127,7 +127,7 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   long mild one — found by bisection around the whole channel solve); downstream, its level is the tailwater. The sill
   level is a property of the tank or reservoir. Tanks add up what pipes and channels give and take, so the lab clock
   fills and drains them correctly.
-  One bed level per node (no drops), more than two branches split equally.
+  A junction can carry a step down in the bed; forks of any number of branches settle on one water level; a gate whose lip the normal depth just reaches holds the surface at the lip.
 - **Unsteady channel flow** (`src/engine/wave.ts`): the "live flow" switch marches the channels through lab time with
   the Saint-Venant equations — finite volumes carrying area and discharge, HLL fluxes (bores and jumps capture
   themselves), hydrostatic reconstruction for the bed slope (still water stays still), implicit Manning friction.
@@ -135,7 +135,7 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   allows, drowned or free, either way; inflows, outfalls, lakes and outlet feeds are boundary states. It starts on the
   steady solution, so nothing moves until something changes: a storm pulse on a timer, a gate, a lake level.
   `scripts/wave-check.ts` checks that it holds the steady state, conserves water, settles on the new steady state
-  after a change and moves a disturbance at about u + c. Tanks still fill from the steady channel flow, not the live one.
+  after a change and moves a disturbance at about u + c. Tanks on the channels fill and drain at the live rate.
   `scripts/channel-check.ts` checks it against hand calculations.
 - **Jet pump (ejector)**: three ports, and both of its internal links depend on heads elsewhere in the network — the
   nozzle sees motive − suction, the entrainment curve scales with motive − discharge — which no single EPANET element
@@ -185,11 +185,27 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   fluid, units, clock speed and live-heat / live-flow modes) and then drops the fragment, so a reload keeps your edits
   rather than the link's copy. Every built-in rig fits in under 2,000 characters; `scripts/share-check.ts` round-trips
   them all. If the clipboard is not available the link is shown instead.
+- **Refinements**
+  - _Pipes can tap a channel_: a joint with both pipes and reaches on it gives the pipe side the channel's water level
+    as a fixed head, and the channel loses what the pipes take (a pump lifting from a canal); the two engines go round
+    a few times until they agree.
+  - _Steam loads have a control valve_: a load fraction (which a controller can drive) throttles the steam space down
+    towards the process temperature — steam demand, flash and the **stall point** (the load below which the space is
+    no hotter than the back-pressure allows, so it floods) follow. Trap types differ in capacity, working steam loss,
+    back-pressure tolerance and whether they hold condensate back; every pipe reports its **warm-up condensate** and
+    traps are checked against the start-up rate; flash in a return line is taken at its mid-line pressure.
+  - _Heat_: a boiler takes a controller's command; an emitter can model **the room it heats** (mass, loss to an outside
+    temperature) and offers that temperature to a thermostat; live readings show what reaches the room, not what the
+    radiator's own metal is soaking up.
+  - _Gas risers_: gauge pressure is measured against the air outside at the same height, so a gas lighter than air
+    gains pressure going up (+4.4 Pa/m for natural gas) and a heavier one loses it.
+  - _Event sequences_ can wait for a signal on their input (start on it, or run only while it is on), pick each
+    repeat up where the last one ended, and chart any number of devices three to a plot.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **55 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **57 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
   valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
-  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap → waiting for hot water, warming up a heating loop, lagging a hot-water main → pumping into a canal, a canal out of a lake → a flood wave down a river, a cylinder that stratifies, bringing the condensate home → starting a pump station). `scripts/control-sim.ts` runs the loops closed
+  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap → waiting for hot water, warming up a heating loop, lagging a hot-water main → pumping into a canal, a canal out of a lake → a flood wave down a river, a cylinder that stratifies, bringing the condensate home → starting a pump station, a room thermostat, holding a canal level). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli

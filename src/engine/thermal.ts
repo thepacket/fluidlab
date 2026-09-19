@@ -7,6 +7,7 @@
 // unbalanced loop feels like.
 import { lossDevice } from '../model/catalog'
 import { pipeHeatLoss } from '../model/steam'
+import { command } from './inp'
 import { isControl, isInline, type Model, type ModelNode, type Props, type Results } from '../model/types'
 
 export interface Thermal {
@@ -19,6 +20,8 @@ export interface Thermal {
   /** live mode: where the heat is going right now, W */
   /** live mode, stratified tanks: °C of each layer, bottom first */
   layers?: Record<string, number[]>
+  /** °C of the room round each emitter that models one */
+  rooms?: Record<string, number>
   balance?: { input: number; emitted: number; pipeLoss: number; tankLoss: number; stored: number }
   tMin: number
   tMax: number
@@ -92,18 +95,27 @@ export function thermalNetwork(model: Model, results: Results) {
   return { points, fixed, key, carriers }
 }
 
-/** Steady outlet temperature of an inline part for water arriving at tIn. */
-export function deviceOutlet(n: ModelNode, tIn: number, q: number, rhoCp: number): number {
+/** A room that warms and cools with its emitter: lost heat ∝ (room − outside). Off by default: the room just is at `roomTemp`. */
+export const hasRoom = (n: ModelNode) => n.data.kind === 'fitting' && !isBoiler(n) && n.data.props.ratedHeat > 0 && !!n.data.props.roomModel
+export const roomLoss = (p: Props) => p.roomLoss ?? (p.ratedHeat ?? 1500) / 25 // sized so the rated output holds 20 °C against −5 °C outside
+export const roomMass = (p: Props) => p.roomMass ?? (p.ratedHeat ?? 1500) * 300 // air, furniture and the inner skin of the walls: a time constant of about two hours
+
+/**
+ * Steady outlet temperature of an inline part for water arriving at tIn. `cmd` is a controller's 0‥1 command (a boiler
+ * switched off heats nothing; one with a rated output is limited to that share of it); `room` overrides the room temperature.
+ */
+export function deviceOutlet(n: ModelNode, tIn: number, q: number, rhoCp: number, cmd = 1, room?: number): number {
   if (n.data.kind !== 'fitting') return tIn
   const p = n.data.props
   if (isBoiler(n)) {
+    if (cmd < 0.01) return tIn
     const set = p.supplyTemp ?? 70
     // a boiler with a rated output can only lift the water so far; a chiller only cool it so far
-    return p.ratedHeat > 0 && q > 0 ? tIn + Math.max(-p.ratedHeat / (q * rhoCp), Math.min(p.ratedHeat / (q * rhoCp), set - tIn)) : set
+    return p.ratedHeat > 0 && q > 0 ? tIn + Math.max((-cmd * p.ratedHeat) / (q * rhoCp), Math.min((cmd * p.ratedHeat) / (q * rhoCp), set - tIn)) : set
   }
   if (!(p.ratedHeat > 0)) return tIn
-  const room = p.roomTemp ?? 20
-  return q > 0 ? room + (tIn - room) * Math.exp(-(p.ratedHeat / 50) / (q * rhoCp)) : room
+  const around: number = room ?? p.roomTemp ?? 20
+  return q > 0 ? around + (tIn - around) * Math.exp(-(p.ratedHeat / 50) / (q * rhoCp)) : around
 }
 
 export function solveThermal(model: Model, results: Results): Thermal | undefined {
@@ -117,8 +129,9 @@ export function solveThermal(model: Model, results: Results): Thermal | undefine
   for (const k of net.points) T.set(k, 40)
   for (const [k, n] of net.fixed) T.set(k, sourceTemp(n))
   const carriers = net.carriers.filter((c) => c.q > 0)
+  const rooms = new Map<string, number>(model.nodes.filter(hasRoom).map((n) => [n.id, n.data.props.roomTemp ?? 20]))
   const outletOf = (c: Carrier, tIn: number): number => {
-    if (c.through) return deviceOutlet(byId.get(c.through)!, tIn, c.q, rhoCp)
+    if (c.through) return deviceOutlet(byId.get(c.through)!, tIn, c.q, rhoCp, command(model, c.through), rooms.get(c.through))
     const p = edgeProps.get(c.edge!)
     const ua = p ? pipeUA(p) * p.length : 0
     return ua > 0 ? AMBIENT + (tIn - AMBIENT) * Math.exp(-ua / (c.q * rhoCp)) : tIn
@@ -127,23 +140,39 @@ export function solveThermal(model: Model, results: Results): Thermal | undefine
   // Gauss–Seidel round the loop: each point takes the flow-weighted mix of what arrives
   const inflows = new Map<string, Carrier[]>()
   for (const c of carriers) inflows.set(c.to, [...(inflows.get(c.to) ?? []), c])
-  for (let sweep = 0; sweep < 200; sweep++) {
-    let change = 0
-    for (const [k, list] of inflows) {
-      if (net.fixed.has(k)) continue
-      let sum = 0
-      let q = 0
-      for (const c of list) {
-        sum += c.q * outletOf(c, T.get(c.from)!)
-        q += c.q
+  for (let outer = 0; outer < (rooms.size ? 40 : 1); outer++) {
+    for (let sweep = 0; sweep < 200; sweep++) {
+      let change = 0
+      for (const [k, list] of inflows) {
+        if (net.fixed.has(k)) continue
+        let sum = 0
+        let q = 0
+        for (const c of list) {
+          sum += c.q * outletOf(c, T.get(c.from)!)
+          q += c.q
+        }
+        const t = sum / q
+        change = Math.max(change, Math.abs(t - T.get(k)!))
+        T.set(k, t)
       }
-      const t = sum / q
-      change = Math.max(change, Math.abs(t - T.get(k)!))
-      T.set(k, t)
+      if (change < 1e-4) break
     }
-    if (change < 1e-4) break
+    // a modelled room settles where what its emitter gives equals what it loses to outside
+    let shift = 0
+    for (const c of carriers) {
+      if (!c.through || !rooms.has(c.through)) continue
+      const p = byId.get(c.through)!.data.props
+      const tIn = T.get(c.from)!
+      const emitted = c.q * rhoCp * (tIn - outletOf(c, tIn))
+      const next = (p.outsideTemp ?? 0) + emitted / roomLoss(p)
+      shift = Math.max(shift, Math.abs(next - rooms.get(c.through)!))
+      rooms.set(c.through, rooms.get(c.through)! + 0.6 * (next - rooms.get(c.through)!))
+    }
+    if (shift < 1e-3) break
   }
-  return thermalView(model, results, (k) => T.get(k), rhoCp)
+  const view = thermalView(model, results, (k) => T.get(k), rhoCp)
+  if (rooms.size) view.rooms = Object.fromEntries(rooms)
+  return view
 }
 
 /** Package point temperatures the way the UI reads them. */

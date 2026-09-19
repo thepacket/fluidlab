@@ -139,7 +139,8 @@ export function signalEnds(c: { source: string | null; target: string | null; so
   const target = kindOf(to?.id)
   if (!from?.id || !to?.id || !target || from.id === to.id) return 'invalid' as const
   // command wires: into a device, a PID's remote setpoint, a latch's reset, or any block that reads signals
-  const command = to.h === 'ctl' ? CONTROLLABLE.includes(target) : to.h === 'rsp' ? target === 'pid' : to.h === 'cin2' ? target === 'logic' : SIGNAL_CONSUMERS.includes(target)
+  const boiler = target === 'fitting' && nodes.find((n) => n.id === to.id)?.data.props.variant === 'boiler'
+  const command = to.h === 'ctl' ? CONTROLLABLE.includes(target) || boiler : to.h === 'rsp' ? target === 'pid' : to.h === 'cin2' ? target === 'logic' : SIGNAL_CONSUMERS.includes(target)
   const ok = from.h === 'pv' ? to.h === 'cin' && PV_CONSUMERS.includes(target) : command
   return ok ? { from: from.id, fromHandle: from.h as string, to: to.id, toHandle: to.h as string } : ('invalid' as const)
 }
@@ -514,6 +515,7 @@ export const useLab = create<State>((set, get) => ({
     if (results.thermal) {
       for (const [id, t] of Object.entries(results.thermal.nodes)) v[`${id}:T`] = t
       for (const [id, d] of Object.entries(results.thermal.devices)) v[`${id}:T`] = d.tOut
+      for (const [id, t] of Object.entries(results.thermal.rooms ?? {})) v[`${id}:room`] = t
       for (const [id, l] of Object.entries(results.thermal.links)) v[`${id}:T`] = s.results.links[id]?.flow < 0 ? l.tStart : l.tEnd
     }
     const simTime = s.simTime + dt
