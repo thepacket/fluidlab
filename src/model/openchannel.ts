@@ -1,5 +1,5 @@
 // Open-channel hydraulics: section geometry, Manning, critical flow, weirs, flumes and gates. SI throughout.
-import { G } from './physics'
+import { G, tankHeight } from './physics'
 import type { Kind, Model, Props } from './types'
 
 export const CHANNEL_KINDS: Kind[] = ['inflow', 'weir', 'gate', 'outfall']
@@ -22,8 +22,8 @@ export function stripChannels(model: Model): Model {
   return { ...model, nodes: model.nodes.filter((n) => !dropped.has(n.id)), edges: model.edges.filter((e) => !isChannel(e) && !dropped.has(e.source) && !dropped.has(e.target)) }
 }
 
-/** Bed level of a channel where it meets a tank (its base, unless told otherwise) or a reservoir (half a metre under the surface). */
-export const lakeSill = (kind: Kind, p: Props): number => p.channelInvert ?? (kind === 'tank' ? p.elevation : p.head - 0.5)
+/** Bed level of a channel where it meets a tank (its base — or its rim, if it is an overflow — unless told otherwise) or a reservoir (half a metre under the surface). */
+export const lakeSill = (kind: Kind, p: Props): number => p.channelInvert ?? (kind === 'tank' ? p.elevation + (p.overflow ? tankHeight(p) : 0) : p.head - 0.5) // a tank that overflows spills over its rim
 
 // ---- linings -------------------------------------------------------------------------
 
@@ -226,15 +226,36 @@ export function weirFlow(p: Props, h: number): number {
 }
 export const weirExponent = (p: Props) => (p.variant === 'parshall' ? (PARSHALL[p.throat] ?? PARSHALL['6in']).n : weirType(p.variant).exponent)
 
+/** Submergence (h_b / h_a) a Parshall flume tolerates before its free-flow rating stops holding: 50 % for the smallest, 70 % from 1 ft up. */
+export const parshallLimit = (p: Props) => {
+  const w = (PARSHALL[p.throat] ?? PARSHALL['6in']).width
+  return w < 0.1 ? 0.5 : w < 0.3 ? 0.6 : 0.7
+}
+/** ISO 9826's correction: the discharge a drowned Parshall flume loses, m³/s, for upstream head ha and submergence s. */
+const parshallLoss = (w: number, ha: number, s: number) => 0.07 * ((ha / (((1.8 / s) ** 1.8 - 2.45) * 0.305)) ** (4.57 - 3.14 * s) + 0.093 * s) * w ** 0.815
+
 /**
- * Head over the crest needed to pass q. `tail` is the tailwater height above the crest: above zero it drowns the
- * weir, and Villemonte's correction Q = Q_free·(1 − (h2/h1)^n)^0.385 applies.
+ * What a weir or flume passes with `h` over its crest and the tailwater `tail` above the crest. A weir is drowned as
+ * soon as the tailwater tops its crest (Villemonte: Q = Q_free·(1 − (h2/h1)^n)^0.385); a Parshall flume keeps its
+ * free-flow rating up to its submergence limit and then loses ISO 9826's correction (taken from the limit on, so the
+ * rating stays continuous; the standard gives it for 1–8 ft flumes and it is used here for the small ones too).
  */
+export function drownedFlow(p: Props, h: number, tail: number): number {
+  if (h <= 0) return 0
+  const free = weirFlow(p, h)
+  if (tail <= 0) return free
+  if (p.variant !== 'parshall') return free * Math.max(0, 1 - (tail / h) ** weirExponent(p)) ** 0.385
+  const s = Math.min(0.98, tail / h)
+  const limit = parshallLimit(p)
+  if (s <= limit) return free
+  const w = (PARSHALL[p.throat] ?? PARSHALL['6in']).width
+  return Math.max(0, free - (parshallLoss(w, h, s) - parshallLoss(w, h, limit)))
+}
+
+/** Head over the crest needed to pass q against a tailwater `tail` above the crest (see `drownedFlow`). */
 export function weirHead(p: Props, q: number, tail = 0): number {
   if (q <= 0) return Math.max(0, tail)
-  const n = weirExponent(p)
-  const f = (h: number) => weirFlow(p, h) * (tail > 0 ? Math.max(0, 1 - (tail / h) ** n) ** 0.385 : 1) - q
-  return bisect(f, Math.max(1e-6, tail), Math.max(tail, 0) + 50)
+  return bisect((h) => drownedFlow(p, h, tail) - q, Math.max(1e-6, tail), Math.max(tail, 0) + 50)
 }
 
 export const GATE_CC = 0.61

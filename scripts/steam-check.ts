@@ -1,7 +1,7 @@
 // Steam engine against steam tables and hand calculations.
 import { engine } from '../src/engine/epanet'
 import { area, frictionFactor, P_ATM } from '../src/model/physics'
-import { CP_STEAM, flashFraction, hfg, hg, pipeHeatLoss, rhoSteam, tSat, throttledTemp } from '../src/model/steam'
+import { CP_STEAM, accumulatorRate, flashFraction, hf, hfg, hg, pipeHeatLoss, rhoSteam, tSat, throttledTemp } from '../src/model/steam'
 import { FLUIDS, defaultPipeProps, defaultProps, type Kind, type Model } from '../src/model/types'
 
 await engine.ready()
@@ -172,6 +172,43 @@ check('throttling 10 → 3 bar abs leaves superheat', throttledTemp(10e5, 3e5) -
   // the saving is a little under the superheat's own power: while it lasts the pipe is hotter and loses heat faster
   const saved = ((sat.links.main.condensate - long.links.main.condensate) * hfg(long.loads.HX.space + P_ATM)) / (long.boilers.B.steam * CP_STEAM * 60)
   check('…less than saturated steam would: most of the superheat’s power is saved', saved > 0.7 && saved < 1 ? 1 : 0, 1)
+}
+
+// 8. pumped return: the traps only have to reach the vented receiver; the pump takes the lift and the long run home
+{
+  const build = (pumped: boolean): Model => ({
+    fluid: steam,
+    nodes: [
+      node('B', 'reservoir', { pressure: 700e3 }),
+      node('HX', 'steamload', { duty: 300e3, processTemp: 120 }),
+      node('RX', 'tank', { elevation: 0, pumped, suctionHead: 3 }),
+      node('FT', 'tank', { elevation: 12 }),
+    ],
+    edges: [
+      pipe('main', 'B', 'HX', { length: 30, diameter: 0.05, insulation: 0.05 }),
+      pipe('ret', 'HX', 'RX', { length: 8, diameter: 0.05, conduit: 'condensate' }),
+      pipe('lift', 'RX', 'FT', { length: 120, diameter: 0.025, conduit: 'condensate' }),
+    ],
+  })
+  const st = engine.solve(build(true)).steam!
+  const kg = st.returns.receivers.RX.condensate
+  const v = kg / (960 * area(0.025))
+  const f = frictionFactor((960 * v * 0.025) / 2.9e-4, 0.045e-3 / 0.025)
+  check('condensate pump head = lift + friction', st.returns.pumps.RX.head, 12 + (((f * 120) / 0.025) * v * v) / (2 * 9.80665), 0.01)
+  check('the feed tank receives what the receiver kept', st.returns.receivers.FT.condensate, kg, 1e-9)
+  check('the load drains against the short gravity line only', st.returns.backPressure.HX < 20e3 ? 1 : 0, 1)
+  console.log(`  pump: ${(kg * 3600).toFixed(0)} kg/h against ${st.returns.pumps.RX.head.toFixed(1)} m, ${st.returns.pumps.RX.power.toFixed(0)} W`)
+}
+
+// 9. a steam accumulator: the steam it gives up while its pressure falls is what its water's enthalpy drop can flash
+{
+  const vessel = { volume: 20, waterFill: 0.9 }
+  let p = 12e5
+  const draw = 0.5
+  for (let t = 0; t < 600; t++) p += accumulatorRate(vessel, p, -draw)
+  const water = 0.9 * 20 * 900
+  check('accumulator: steam released = M_w·Δh_f / h_fg', draw * 600, (water * (hf(12e5) - hf(p))) / hfg((12e5 + p) / 2), 0.02)
+  console.log(`  accumulator: 300 kg of steam took it from 12.0 to ${(p / 1e5).toFixed(2)} bar abs`)
 }
 
 if (failed) {

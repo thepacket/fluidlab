@@ -7,6 +7,7 @@ import { EXPERIMENTS, NODE_SIZE, PORT_Y, type LabEdge, type LabNode } from './ex
 import { EMPTY_CONTROL, PV_CONSUMERS, PV_SOURCES, SIGNAL_CONSUMERS, sameControl, stepControl, type ControlState } from './model/control'
 import { catalogueSpec } from './model/catalog'
 import { receiverRate } from './engine/gas'
+import { accumulatorRate } from './model/steam'
 import { heatView, stepHeat, type HeatState } from './engine/heat'
 import { stepWave, waveView, type WaveState } from './engine/wave'
 import { decodeRig, rigInHash } from './share'
@@ -484,7 +485,8 @@ export const useLab = create<State>((set, get) => ({
         // a receiver: gas in raises the pressure (isothermal), p·V = m·Z·R·T
         const key = `${n.id}:gas`
         const was = levels[key] ?? P_ATM + p.initPressure
-        levels[key] = Math.max(P_ATM, was + receiverRate(fluid, p.volume, r.outflow) * dt)
+        // a steam accumulator stores its energy in hot water, not in compressed vapour
+        levels[key] = Math.max(P_ATM, was + (fluid.steam ? accumulatorRate(p, was, r.outflow) : receiverRate(fluid, p.volume, r.outflow)) * dt)
         if (Math.abs(levels[key] - was) > 1e-3) moved = true
         continue
       }

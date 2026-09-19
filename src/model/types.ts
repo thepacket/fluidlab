@@ -206,6 +206,9 @@ export function defaultProps(kind: Kind): Props {
       }
     case 'tank':
       return {
+        pumped: false,
+        suctionHead: 1,
+        npshr: 2,
         stratified: false,
         heaterHeight: 0.2,
         initTemp: 15,
@@ -269,7 +272,7 @@ export function defaultProps(kind: Kind): Props {
     case 'fitting':
       return { elevation: 0, variant: 'elbow90', diameter: 0.04, k: 0.75 }
     case 'vessel':
-      return { elevation: 0, volume: 0.1, precharge: 180e3, initPressure: 250e3, polytropic: 1.2 }
+      return { elevation: 0, volume: 0.1, precharge: 180e3, initPressure: 250e3, polytropic: 1.2, waterFill: 0.8 }
     case 'leak':
       return { elevation: 0, holeDiameter: 0.004, cd: 0.6, active: true, variant: 'leak' }
     case 'tee':
@@ -299,7 +302,7 @@ export function defaultProps(kind: Kind): Props {
     case 'lamp':
       return { color: 'red' }
     case 'sequence':
-      return { enabled: true, repeat: false, period: 120, trigger: 'start', steps: [] }
+      return { enabled: true, repeat: false, period: 120, trigger: 'start', timeUnit: 's', steps: [] }
     case 'inflow':
       return { elevation: 1, flow: 0.1 }
     case 'weir':

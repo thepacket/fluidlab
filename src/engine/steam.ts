@@ -46,6 +46,8 @@ export interface SteamResults {
   returns: {
     links: Record<string, { flow: number; flash: number; velocity: number; dp: number }>
     receivers: Record<string, { condensate: number; flashVent: number; heat: number; temp: number }>
+    /** condensate pumps: a receiver that lifts its condensate on to another tank through a liquid-filled line */
+    pumps: Record<string, { flow: number; head: number; power: number; npsha: number; to: string }>
     /** gauge pressure in the return system at each node it touches, Pa */
     backPressure: Record<string, number>
   }
@@ -62,7 +64,7 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
     traps: {},
     boilers: {},
     throttled: {},
-    returns: { links: {}, receivers: {}, backPressure: {} },
+    returns: { links: {}, receivers: {}, pumps: {}, backPressure: {} },
     totals: { generated: 0, heat: 0, useful: 0, mainsLoss: 0, trapLoss: 0, stranded: 0, returned: 0, heatReturned: 0 },
   }
   const thermal: Thermal = { nodes: {}, devices: {}, links: {}, tMin: Infinity, tMax: -Infinity }
@@ -359,6 +361,63 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
       out.totals.heatReturned += liquid * (hf(pr) - hWater(15))
       res.nodes[id] = { head: (pr - P_ATM) / (1000 * G), pressure: pr - P_ATM, elevation: byId.get(id)!.data.props.elevation ?? 0, outflow: 0 }
       thermal.nodes[id] = seen(tSat(pr))
+    }
+    // ---- pumped return: a receiver with a condensate pump sends its (now flash-free) water on to another tank ----
+    // The traps upstream only have to reach the vented receiver; the lift and the long run home are the pump's problem.
+    const twoPhase = new Set([...mass].filter(([, kg]) => kg > 0).map(([edge]) => edge)) // lines already carrying trap discharge
+    for (const id of receivers) {
+      const nd = byId.get(id)!
+      if (!nd.data.props.pumped) continue
+      // breadth-first along return lines that carry nothing else, to the nearest tank without a pump of its own
+      const trail = new Map<string, { from: string; e: (typeof ret)[number] }>()
+      const q = [id]
+      let dest: string | undefined
+      while (q.length && !dest) {
+        const cur = q.shift()!
+        for (const { other, e } of next.get(cur) ?? []) {
+          if (twoPhase.has(e.id) || trail.has(other) || other === id) continue
+          trail.set(other, { from: cur, e })
+          if (byId.get(other)?.data.kind === 'tank' && !byId.get(other)!.data.props.pumped) {
+            dest = other
+            break
+          }
+          q.push(other)
+        }
+      }
+      const rx = out.returns.receivers[id]
+      if (!dest) {
+        res.warnings.push({ id, level: 'warn', text: `${nd.data.label}: its condensate pump has nowhere to deliver — run a return line from it to a feed tank` })
+        continue
+      }
+      const kg = rx.condensate
+      const rho = 960 // water just under boiling
+      let headM = ((byId.get(dest)!.data.props.backPressure ?? 0) - (nd.data.props.backPressure ?? 0)) / (rho * G)
+      for (let cur = dest; cur !== id; cur = trail.get(cur)!.from) {
+        const { from, e } = trail.get(cur)!
+        const p = e.data!.props
+        const v = kg / (rho * area(p.diameter))
+        const f = frictionFactor(Math.max(3000, (rho * v * p.diameter) / 2.9e-4), (p.roughness ?? 0.045e-3) / p.diameter)
+        const dp = ((f * p.length) / p.diameter + (p.minorK ?? 0)) * 0.5 * rho * v * v
+        const rise = (byId.get(cur)?.data.props.elevation ?? 0) - (byId.get(from)?.data.props.elevation ?? 0)
+        headM += dp / (rho * G) + rise
+        out.returns.links[e.id] = { flow: kg, flash: 0, velocity: v, dp: dp + rise * rho * G }
+        const forward = e.source === from
+        res.links[e.id] = { flow: forward ? kg : -kg, velocity: v, headloss: dp / (rho * G), dp, re: (rho * v * p.diameter) / 2.9e-4, f, regime: kg > 0 ? 'turbulent' : 'still', pStart: 0, pEnd: 0 }
+      }
+      const npsha = Math.max(0, nd.data.props.suctionHead ?? 1) // a vented receiver holds water at its boiling point: only its height above the pump counts
+      out.returns.pumps[id] = { flow: kg, head: Math.max(0, headM), power: (kg * G * Math.max(0, headM)) / 0.5, npsha, to: dest }
+      if (kg > 0 && npsha < (nd.data.props.npshr ?? 2))
+        res.warnings.push({
+          id,
+          level: 'error',
+          text: `${nd.data.label}: condensate at ${rx.temp.toFixed(0)} °C is on the point of boiling, and ${npsha.toFixed(1)} m of height over the pump is less than the ${nd.data.props.npshr ?? 2} m it needs — it will cavitate. Raise the receiver`,
+        })
+      // what it forwards is counted where it ends up
+      const home2 = out.returns.receivers[dest] ?? (out.returns.receivers[dest] = { condensate: 0, flashVent: 0, heat: 0, temp: rx.temp })
+      home2.condensate += kg
+      home2.heat += rx.heat
+      home2.temp = rx.temp
+      if (!res.nodes[dest]) res.nodes[dest] = { head: 0, pressure: byId.get(dest)!.data.props.backPressure ?? 0, elevation: byId.get(dest)!.data.props.elevation ?? 0, outflow: 0 }
     }
     // the return line's pressure is what the traps and loads really discharge against
     for (const [id, bp] of Object.entries(out.returns.backPressure)) {

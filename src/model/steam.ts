@@ -139,6 +139,17 @@ export function steamSpace(pSupply: number, processTemp: number, load: number): 
 /** Steam a load condenses (kg/s) at this supply pressure and load fraction. */
 export const loadSteam = (duty: number, pSupply: number, processTemp: number, load: number) => (load <= 0 ? 0 : (load * duty) / hfg(steamSpace(pSupply, processTemp, load)))
 
+/**
+ * A steam accumulator: a pressure vessel mostly full of water at saturation. Draw steam and the pressure falls, the
+ * water is suddenly too hot for it and flashes to make up the steam; charge it and the steam condenses into the water,
+ * heating it. Either way  M_w · (dh_f/dp) · dp/dt = ṁ_in · h_fg.  Returns Pa/s for `netIn` kg/s of steam arriving.
+ */
+export function accumulatorRate(p: Props, pAbs: number, netIn: number): number {
+  const water = Math.min(0.95, Math.max(0.05, p.waterFill ?? 0.8)) * Math.max(1e-3, p.volume) * 900
+  const slope = (hf(pAbs * 1.01) - hf(pAbs * 0.99)) / (0.02 * pAbs)
+  return (netIn * hfg(pAbs)) / (water * slope)
+}
+
 /** Condensate made just bringing a cold steel pipe up to steam temperature, kg — the start-up load a drip trap must also clear. */
 export function warmupCondensate(p: Props, pAbs: number): number {
   const t = Math.max(0.003, 0.06 * p.diameter)

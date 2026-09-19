@@ -116,7 +116,13 @@ class EpanetEngine implements HydraulicEngine {
       const heads = Object.fromEntries(taps.filter((nd) => open.nodes[nd.id]).map((nd) => [nd.id, open.nodes[nd.id].head]))
       press = this.solvePressurised(model, taps.length ? { ...overrides, heads } : overrides)
       let moved = 0
-      for (const nd of full.nodes) if (nd.data.kind === 'outlet' && press.ok) feeds[nd.id] = press.nodes[nd.id]?.outflow ?? 0
+      for (const nd of full.nodes) {
+        if (!press.ok) continue
+        const p = nd.data.props
+        if (nd.data.kind === 'outlet') feeds[nd.id] = press.nodes[nd.id]?.outflow ?? 0
+        // a tank with an overflow, full to the rim and still gaining, spills the surplus into whatever channel leaves it
+        else if (nd.data.kind === 'tank' && p.overflow && (full.levels?.[nd.id] ?? p.initLevel) >= tankHeight(p) - 1e-6) feeds[nd.id] = Math.max(0, press.nodes[nd.id]?.outflow ?? 0)
+      }
       for (const nd of taps) {
         const want = press.ok ? -(press.nodes[nd.id]?.outflow ?? 0) : 0
         const next = (draws[nd.id] ?? 0) + 0.7 * (want - (draws[nd.id] ?? 0))

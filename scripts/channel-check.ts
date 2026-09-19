@@ -2,7 +2,7 @@
 import { solveChannel } from '../src/engine/channel'
 import { engine } from '../src/engine/epanet'
 import { G } from '../src/model/physics'
-import { conjugateDepth, criticalDepth, defaultChannelProps, normalDepth, specificForce, weirFlow } from '../src/model/openchannel'
+import { conjugateDepth, criticalDepth, defaultChannelProps, drownedFlow, normalDepth, specificForce, weirFlow, weirHead } from '../src/model/openchannel'
 import { FLUIDS, defaultPipeProps, defaultProps, type Kind, type Model } from '../src/model/types'
 
 const node = (id: string, kind: Kind, props = {}) => ({ id, data: { kind, label: id, props: { ...defaultProps(kind), ...props } } })
@@ -234,6 +234,42 @@ const truthy = (name: string, ok: boolean, note = '') => {
   const sf = (0.013 * Q) ** 2 / (A * A * (D / 4) ** (4 / 3))
   check('surcharged culvert: upstream pressure head', r.depth[0], 1.5 + (sf - 0.2 / L) * L, 0.01)
   truthy('reported as running full', r.profile.includes('full') && res.warnings.some((w) => w.text.includes('running full')), r.profile)
+}
+
+// 13. a Parshall flume keeps its free-flow rating until the tailwater is 60 % of the upstream head (6 in throat),
+//     and needs more head for the same flow beyond that
+{
+  const flume = { variant: 'parshall', throat: '6in' }
+  check('Parshall, 50 % submerged: free-flow rating holds', drownedFlow(flume, 0.3, 0.15), weirFlow(flume, 0.3), 1e-9)
+  truthy(
+    'Parshall, 85 % submerged: passes less',
+    drownedFlow(flume, 0.3, 0.255) < 0.9 * weirFlow(flume, 0.3),
+    `${((drownedFlow(flume, 0.3, 0.255) / weirFlow(flume, 0.3)) * 100).toFixed(0)} % of free flow`,
+  )
+  check('continuous at the limit', drownedFlow(flume, 0.3, 0.1801), weirFlow(flume, 0.3), 1e-3)
+  check('head for a flow under submergence inverts the rating', drownedFlow(flume, weirHead(flume, 0.05, 0.25), 0.25), 0.05, 1e-6)
+}
+
+// 14. a full tank with an overflow spills its surplus into the channel that leaves it, and stays full
+{
+  await engine.ready()
+  const m: Model = {
+    fluid: FLUIDS[0],
+    nodes: [
+      node('R', 'reservoir', { head: 30 }),
+      node('V', 'valve', { valveType: 'fcv', flowSetting: 0.02, diameter: 0.1 }),
+      node('T', 'tank', { elevation: 2, diameter: 2, initLevel: 2.5, maxLevel: 2.5, overflow: true }),
+      node('O', 'outfall', { elevation: 3.5 }),
+    ],
+    edges: [
+      { id: 'p1', source: 'R', target: 'V', sourceHandle: 'r', targetHandle: 'in', data: { label: 'p1', props: { ...defaultPipeProps(), diameter: 0.1, length: 10 } } },
+      { id: 'p2', source: 'V', target: 'T', sourceHandle: 'out', targetHandle: 'l', data: { label: 'p2', props: { ...defaultPipeProps(), diameter: 0.1, length: 10 } } },
+      reach('spill', 'T', 'O', { length: 50, width: 0.4 }),
+    ],
+  }
+  const res = engine.solve(m)
+  check('the spillway carries what the pipes bring', res.channel!.reaches.spill.flow, 0.02, 1e-3)
+  check('its bed starts at the rim', res.channel!.reaches.spill.bed[0], 2 + 2.5, 1e-9)
 }
 
 if (failed) {

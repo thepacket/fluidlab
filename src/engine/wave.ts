@@ -14,6 +14,7 @@ import {
   area,
   bisect,
   criticalDepth,
+  drownedFlow,
   firstMoment,
   froude,
   hydraulicRadius,
@@ -26,8 +27,6 @@ import {
   specificEnergy,
   superDepth,
   topWidth,
-  weirExponent,
-  weirFlow,
   zoneName,
 } from '../model/openchannel'
 import type { LinkResult, Model, NodeResult, Props, Results } from '../model/types'
@@ -125,7 +124,7 @@ function structureFlow(kind: string, p: Props, opening: number, hu: number, hd: 
     const h = hu - crest
     if (h <= 0) return 0
     const tail = hd - crest
-    return weirFlow(p, h) * (tail > 0 ? Math.max(0, 1 - (tail / h) ** weirExponent(p)) ** 0.385 : 1)
+    return drownedFlow(p, h, tail)
   }
   const b = Math.max(0.01, p.width)
   const a = Math.max(1e-4, opening)

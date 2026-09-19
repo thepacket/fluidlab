@@ -185,6 +185,18 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   fluid, units, clock speed and live-heat / live-flow modes) and then drops the fragment, so a reload keeps your edits
   rather than the link's copy. Every built-in rig fits in under 2,000 characters; `scripts/share-check.ts` round-trips
   them all. If the clipboard is not available the link is shown instead.
+- **Small follow-ups**
+  - _Parshall submergence_: a flume keeps its free-flow rating up to its submergence limit (50 / 60 / 70 % by throat
+    size) and then loses ISO 9826's correction, taken from the limit on so the rating stays continuous (the standard
+    gives it for 1–8 ft flumes; it is used for the small ones too). Steady and unsteady engines share it.
+  - _Overflow spillways_: a tank with an overflow meets a channel at its rim, and once full it spills whatever the
+    pipes still bring into that channel — without the spill counting as the tank's own loss.
+  - _Pumped condensate return_: a receiver can have a condensate pump. The traps then only reach the vented receiver;
+    the pump takes the lift and the run to a feed tank (single-phase Darcy, head, power), and warns when the near-boiling
+    condensate has too little height over it (NPSH).
+  - _Steam accumulator_: a pressure vessel on steam stores energy in saturated water, so its pressure follows
+    M_w·(dh_f/dp)·dp/dt = ṁ_in·h_fg instead of the ideal-gas receiver law. The water mass is taken as constant.
+  - _Sequence time units_: a sequence's steps can be typed and charted in seconds, minutes or hours.
 - **Second-round engine work**
   - _Pipes running full_: a circular reach carries a **Preissmann slot** — a hair-line slit along the crown (0.2 % of
     the diameter) — so its "depth" can rise above the crown as pressure head while the area and wetted perimeter stay

@@ -161,7 +161,7 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}, d
       const p = nd.data.props
       let total = entering(id).reduce((s, r) => s + r.q, 0)
       if (nd.data.kind === 'inflow') total += Math.max(0, p.flow * command(model, id))
-      if (nd.data.kind === 'outlet') total += Math.max(0, feeds[id] ?? 0)
+      if (nd.data.kind === 'outlet' || nd.data.kind === 'tank') total += Math.max(0, feeds[id] ?? 0) // an outlet's discharge, or what a full tank spills over its rim
       total += lakeQ.get(id) ?? 0
       if (nd.data.kind === 'junction') total -= p.demand ?? 0
       total -= draws[id] ?? 0 // pipework tapping the channel here (negative: discharging into it)
@@ -477,8 +477,9 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}, d
         head: lakeLevel(id),
         pressure: nd.data.kind === 'tank' ? (lakeLevel(id) - p.elevation) * rhoG : 0,
         elevation: nd.data.kind === 'tank' ? p.elevation : lakeLevel(id),
-        outflow: ins.reduce((s, r) => s + r.q, 0) - outs.reduce((s, r) => s + r.q, 0),
-        extra: { channelNet: ins.reduce((s, r) => s + r.q, 0) - outs.reduce((s, r) => s + r.q, 0) },
+        // what it spills over its rim came in through the pipes and only passes through: not the tank's own loss
+        outflow: ins.reduce((s, r) => s + r.q, 0) - outs.reduce((s, r) => s + r.q, 0) + Math.max(0, feeds[id] ?? 0),
+        extra: { channelNet: ins.reduce((s, r) => s + r.q, 0) - outs.reduce((s, r) => s + r.q, 0) + Math.max(0, feeds[id] ?? 0) },
       }
       continue
     }

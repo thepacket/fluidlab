@@ -67,6 +67,16 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
   tank: [
     { key: 'shape', label: 'Shape', q: 'none', type: 'select', options: TANK_SHAPES },
     { key: 'backPressure', label: 'Receiver pressure (0 = vented)', q: 'pressure', show: (_p, _g, steam) => steam },
+    {
+      key: 'pumped',
+      label: 'Condensate pump',
+      q: 'none',
+      type: 'toggle',
+      show: (_p, _g, steam) => steam,
+      hint: 'Pumps what it collects along a return line to another tank: the traps then only have to reach this receiver',
+    },
+    { key: 'suctionHead', label: 'Height of the receiver over its pump', q: 'length', show: (p, _g, steam) => steam && !!p.pumped },
+    { key: 'npshr', label: 'NPSH the pump needs', q: 'length', show: (p, _g, steam) => steam && !!p.pumped },
     { key: 'overflow', label: 'Overflow at the rim', q: 'none', type: 'toggle' },
     { key: 'channelInvert', label: 'Channel sill level (elevation)', q: 'length', hint: 'Bed of the open channel where it meets the tank', show: (_p, _g, _s, _t, wet) => wet },
     { key: 'initTemp', label: 'Water temperature at the start (°C)', q: 'none' },
@@ -92,7 +102,16 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'volume', label: 'Total volume', q: 'volume' },
     { key: 'precharge', label: 'Gas pre-charge', q: 'pressure' },
     { key: 'initPressure', label: 'Starting pressure', q: 'pressure' },
-    { key: 'polytropic', label: 'Polytropic index n', q: 'none' },
+    { key: 'polytropic', label: 'Polytropic index n', q: 'none', show: (_p, _g, steam) => !steam },
+    {
+      key: 'waterFill',
+      label: 'Water charge (share of the volume)',
+      q: 'percent',
+      type: 'slider',
+      max: 0.95,
+      show: (_p, _g, steam) => steam,
+      hint: 'A steam accumulator stores its energy in hot water: the more water, the more steam it can give up per bar',
+    },
     elevation,
   ],
   leak: [
@@ -224,7 +243,17 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
   sequence: [
     { key: 'enabled', label: 'Enabled', q: 'none', type: 'toggle' },
     { key: 'repeat', label: 'Repeat', q: 'none', type: 'toggle' },
-    { key: 'period', label: 'Repeat every (s)', q: 'none', show: (p) => p.repeat },
+    {
+      key: 'timeUnit',
+      label: 'Step times are in',
+      q: 'none',
+      type: 'select',
+      options: [
+        { id: 's', name: 'seconds' },
+        { id: 'min', name: 'minutes' },
+        { id: 'h', name: 'hours' },
+      ],
+    },
     {
       key: 'trigger',
       label: 'With a signal wired to its input',
@@ -1115,6 +1144,8 @@ function EfficiencyChart({ id }: { id: string }) {
 }
 
 /** A catalogue curve, typed in point by point. */
+const SEQUENCE_UNITS: Record<string, number> = { s: 1, min: 60, h: 3600 }
+
 /** The step list of an event sequence. Targets are whatever the block is wired to. */
 function SequenceSteps({ id, props, onChange }: { id: string; props: Props; onChange: (patch: Props) => void }) {
   const targets = useLab(useShallow((s) => s.edges.filter((e) => e.type === 'signal' && e.source === id).map((e) => e.target)))
@@ -1122,6 +1153,9 @@ function SequenceSteps({ id, props, onChange }: { id: string; props: Props; onCh
   const steps: SequenceStep[] = props.steps ?? []
   const set = (i: number, patch: Partial<SequenceStep>) => onChange({ steps: steps.map((x, k) => (k === i ? { ...x, ...patch } : x)) })
   const last = steps.reduce((m, s) => Math.max(m, s.at), 0)
+  // steps are stored in seconds; the block's own unit only changes how they are typed and shown
+  const unit: string = props.timeUnit ?? 's'
+  const U = SEQUENCE_UNITS[unit] ?? 1
   return (
     <>
       <p className="muted">
@@ -1129,11 +1163,17 @@ function SequenceSteps({ id, props, onChange }: { id: string; props: Props; onCh
           ? 'Each step takes one device to a command — 0 % stops or shuts it, 100 % runs it as configured — at a lab time, optionally ramping there. Until its first step a device is left alone.'
           : 'Wire this block’s output to the pumps, valves, gates or taps it should operate; they then appear here as targets.'}
       </p>
+      {props.repeat && (
+        <div className="field">
+          <span>Repeat every ({unit})</span>
+          <NumberField value={(props.period ?? 120) / U} q="none" onCommit={(v) => onChange({ period: Math.max(1, v * U) })} />
+        </div>
+      )}
       {steps.map((st, i) => (
         <div className="seq-step" key={i}>
           <div className="field pair">
-            <span>at s</span>
-            <NumberField value={st.at} q="none" onCommit={(at) => set(i, { at: Math.max(0, at) })} />
+            <span>at {unit}</span>
+            <NumberField value={st.at / U} q="none" onCommit={(at) => set(i, { at: Math.max(0, at) * U })} />
             <select value={st.target} onChange={(e) => set(i, { target: e.target.value })}>
               <option value="all">everything wired</option>
               {[...new Set([...targets, ...(st.target !== 'all' ? [st.target] : [])])].map((t) => (
@@ -1146,15 +1186,15 @@ function SequenceSteps({ id, props, onChange }: { id: string; props: Props; onCh
           <div className="field pair">
             <span>to %</span>
             <NumberField value={st.value} q="percent" onCommit={(value) => set(i, { value: Math.min(1, Math.max(0, value)) })} />
-            <span>over s</span>
-            <NumberField value={st.ramp} q="none" onCommit={(ramp) => set(i, { ramp: Math.max(0, ramp) })} />
+            <span>over {unit}</span>
+            <NumberField value={st.ramp / U} q="none" onCommit={(ramp) => set(i, { ramp: Math.max(0, ramp) * U })} />
             <button className="icon-btn danger" title="Remove this step" onClick={() => onChange({ steps: steps.filter((_, k) => k !== i) })}>
               ✕
             </button>
           </div>
         </div>
       ))}
-      <button className="link" onClick={() => onChange({ steps: [...steps, { at: steps.length ? last + 10 : 0, target: targets[0] ?? 'all', value: steps.length ? 1 : 0, ramp: 0 }] })}>
+      <button className="link" onClick={() => onChange({ steps: [...steps, { at: steps.length ? last + 10 * U : 0, target: targets[0] ?? 'all', value: steps.length ? 1 : 0, ramp: 0 }] })}>
         + Add a step
       </button>
     </>
@@ -1201,6 +1241,8 @@ function SequenceChart({ id }: { id: string }) {
   const span = Math.max(p.repeat ? p.period : 0, ...steps.map((x) => x.at + x.ramp), 10) * (p.repeat ? 1 : 1.15)
   const clock = s.ctrl.mem[id]?.integral ?? s.simTime
   const now = sequenceClock(p, clock)
+  const unit: string = p.timeUnit ?? 's'
+  const U = SEQUENCE_UNITS[unit] ?? 1
   const colors = [SERIES.blue, SERIES.orange, SERIES.aqua]
   // three series to a chart, as many charts as it takes: more lines than that in one plot cannot be told apart
   const groups: string[][] = []
@@ -1209,10 +1251,10 @@ function SequenceChart({ id }: { id: string }) {
     const series: Series[] = group.map((t, i) => ({
       name: s.nodes.find((n) => n.id === t)?.data.label ?? t,
       color: colors[i],
-      points: Array.from({ length: 121 }, (_, k) => ({ x: (span * k) / 120, y: sequenceValue({ ...p, repeat: false }, t, (span * k) / 120) * 100 })),
+      points: Array.from({ length: 121 }, (_, k) => ({ x: (span * k) / 120 / U, y: sequenceValue({ ...p, repeat: false }, t, (span * k) / 120) * 100 })),
     }))
-    const markers: Marker[] = group.map((t, i) => ({ x: Math.min(now, span), y: sequenceValue(p, t, clock) * 100, label: i === 0 ? fmtClock(now) : '', color: '#ffffff' }))
-    return <Chart key={group.join()} series={series} markers={markers} height={groups.length > 1 ? 150 : 190} xLabel="Sequence time (s)" yLabel="Command (%)" />
+    const markers: Marker[] = group.map((t, i) => ({ x: Math.min(now, span) / U, y: sequenceValue(p, t, clock) * 100, label: i === 0 ? fmtClock(now) : '', color: '#ffffff' }))
+    return <Chart key={group.join()} series={series} markers={markers} height={groups.length > 1 ? 150 : 190} xLabel={`Sequence time (${unit})`} yLabel="Command (%)" />
   }
   if (!targets.length) return <Chart series={[]} xLabel="Sequence time (s)" yLabel="Command (%)" empty="Wire the block to a device and add a step" />
   return <>{groups.map(chartFor)}</>
@@ -1419,6 +1461,13 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
           </div>
         </div>
         <Row label="Flash steam vented" value={kgh(x.flashVent)} tone={x.flashVent > 0.1 * x.condensate ? 'warn' : undefined} />
+        {st.returns.pumps[id] && (
+          <>
+            <Row label="Condensate pump" value={`${kgh(st.returns.pumps[id].flow)} against ${fmtU(st.returns.pumps[id].head, 'head', u)}`} />
+            <Row label="Pump power" value={fmtU(st.returns.pumps[id].power, 'power', u)} />
+            <Row label="NPSH available" value={fmtU(st.returns.pumps[id].npsha, 'head', u)} tone={st.returns.pumps[id].npsha < (node?.data.props.npshr ?? 2) ? 'bad' : 'good'} />
+          </>
+        )}
         <Row label="Share of the boiler’s output coming home" value={st.totals.generated > 0 ? `${((st.totals.returned / st.totals.generated) * 100).toFixed(0)} %` : '—'} />
       </>
     )
