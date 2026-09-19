@@ -1,5 +1,7 @@
 # FluidLab
 
+[![FluidLab: a pump filling an elevated tank, with the pump curve, live readings and the elevation view](docs/fluidlab-hero.png)](https://fluidlab.fly.dev)
+
 A virtual hydraulics bench that runs entirely in the browser. Drag reservoirs, tanks, pumps, valves,
 gauges and meters onto the canvas, pull pipes between their ports, and the network is re-solved
 instantly by **EPANET 2.2 compiled to WebAssembly** (`epanet-js`). No server, no CFD.
