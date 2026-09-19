@@ -5,6 +5,7 @@ import { WEIR_TYPES } from '../model/openchannel'
 import { STEAM_LOADS } from '../model/steam'
 import { KIND_META, type Kind } from '../model/types'
 import { useLab } from '../store'
+import { paletteDrag, useEditor } from './editorState'
 import { KindIcon } from './icons'
 
 /** One thing you can drop on the bench: a component kind, optionally narrowed to a catalogue entry. */
@@ -23,7 +24,7 @@ const discharge = (group: string) => DISCHARGE_DEVICES.filter((d) => d.group ===
 const presets = (kind: Kind, table: Record<string, { name: string; blurb: string }>) =>
   Object.entries(table).map(([id, d]): PaletteItem => ({ key: `${kind}:${id}`, kind, name: d.name, blurb: d.blurb }))
 
-const GROUPS: { name: string; items: PaletteItem[] }[] = [
+export const PALETTE: { name: string; items: PaletteItem[] }[] = [
   { name: 'Sources & storage', items: (['reservoir', 'tank', 'vessel'] as Kind[]).map(item) },
   { name: 'Pumps', items: [item('pump'), ...presets('pump', PUMP_PRESETS), item('jetpump')] },
   { name: 'Valves', items: [...(['valve', 'threeway', 'relief', 'airvalve'] as Kind[]).map(item), ...presets('valve', VALVE_PRESETS)] },
@@ -61,13 +62,15 @@ export function Sidebar() {
   const experimentId = useLab((s) => s.experimentId)
   const load = useLab((s) => s.loadExperiment)
   const set = useLab((s) => s.set)
+  const assemblies = useEditor((s) => s.assemblies)
+  const setAssemblies = useEditor((s) => s.setAssemblies)
   const add = (key: string) => {
     window.dispatchEvent(new CustomEvent('fluidlab:add', { detail: key }))
     set({ sheet: 'none' })
   }
 
   const q = query.trim().toLowerCase()
-  const groups = useMemo(() => GROUPS.map((g) => ({ ...g, items: g.items.filter((i) => !q || `${i.name} ${i.blurb} ${g.name}`.toLowerCase().includes(q)) })).filter((g) => g.items.length), [q])
+  const groups = useMemo(() => PALETTE.map((g) => ({ ...g, items: g.items.filter((i) => !q || `${i.name} ${i.blurb} ${g.name}`.toLowerCase().includes(q)) })).filter((g) => g.items.length), [q])
 
   return (
     <aside className="sidebar">
@@ -101,7 +104,9 @@ export function Sidebar() {
                         onDragStart={(e) => {
                           e.dataTransfer.setData('application/fluidlab', i.key)
                           e.dataTransfer.effectAllowed = 'move'
+                          paletteDrag.key = i.key
                         }}
+                        onDragEnd={() => ((paletteDrag.key = null), useEditor.setState({ dropEdge: null }))}
                         onClick={() => add(i.key)}
                       >
                         <div className="palette-icon">
@@ -116,6 +121,41 @@ export function Sidebar() {
                 </div>
               )
             })}
+            {assemblies.length > 0 && !q && (
+              <div>
+                <div className="group-head open">
+                  Assemblies
+                  <i>{assemblies.length}</i>
+                </div>
+                {assemblies.map((a) => (
+                  <div
+                    key={a.name}
+                    className="palette-item"
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('application/fluidlab', `assembly:${a.name}`)
+                      e.dataTransfer.effectAllowed = 'move'
+                    }}
+                    onClick={() => (window.dispatchEvent(new CustomEvent('fluidlab:assembly', { detail: { name: a.name } })), set({ sheet: 'none' }))}
+                  >
+                    <div className="palette-icon assembly-icon">{a.nodes.length}</div>
+                    <div>
+                      <b>{a.name}</b>
+                      <span>
+                        {a.nodes.length} parts, {a.edges.length} pipes and wires
+                      </span>
+                    </div>
+                    <button
+                      className="icon-btn"
+                      title="Remove from the parts list"
+                      onClick={(e) => (e.stopPropagation(), window.confirm(`Remove “${a.name}” from the parts list?`) && setAssemblies(assemblies.filter((x) => x.name !== a.name)))}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             {!groups.length && <p className="muted">Nothing in the library matches “{query}”.</p>}
             <div className="howto">
               <p>
@@ -126,6 +166,12 @@ export function Sidebar() {
               </p>
               <p>
                 <kbd>R</kbd> rotates · <kbd>⌫</kbd> deletes · <kbd>⌘Z</kbd> undoes
+              </p>
+              <p>
+                <kbd>drop</kbd> a part on a pipe to cut it in · <kbd>/</kbd> adds by name
+              </p>
+              <p>
+                <kbd>⌘C</kbd> <kbd>⌘V</kbd> <kbd>⌘D</kbd> copy, paste, duplicate · <kbd>right-click</kbd> for more
               </p>
             </div>
           </div>

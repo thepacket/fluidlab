@@ -15,6 +15,7 @@ import { P_ATM, VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from './
 import { defaultChannelProps, isChannel, isChannelKind } from './model/openchannel'
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
 import { flowUnitFor, METRIC, type UnitPrefs } from './model/units'
+import { footprint, useEditor } from './ui/editorState'
 
 export type Overlay = 'pressure' | 'velocity' | 'thermal' | 'plain'
 /** Everything undo/redo restores: the rig itself, not the simulation state around it. */
@@ -76,6 +77,10 @@ interface State {
   onNodesChange: (c: NodeChange<LabNode>[]) => void
   onEdgesChange: (c: EdgeChange<LabEdge>[]) => void
   onConnect: (c: Connection) => void
+  /** drag a pipe or wire end to another port */
+  onReconnect: (old: LabEdge, c: Connection) => void
+  /** where the middle run of a pipe has been dragged to — layout only, the solver never sees it */
+  routeEdge: (id: string, route: { cx?: number; cy?: number } | null) => void
   /** `variant` picks a catalogue entry when the kind is a data-driven family (loss devices) */
   addNode: (kind: Kind, x: number, y: number, variant?: string) => void
   updateNode: (id: string, patch: Props) => void
@@ -107,10 +112,12 @@ let steadyBeforeReplay: Results | null = null
 let lineSeen: Results | null = null
 let lineElapsed = 0
 const STORAGE_KEY = 'fluidlab.project.v1'
+const NO_GUIDES: { x?: number; y?: number } = {}
 let lastTag: string | undefined
 let lastTagAt = 0
 const snapshot = (s: Snapshot): Snapshot => ({ nodes: s.nodes, edges: s.edges, fluidId: s.fluidId, experimentId: s.experimentId, projectName: s.projectName })
 let uid = Date.now() % 100000
+export const newId = (prefix: string) => `${prefix}${++uid}`
 
 /** What each outlet that empties into a channel is delivering, as the pipe engine last found it. */
 const outletFeeds = (nodes: LabNode[], r: Results) => Object.fromEntries(nodes.filter((n) => n.data.kind === 'outlet').map((n) => [n.id, r.nodes[n.id]?.outflow ?? 0]))
@@ -172,7 +179,7 @@ const signature = (s: State) =>
     model(s).time,
   ])
 
-function nextLabel(nodes: LabNode[], kind: Kind, prefixOverride?: string) {
+export function nextLabel(nodes: LabNode[], kind: Kind, prefixOverride?: string) {
   const prefix = prefixOverride ?? KIND_META[kind].prefix
   const used = new Set(nodes.map((n) => n.data.label))
   let i = 1
@@ -215,7 +222,38 @@ export const useLab = create<State>((set, get) => ({
 
   onNodesChange: (c) => {
     if (c.some((x) => x.type === 'remove')) get().checkpoint('delete')
-    set({ nodes: applyNodeChanges(c, get().nodes) })
+    const before = get().nodes
+    // one part being dragged: pull its port line and its centre onto its neighbours', and show the guide
+    const moving = c.filter((x) => x.type === 'position')
+    if (moving.length === 1 && moving[0].type === 'position' && moving[0].position) {
+      const ch = moving[0]
+      const me = before.find((n) => n.id === ch.id)
+      if (me) {
+        const f = footprint(me, ch.position)
+        const guides: { x?: number; y?: number } = {}
+        let [dx, dy] = [7, 7]
+        for (const o of before) {
+          if (o.id === me.id) continue
+          const g = footprint(o)
+          for (const y of [g.port, g.cy]) if (Math.abs(y - f.port) < Math.abs(dy)) [dy, guides.y] = [y - f.port, y]
+          if (Math.abs(g.cx - f.cx) < Math.abs(dx)) [dx, guides.x] = [g.cx - f.cx, g.cx]
+        }
+        ch.position = { x: ch.position!.x + (guides.x === undefined ? 0 : dx), y: ch.position!.y + (guides.y === undefined ? 0 : dy) }
+        // the last change of a drag carries the resting place: snap it too, then put the guides away
+        const shown = ch.dragging ? guides : NO_GUIDES
+        const was = useEditor.getState().guides
+        if (was.x !== shown.x || was.y !== shown.y) useEditor.setState({ guides: shown })
+      }
+    } else if (moving.length && useEditor.getState().guides !== NO_GUIDES) useEditor.setState({ guides: NO_GUIDES })
+    let nodes = applyNodeChanges(c, before)
+    // picking one member of a group picks the group, so it moves, copies and deletes as one
+    const picked = c.filter((x) => x.type === 'select' && x.selected).map((x) => (x as { id: string }).id)
+    if (picked.length) {
+      const groups = new Set(nodes.filter((n) => picked.includes(n.id) && n.data.group).map((n) => n.data.group))
+      if (groups.size) nodes = nodes.map((n) => (n.data.group && groups.has(n.data.group) && !n.selected ? { ...n, selected: true } : n))
+      if (picked.length === 1) useEditor.setState({ picked: picked[0] })
+    }
+    set({ nodes })
   },
   onEdgesChange: (c) => {
     if (c.some((x) => x.type === 'remove')) get().checkpoint('delete')
@@ -271,6 +309,27 @@ export const useLab = create<State>((set, get) => ({
       ) as LabEdge[],
     })
   },
+  onReconnect: (old, c) => {
+    if (c.source === c.target) return
+    const nodes = get().nodes
+    const signal = signalEnds(c, nodes)
+    if (signal === 'invalid' || !!signal !== (old.type === 'signal')) return
+    get().checkpoint()
+    if (signal) {
+      const src = nodes.find((n) => n.id === signal.from)!
+      set({
+        edges: get().edges.map((e) => (e.id === old.id ? { ...e, source: signal.from, sourceHandle: signal.fromHandle, target: signal.to, targetHandle: signal.toHandle } : e)),
+        nodes: signal.fromHandle === 'pv' ? nodes.map((n) => (n.id === signal.to ? { ...n, data: { ...n.data, props: { ...n.data.props, ...pvDefaults(n, src) } } } : n)) : nodes,
+      })
+      return
+    }
+    set({
+      edges: get().edges.map((e) =>
+        e.id === old.id && e.data ? { ...e, source: c.source, sourceHandle: c.sourceHandle, target: c.target, targetHandle: c.targetHandle, data: { ...e.data, route: undefined } } : e,
+      ),
+    })
+  },
+  routeEdge: (id, route) => set({ edges: get().edges.map((e) => (e.id === id && e.data ? { ...e, data: { ...e.data, route: route ?? undefined } } : e)) }),
   addNode: (kind, x, y, variant) => {
     get().checkpoint()
     const spec = catalogueSpec(kind, variant)
@@ -665,4 +724,8 @@ export function bootLab() {
   solver.ready().then(() => useLab.setState({ engineReady: true }))
 }
 
-export const selectedId = (s: State) => s.nodes.find((n) => n.selected)?.id ?? s.edges.find((e) => e.selected)?.id ?? null
+export const selectedId = (s: State) => {
+  const picked = useEditor.getState().picked
+  if (picked && s.nodes.some((n) => n.id === picked && n.selected)) return picked
+  return s.nodes.find((n) => n.selected)?.id ?? s.edges.find((e) => e.selected)?.id ?? null
+}

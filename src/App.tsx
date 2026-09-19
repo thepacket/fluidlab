@@ -1,6 +1,7 @@
 import { Background, BackgroundVariant, ConnectionMode, Controls, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { addPart, copy, duplicate, edgeAt, fitsEdge, group, paste, place, portName, selectAll, splice, throughPorts, whyNot } from './editor'
 import { EXPERIMENTS } from './experiments'
 import type { Kind } from './model/types'
 import { fmt, unitLabel } from './model/units'
@@ -9,6 +10,8 @@ import { Inspector } from './ui/Inspector'
 import { PipeEdge } from './ui/PipeEdge'
 import { SignalEdge } from './ui/SignalEdge'
 import { Sidebar } from './ui/Sidebar'
+import { BenchMarks, ContextMenu, ElevationStrip, InlineEdit, QuickAdd, SelectionBar, Toast } from './ui/EditorLayer'
+import { paletteDrag, pointer, useEditor } from './ui/editorState'
 import { TopBar } from './ui/TopBar'
 import { rampCss, thermalCss } from './ui/colors'
 import { Icon } from './ui/icons'
@@ -109,19 +112,31 @@ function Legend() {
 function Alerts() {
   const r = useLab((s) => s.results)
   const select = useLab((s) => s.select)
+  const { fitView } = useReactFlow()
+  const [all, setAll] = useState(false)
+  // show the culprit, not just name it: a pipe is framed by the two parts it joins
+  const focus = (id: string) => {
+    select(id)
+    const edge = useLab.getState().edges.find((e) => e.id === id)
+    fitView({ nodes: edge ? [{ id: edge.source }, { id: edge.target }] : [{ id }], duration: 450, maxZoom: 1.3, padding: 0.6 })
+  }
   const list = [...(r.error ? [{ level: 'error' as const, text: r.error, id: undefined }] : []), ...r.warnings]
   const order = { error: 0, warn: 1, info: 2 }
-  const shown = list.sort((a, b) => order[a.level] - order[b.level]).slice(0, 4)
+  const shown = list.sort((a, b) => order[a.level] - order[b.level]).slice(0, all ? list.length : 4)
   if (!shown.length) return null
   return (
-    <div className="alerts">
+    <div className={`alerts ${all ? 'all' : ''}`}>
       {shown.map((w, i) => (
-        <button key={i} className={`alert ${w.level}`} onClick={() => w.id && select(w.id)}>
+        <button key={i} className={`alert ${w.level} ${w.id ? 'goes' : ''}`} title={w.id ? 'Show this on the bench' : undefined} onClick={() => w.id && focus(w.id)}>
           <i>{w.level === 'info' ? 'i' : '!'}</i>
           {w.text}
         </button>
       ))}
-      {list.length > 4 && <span className="muted">+{list.length - 4} more</span>}
+      {list.length > 4 && (
+        <button className="link" onClick={() => setAll(!all)}>
+          {all ? 'Show fewer' : `+${list.length - 4} more — list all ${list.length}`}
+        </button>
+      )}
     </div>
   )
 }
@@ -134,6 +149,114 @@ function Bench() {
   const onConnect = useLab((s) => s.onConnect)
   const addNode = useLab((s) => s.addNode)
   const { screenToFlowPosition, fitView } = useReactFlow()
+  const onReconnect = useLab((s) => s.onReconnect)
+  const connecting = useEditor((s) => s.connecting)
+  const elevation = useEditor((s) => s.elevation)
+  const reconnecting = useRef<string | null>(null)
+  const benchRef = useRef<HTMLElement>(null)
+
+  /** open the menu or quick-add at a point of the screen, kept inside the bench */
+  const spot = useCallback(
+    (clientX: number, clientY: number, w = 240, h = 330) => {
+      const box = benchRef.current!.getBoundingClientRect()
+      return {
+        x: Math.max(8, Math.min(clientX - box.left, box.width - w)),
+        y: Math.max(8, Math.min(clientY - box.top, box.height - h)),
+        flow: screenToFlowPosition({ x: clientX, y: clientY }),
+        client: { x: clientX, y: clientY },
+      }
+    },
+    [screenToFlowPosition],
+  )
+  const openMenu = (e: MouseEvent | React.MouseEvent, target: { type: 'node' | 'edge' | 'pane'; id?: string }) => {
+    e.preventDefault()
+    const s = useLab.getState()
+    const hit = target.id ? (s.nodes.find((n) => n.id === target.id) ?? s.edges.find((x) => x.id === target.id)) : null
+    if (hit && !hit.selected) s.select(target.id!)
+    useEditor.setState({ menu: { ...spot(e.clientX, e.clientY), target }, quick: null, edit: null })
+  }
+
+  // a loose part dragged over a pipe it fits lights the pipe up; letting go cuts it in
+  const spliceTarget = (nodeId: string, x: number, y: number) => {
+    const s = useLab.getState()
+    const node = s.nodes.find((n) => n.id === nodeId)
+    if (!node || !throughPorts(node.data.kind) || s.nodes.filter((n) => n.selected).length > 1) return null
+    if (s.edges.some((e) => e.type !== 'signal' && (e.source === nodeId || e.target === nodeId))) return null
+    const id = edgeAt(x, y)
+    return id &&
+      fitsEdge(
+        node.data.kind,
+        s.edges.find((e) => e.id === id),
+      )
+      ? id
+      : null
+  }
+  const xy = (e: MouseEvent | TouchEvent | React.MouseEvent) => ('clientX' in e ? { x: e.clientX, y: e.clientY } : { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY })
+
+  // name a port when the pointer rests on it
+  useEffect(() => {
+    const el = benchRef.current!
+    const onOver = (e: MouseEvent) => {
+      const h = (e.target as HTMLElement).closest?.('.react-flow__handle') as HTMLElement | null
+      if (!h || h.title) return
+      const kind = useLab.getState().nodes.find((n) => n.id === h.dataset.nodeid)?.data.kind
+      h.title = portName(kind, h.dataset.handleid ?? '')
+    }
+    el.addEventListener('mouseover', onOver)
+    return () => el.removeEventListener('mouseover', onOver)
+  }, [])
+
+  useEffect(() => {
+    const onAssembly = (e: Event) => {
+      const { name, flow } = (e as CustomEvent<{ name: string; flow?: { x: number; y: number } }>).detail
+      const a = useEditor.getState().assemblies.find((x) => x.name === name)
+      const box = benchRef.current!.getBoundingClientRect()
+      if (a) place(a, flow ?? screenToFlowPosition({ x: box.left + box.width / 2, y: box.top + box.height / 2 }))
+    }
+    window.addEventListener('fluidlab:assembly', onAssembly)
+    return () => window.removeEventListener('fluidlab:assembly', onAssembly)
+  }, [screenToFlowPosition])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest('input, select, textarea')) return // fields keep their own undo
+      const s = useLab.getState()
+      const mod = e.metaKey || e.ctrlKey
+      if (mod && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        if (e.shiftKey) s.redo()
+        else s.undo()
+      } else if (mod && e.key.toLowerCase() === 'y') {
+        e.preventDefault()
+        s.redo()
+      } else if (!mod && e.key.toLowerCase() === 'r') {
+        const id = selectedId(s)
+        if (id) s.rotate(id)
+      } else if (mod && 'cvdag'.includes(e.key.toLowerCase()) && !e.shiftKey && !e.altKey) {
+        const k = e.key.toLowerCase()
+        if (k === 'c') {
+          if (window.getSelection()?.toString()) return // text on the page is selected: let the browser copy it
+          if (copy()) useEditor.getState().say('Copied — ⌘V pastes at the pointer')
+          return
+        }
+        e.preventDefault()
+        if (k === 'v') paste(pointer.over ? screenToFlowPosition({ x: pointer.x, y: pointer.y }) : undefined)
+        else if (k === 'd') duplicate()
+        else if (k === 'a') selectAll()
+        else group()
+      } else if (!mod && e.key === '/') {
+        e.preventDefault()
+        const box = document.querySelector('.bench')!.getBoundingClientRect()
+        const at = pointer.over ? pointer : { x: box.left + box.width / 2, y: box.top + box.height / 3 }
+        useEditor.setState({
+          quick: { x: Math.max(8, Math.min(at.x - box.left, box.width - 300)), y: Math.max(8, Math.min(at.y - box.top, box.height - 360)), flow: screenToFlowPosition({ x: at.x, y: at.y }) },
+          menu: null,
+        })
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [screenToFlowPosition])
 
   const initialized = useNodesInitialized()
   const mobile = useIsMobile()
@@ -156,14 +279,19 @@ function Bench() {
     const padding = () =>
       mobile
         ? { top: px(useLab.getState().experimentId ? 150 : 24), bottom: px(sheetOpen ? Math.round(window.innerHeight * 0.5) + 24 : 100), left: px(18), right: px(18) }
-        : { top: px(useLab.getState().experimentId ? Math.min(Math.max(290, card() + 40), Math.round(window.innerHeight * 0.55)) : 70), bottom: px(110), left: px(60), right: px(70) }
+        : {
+            top: px(useLab.getState().experimentId ? Math.min(Math.max(290, card() + 40), Math.round(window.innerHeight * 0.55)) : 70),
+            bottom: px(useEditor.getState().elevation ? 280 : 110),
+            left: px(60),
+            right: px(70),
+          }
     for (const [ms, duration] of [
       [60, 350],
       [450, 350],
       [1000, 0],
     ])
       setTimeout(() => fitRef.current({ padding: padding(), duration, maxZoom: 1.2 }), ms)
-  }, [initialized, loadCount, mobile, sheetOpen])
+  }, [initialized, loadCount, mobile, sheetOpen, elevation])
 
   useEffect(() => {
     const onAdd = (e: Event) => {
@@ -179,16 +307,42 @@ function Bench() {
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
-      const [kind, variant] = e.dataTransfer.getData('application/fluidlab').split(':') as [Kind, string?]
-      if (!kind) return
+      const key = e.dataTransfer.getData('application/fluidlab')
+      paletteDrag.key = null
+      useEditor.setState({ dropEdge: null })
+      if (!key) return
       const p = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-      addNode(kind, p.x, p.y, variant)
+      if (key.startsWith('assembly:')) window.dispatchEvent(new CustomEvent('fluidlab:assembly', { detail: { name: key.slice(9), flow: p } }))
+      else addPart(key, p, { x: e.clientX, y: e.clientY }) // on a pipe it fits, the part is cut in
     },
-    [addNode, screenToFlowPosition],
+    [screenToFlowPosition],
   )
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    const kind = paletteDrag.key?.split(':')[0] as Kind | undefined
+    const id = kind && throughPorts(kind) ? edgeAt(e.clientX, e.clientY) : null
+    const fits =
+      id &&
+      fitsEdge(
+        kind!,
+        useLab.getState().edges.find((x) => x.id === id),
+      )
+        ? id
+        : null
+    if (useEditor.getState().dropEdge !== fits) useEditor.setState({ dropEdge: fits })
+  }
 
   return (
-    <main className="bench" onDrop={onDrop} onDragOver={(e) => (e.preventDefault(), (e.dataTransfer.dropEffect = 'move'))}>
+    <main
+      ref={benchRef}
+      className={`bench ${connecting ? `connecting connecting-${connecting}` : ''} ${elevation ? 'has-elev' : ''}`}
+      onDrop={onDrop}
+      onDragOver={onDragOver}
+      onMouseMove={(e) => ((pointer.x = e.clientX), (pointer.y = e.clientY), (pointer.over = true))}
+      onMouseLeave={() => (pointer.over = false)}
+      onDoubleClick={(e) => (e.target as HTMLElement).classList.contains('react-flow__pane') && useEditor.setState({ quick: spot(e.clientX, e.clientY, 300, 360), menu: null })}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -198,7 +352,44 @@ function Bench() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeDragStart={() => checkpoint()}
-        isValidConnection={(c) => c.source !== c.target && signalEnds(c, useLab.getState().nodes) !== 'invalid'}
+        onNodeDrag={(e, n) => {
+          const p = xy(e)
+          const id = spliceTarget(n.id, p.x, p.y)
+          if (useEditor.getState().dropEdge !== id) useEditor.setState({ dropEdge: id })
+        }}
+        onNodeDragStop={(e, n) => {
+          const p = xy(e)
+          const id = spliceTarget(n.id, p.x, p.y)
+          useEditor.setState({ dropEdge: null, guides: {} })
+          if (id) splice(n.id, id, screenToFlowPosition(p), false) // the drag already saved an undo point
+        }}
+        onReconnect={onReconnect}
+        onReconnectStart={(_, edge) => (reconnecting.current = edge.type ?? 'pipe')}
+        onReconnectEnd={() => (reconnecting.current = null)}
+        reconnectRadius={16}
+        isValidConnection={(c) => {
+          const ends = signalEnds(c, useLab.getState().nodes)
+          // a pipe end may only move to a fluid port, a wire end to a signal port
+          if (reconnecting.current && (reconnecting.current === 'signal') !== !!ends) return false
+          return c.source !== c.target && ends !== 'invalid'
+        }}
+        onConnectStart={(_, from) => useEditor.setState({ connecting: ['sig', 'ctl', 'pv', 'cin', 'cin2', 'rsp'].includes(from.handleId ?? '') ? from.handleId : 'fluid' })}
+        onConnectEnd={(_, state) => {
+          useEditor.setState({ connecting: null })
+          if (state.isValid || !state.toHandle || !state.toNode || !state.fromHandle || !state.fromNode) return
+          const all = useLab.getState().nodes
+          const [a, b] = [all.find((n) => n.id === state.fromNode!.id), all.find((n) => n.id === state.toNode!.id)]
+          const why = a && b && whyNot({ node: a, port: state.fromHandle.id ?? '' }, { node: b, port: state.toHandle.id ?? '' })
+          if (why) useEditor.getState().say(why)
+        }}
+        onNodeContextMenu={(e, n) => openMenu(e, { type: 'node', id: n.id })}
+        onEdgeContextMenu={(e, edge) => openMenu(e, { type: 'edge', id: edge.id })}
+        onPaneContextMenu={(e) => openMenu(e, { type: 'pane' })}
+        onSelectionContextMenu={(e, picked) => openMenu(e, { type: 'node', id: picked[0]?.id })}
+        onNodeDoubleClick={(_, n) => useEditor.setState({ edit: n.id, menu: null })}
+        onEdgeMouseEnter={(_, edge) => useEditor.setState({ hoverEdge: edge.id })}
+        onEdgeMouseLeave={() => useEditor.setState({ hoverEdge: null })}
+        zoomOnDoubleClick={false}
         connectionMode={ConnectionMode.Loose}
         connectionRadius={34}
         connectionLineStyle={{ stroke: '#35e0ff', strokeWidth: 5, strokeLinecap: 'round', strokeDasharray: '2 10' }}
@@ -213,7 +404,19 @@ function Bench() {
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="#1d2a42" />
         <Background id="major" variant={BackgroundVariant.Lines} gap={200} color="#101a2b" />
         {!mobile && <Controls position="bottom-right" showInteractive={false} />}
+        <BenchMarks />
+        <InlineEdit />
       </ReactFlow>
+      <SelectionBar />
+      <ContextMenu />
+      <QuickAdd />
+      <Toast />
+      <ElevationStrip />
+      {!mobile && !elevation && nodes.length > 0 && (
+        <button className="elev-toggle" onClick={() => useEditor.setState({ elevation: true })} title="A side view of the rig: elevations and the hydraulic grade line">
+          Elevation
+        </button>
+      )}
       <ExperimentCard />
       {mobile && (
         <button className="fab" onClick={() => set({ sheet: 'parts' })} aria-label="Components and experiments">
@@ -247,27 +450,6 @@ export default function App() {
     }, 100)
     return () => clearInterval(t)
   }, [tick])
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest('input, select, textarea')) return // fields keep their own undo
-      const s = useLab.getState()
-      const mod = e.metaKey || e.ctrlKey
-      if (mod && e.key.toLowerCase() === 'z') {
-        e.preventDefault()
-        if (e.shiftKey) s.redo()
-        else s.undo()
-      } else if (mod && e.key.toLowerCase() === 'y') {
-        e.preventDefault()
-        s.redo()
-      } else if (!mod && e.key.toLowerCase() === 'r') {
-        const id = selectedId(s)
-        if (id) s.rotate(id)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
 
   return (
     <ReactFlowProvider>

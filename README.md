@@ -252,6 +252,30 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 - **Units engine**: SI stored, anything displayed (kPa/bar/psi/m H₂O, L/min/GPM/m³/h, mm/in, W/hp …).
 - **Fluids**: water at 20/60/90 °C, glycol mix, diesel, light oil.
 - Autosave to localStorage, JSON project save/open.
+- **Bench editor**: built for laying a rig out quickly and changing it without starting again.
+  - **Cut a part into a pipe**: drop a part from the list on a pipe, or drag a loose part over one — the pipe lights up,
+    and on release it is split in two. Both halves keep the pipe's properties and share its length; the part is turned
+    to face along the run and its ports are set on the pipe's line. Weirs and gates only go into channels. One undo
+    takes the whole thing back.
+  - **Copy, paste, duplicate** (`⌘C` `⌘V` `⌘D`), with the pipes and signal wires between the copied parts; paste lands
+    at the pointer, and works across tabs. `⌘A` selects everything.
+  - **Move a pipe end**: select a pipe or wire and drag either end to another port. A pipe end only goes to a fluid port,
+    a wire end only to a signal port.
+  - **Right-click menu** on parts, pipes and the empty bench; **double-click a part** to set its key value (valve
+    opening, pump speed, tank level, gate opening, …) where it stands; **double-click the bench** or press `/` to add a
+    part by typing its name.
+  - **Routing**: a selected pipe between facing ports has a handle on its middle run — drag it aside, double-click it to
+    reset. Where a level pipe crosses an upright one it hops over it. Labels sit beside the longest straight run, clear
+    of crossings, and show only the flow until the pipe is hovered or selected; they can be hidden from the bench menu.
+  - **Alignment**: a dragged part snaps its port line and its centre to its neighbours', with a guide showing which.
+    With several parts selected, a bar offers align (ports, edges, centres) and even spacing.
+  - **Elevation view**: a side view under the bench, lined up with it — each part at its elevation, the pipework between,
+    tank and reservoir water columns, and the hydraulic grade line. Drag a part up or down to change its elevation.
+  - **Port hints**: while a pipe or wire is being pulled, the ports it may end on stand out and the rest step back; a
+    refused connection says why; resting on a port names it.
+  - **Warnings** frame the part or pipe they are about when clicked, and the list opens in full.
+  - **Groups and assemblies**: `⌘G` groups the selected parts — they are framed, named, and move, copy and delete as
+    one. "Save" keeps a selection, with its pipes and wires, in the parts list (in this browser) for other rigs.
 
 ## Deploy (Fly.io)
 
@@ -274,6 +298,8 @@ src/engine/    inp.ts (compile) · epanet.ts (steady engine) · gas.ts (gas engi
 src/experiments.ts   rig builder + the experiment catalogue
 src/store.ts   zustand store, solve scheduling, tank time-stepping, persistence
 src/ui/        nodes, animated pipe edge, inspector, charts, top bar, sidebar
+src/editor.ts  bench editing commands (splice, clipboard, align, groups) · src/ui/route.ts pipe routing and hops
+               src/ui/EditorLayer.tsx menus, guides, elevation view · src/ui/editorState.ts editor-only state
 ```
 
 `HydraulicEngine` is the seam solvers plug into: EPANET, the gas engine and the open-channel engine all sit behind it today, with steam as a layer on the gas engine and heat (steady or marched through time) as a layer on the liquid one.
