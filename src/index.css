@@ -2212,3 +2212,12 @@ input[type='range']::-webkit-slider-thumb {
     width: auto;
   }
 }
+
+.howto .legal {
+  margin-top: 10px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.howto .legal a {
+  color: var(--text-2);
+}

@@ -4,6 +4,13 @@ A virtual hydraulics bench that runs entirely in the browser. Drag reservoirs, t
 gauges and meters onto the canvas, pull pipes between their ports, and the network is re-solved
 instantly by **EPANET 2.2 compiled to WebAssembly** (`epanet-js`). No server, no CFD.
 
+**Try it:** <https://fluidlab.fly.dev> · **Licence:** [MIT](LICENSE) · **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md)
+
+> **For learning, not for design.** FluidLab is a teaching bench. Its numbers are checked against hand calculations
+> and textbook cases, but it is not verified engineering software: do not size, approve or operate real pipework,
+> pressure vessels, steam systems, gas lines, fire protection or drainage from what it shows. See the warranty
+> disclaimer in the [licence](LICENSE).
+
 ```bash
 npm install
 npm run dev          # http://localhost:5173
@@ -13,12 +20,14 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 
 ## What's in it
 
-- **Network editor** (React Flow): 26 components plus the catalogue, loose port-to-port pipes, snap grid, 90° rotation (`R`),
-  undo/redo (`⌘Z` / `⇧⌘Z`, 100 steps, slider drags and typing coalesce into one step).
+- **Network editor** (React Flow): 34 kinds of component plus the catalogue, loose port-to-port pipes, a 5 px snap
+  grid, 90° rotation (`R`), undo/redo (`⌘Z` / `⇧⌘Z`, 100 steps, slider drags and typing coalesce into one step). What
+  the editor can do is set out under **Bench editor** below, with a table of the controls.
 - **Runs off the main thread**: EPANET lives in a Web Worker behind a latest-wins client (no backlog while dragging a
   slider); falls back to the main thread if workers are unavailable.
 - **Phone / touch layout**: below 860 px the side panels become slide-over sheets, parts are added by tap, ports grow
-  for fingers, and the rig re-frames above the open details sheet.
+  for fingers, and the rig re-frames above the open details sheet. Long press, double tap and box-select stand in for
+  the right button, the double-click and the keyboard (see **Bench editor**).
 - **Solver adapter**: FluidLab model → `.inp` → EPANET (Darcy–Weisbach) → SI results. Pumps/valves/meters are
   canvas nodes that compile to EPANET links between two hidden junctions. Parts not connected to a
   reservoir/tank are greyed out instead of breaking the solve.
@@ -253,6 +262,9 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 - **Fluids**: water at 20/60/90 °C, glycol mix, diesel, light oil.
 - Autosave to localStorage, JSON project save/open.
 - **Bench editor**: built for laying a rig out quickly and changing it without starting again.
+  - **Moving around and selecting**: a drag on the empty bench draws a selection box, and picks every part it touches;
+    the bench itself is moved with the middle button or with `Space` held, and the wheel zooms. Parts snap to a 5 px
+    grid. The slider at the foot of the bench fades the grid from hidden to bright, and is remembered in the browser.
   - **Cut a part into a pipe**: drop a part from the list on a pipe, or drag a loose part over one — the pipe lights up,
     and on release it is split in two. Both halves keep the pipe's properties and share its length; the part is turned
     to face along the run and its ports are set on the pipe's line. Weirs and gates only go into channels. One undo
@@ -268,7 +280,8 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
     reset. Where a level pipe crosses an upright one it hops over it. Labels sit beside the longest straight run, clear
     of crossings, and show only the flow until the pipe is hovered or selected; they can be hidden from the bench menu.
   - **Alignment**: a dragged part snaps its port line and its centre to its neighbours', with a guide showing which.
-    With several parts selected, a bar offers align (ports, edges, centres) and even spacing.
+    The pull lets go within one grid step, so a part can still be set just off its neighbour's line. With several
+    parts selected, a bar offers align (ports, edges, centres) and even spacing.
   - **Elevation view**: a side view under the bench, lined up with it — each part at its elevation, the pipework between,
     tank and reservoir water columns, and the hydraulic grade line. Drag a part up or down to change its elevation.
   - **Port hints**: while a pipe or wire is being pulled, the ports it may end on stand out and the rest step back; a
@@ -281,6 +294,36 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
     is cut into that pipe, since a finger cannot drag from the list. Pipe-end, bend and elevation handles are larger.
   - **Groups and assemblies**: `⌘G` groups the selected parts — they are framed, named, and move, copy and delete as
     one. "Save" keeps a selection, with its pipes and wires, in the parts list (in this browser) for other rigs.
+  - **Layout is not hydraulics**: positions, pipe routes, groups and the grid setting never reach the solver, so
+    tidying a rig does not re-solve it. Every change to the rig itself goes through undo.
+  - **Left out**: a group cannot be folded into a single block; only a pipe's middle run can be moved, not free
+    waypoints; signal wires do not hop, and at a crossing it is always the level pipe that does; saved assemblies stay
+    in one browser and are not part of project files or share links; the editor has no automated tests — it is
+    checked by hand in the browser, and the touch gestures with simulated touches only.
+
+  | To do this               | Mouse and keyboard                                                      | Touch                                                                         |
+  | ------------------------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+  | Add a part               | drag or click it in the list · `/` or double-click the bench, then type | tap it in the list · double tap the bench                                     |
+  | Cut a part into a pipe   | drop it on the pipe · right-click the pipe → Insert                     | select the pipe, then tap the part in the list · long press the pipe → Insert |
+  | Lay a pipe or wire       | pull from a port to another port                                        | the same                                                                      |
+  | Move a pipe end          | select the pipe, drag its end to another port                           | the same                                                                      |
+  | Move a pipe's middle run | select the pipe, drag the round handle; double-click it to reset        | the same; reset it from the pipe's menu (Straighten the route)                |
+  | Select                   | click · drag a box on the bench · `⌘`-click adds · `⌘A` all             | tap · box-select button, then drag                                            |
+  | Move the bench           | middle button, or `Space` and drag · wheel zooms                        | one finger · pinch zooms                                                      |
+  | Menu                     | right-click a part, a pipe or the bench                                 | long press                                                                    |
+  | Set a part's key value   | double-click the part                                                   | double tap the part                                                           |
+  | Rotate · delete          | `R` · `⌫`                                                               | menu · delete button                                                          |
+  | Copy · paste · duplicate | `⌘C` · `⌘V` · `⌘D`                                                      | menu                                                                          |
+  | Group                    | `⌘G`, or the bar shown with several parts selected                      | the bar, or the menu                                                          |
+  | Undo · redo              | `⌘Z` · `⇧⌘Z` or `⌘Y`                                                    | the arrows in the top bar                                                     |
+  | Elevation view           | the Elevation button, or the bench menu                                 | the bench menu                                                                |
+
+## Privacy
+
+There is no server side, no account and no analytics. A rig is kept in the browser's local storage, in a project
+file you save, or inside the `#rig=` part of a share link — which browsers do not send to the server, and which the
+app drops from the address bar once the rig has loaded. Saved assemblies, the clipboard and the grid setting are
+local storage too.
 
 ## Deploy (Fly.io)
 
@@ -308,3 +351,22 @@ src/editor.ts  bench editing commands (splice, clipboard, align, groups) · src/
 ```
 
 `HydraulicEngine` is the seam solvers plug into: EPANET, the gas engine and the open-channel engine all sit behind it today, with steam as a layer on the gas engine and heat (steady or marched through time) as a layer on the liquid one.
+
+## Contributing
+
+Bug reports are most useful as a saved rig plus the number you expected and where it comes from. Code changes to a
+solver need a check in `scripts/` against a hand calculation or a published result. The details are in
+[CONTRIBUTING.md](CONTRIBUTING.md); conduct is covered by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and
+vulnerabilities go through [SECURITY.md](SECURITY.md), not public issues.
+
+## Licence and credits
+
+FluidLab is © 2026 Andre Paquette and released under the [MIT licence](LICENSE).
+
+The pressurised-pipe solver is [EPANET 2.2](https://github.com/OpenWaterAnalytics/EPANET) — written at the U.S.
+EPA, maintained by Open Water Analytics — compiled to WebAssembly by
+[epanet-js](https://github.com/epanet-js/epanet-js-toolkit). The bench is built on
+[React Flow](https://reactflow.dev), React and zustand, and set in Space Grotesk and JetBrains Mono. Their licences
+are summarised in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and reproduced in full in
+[`public/licenses.txt`](public/licenses.txt), which ships with the site at `/licenses.txt`. FluidLab is not
+affiliated with or endorsed by any of them.

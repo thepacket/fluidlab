@@ -176,6 +176,16 @@ export function Sidebar() {
               <p>
                 <kbd>⌘C</kbd> <kbd>⌘V</kbd> <kbd>⌘D</kbd> copy, paste, duplicate · <kbd>right-click</kbd> for more
               </p>
+              <p className="legal">
+                A teaching bench, not design software. MIT licensed ·{' '}
+                <a href="https://github.com/thepacket/fluidlab" target="_blank" rel="noreferrer">
+                  source
+                </a>{' '}
+                ·{' '}
+                <a href="/licenses.txt" target="_blank" rel="noreferrer">
+                  open-source notices
+                </a>
+              </p>
             </div>
           </div>
         </>

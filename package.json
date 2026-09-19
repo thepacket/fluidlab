@@ -2,6 +2,17 @@
   "name": "fluidlab",
   "private": true,
   "version": "0.0.0",
+  "description": "A virtual hydraulics bench in the browser: build a pipe, gas, steam or open-channel rig and watch it solve.",
+  "license": "MIT",
+  "author": "Andre Paquette",
+  "homepage": "https://fluidlab.fly.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thepacket/fluidlab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/thepacket/fluidlab/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +20,7 @@
     "test:engine": "tsx scripts/smoke.ts && tsx scripts/experiments.ts && tsx scripts/timer-sim.ts && tsx scripts/control-sim.ts && tsx scripts/transient-check.ts && tsx scripts/gas-check.ts && tsx scripts/channel-check.ts && tsx scripts/steam-check.ts && tsx scripts/heat-check.ts && tsx scripts/wave-check.ts && tsx scripts/sequence-check.ts && tsx scripts/share-check.ts",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "licenses": "node scripts/licenses.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
