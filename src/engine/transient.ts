@@ -28,6 +28,8 @@ export interface TransientEvent {
   inertia?: number
   /** total simulated time, s */
   runFor: number
+  /** further operations in the same run — an event sequence: other devices, or later moves of the same one */
+  more?: Omit<TransientEvent, 'runFor' | 'more'>[]
 }
 
 export interface TransientFrame {
@@ -316,9 +318,45 @@ export function runTransient(full: Model, results: Results, event: TransientEven
   const evDevice = devices.find((d) => d.id === event.id)
   const evNode = index.get(event.id)
   const tProps = target.data.props
-  const tau0 = target.data.kind === 'valve' ? valvePosition(model, target.id) : 1
   if (target.data.kind === 'valve' && !(tProps.valveType === 'throttle' || tProps.valveType === 'float')) return fail('Only throttling valves can be stroked — this one regulates itself')
-  const progress = (t: number) => (event.duration <= 0 ? (t >= event.start ? 1 : 0) : Math.min(1, Math.max(0, (t - event.start) / event.duration)))
+  // Every operated device gets a position history: each move starts from wherever the previous ones had left it.
+  interface Operated {
+    nd: ModelNode
+    device?: Device
+    node?: number
+    pos: (t: number) => number
+    /** pump: when its power is cut, and how fast it coasts down */
+    tripAt: number
+    inertia: number
+    full: number
+  }
+  const operated: Operated[] = []
+  const moves = [event, ...(event.more ?? [])]
+  for (const id of new Set(moves.map((m) => m.id))) {
+    const nd = model.nodes.find((n) => n.id === id)
+    if (!nd || results.excluded.includes(id)) continue
+    const device = devices.find((d) => d.id === id)
+    const node = index.get(id)
+    const p = nd.data.props
+    if (nd.data.kind === 'valve' && !(p.valveType === 'throttle' || p.valveType === 'float')) continue
+    if (!device && node === undefined) continue
+    const mine = moves.filter((m) => m.id === id).sort((a, b) => a.start - b.start)
+    const start = nd.data.kind === 'valve' ? valvePosition(model, id) : node !== undefined && !device ? (nodes[node].ce0 > 0 ? 1 : 0) : 1
+    let pos = (_t: number): number => start
+    for (const m of mine) {
+      const before = pos
+      const from = before(m.start)
+      pos = (t) => (t < m.start ? before(t) : m.duration <= 0 ? m.to : from + (m.to - from) * Math.min(1, (t - m.start) / m.duration))
+    }
+    const trip = mine.find((m) => m.to < 0.01)
+    const full =
+      node !== undefined && !device
+        ? nodes[node].ce0 > 0
+          ? nodes[node].ce0
+          : emitterCoeff({ ...nd, data: { ...nd.data, props: { ...p, fused: true, active: true } } }, { ...model, controls: {} }, rhoG)
+        : 0
+    operated.push({ nd, device, node, pos, tripAt: trip ? trip.start : Infinity, inertia: trip?.inertia ?? 1, full })
+  }
 
   // Joukowsky and the critical time, from the pipe feeding the operated component
   const evHyd = evDevice ? evDevice.a : evNode
@@ -389,21 +427,18 @@ export function runTransient(full: Model, results: Results, event: TransientEven
   // ---- time marching ----
   for (let step = 1; step <= steps; step++) {
     const t = step * dt
-    const s = progress(t)
 
-    // the operation itself
-    if (evDevice && target.data.kind === 'valve') {
-      const K = valveK(tau0 + (event.to - tau0) * s, tProps.kOpen, tProps.trim)
-      evDevice.type = isFinite(K) ? 'loss' : 'closed'
-      evDevice.kv = isFinite(K) ? K / (2 * G * area(tProps.diameter) ** 2) : 0
-    } else if (evDevice && target.data.kind === 'pump' && t >= event.start) {
-      // power lost: the rotor coasts down, speed halving every `inertia` seconds
-      evDevice.speed = (tProps.speed * command(model, target.id)) / (1 + (t - event.start) / Math.max(0.05, event.inertia ?? 1))
-    } else if (evNode !== undefined) {
-      const n = nodes[evNode]
-      const from = n.ce0 > 0 ? 1 : 0
-      const full = n.ce0 > 0 ? n.ce0 : emitterCoeff({ ...target, data: { ...target.data, props: { ...tProps, fused: true, active: true } } }, { ...model, controls: {} }, rhoG)
-      n.ce = full * (from + (event.to - from) * s)
+    // the operations themselves
+    for (const op of operated) {
+      const p = op.nd.data.props
+      if (op.device && op.nd.data.kind === 'valve') {
+        const K = valveK(op.pos(t), p.kOpen, p.trim)
+        op.device.type = isFinite(K) ? 'loss' : 'closed'
+        op.device.kv = isFinite(K) ? K / (2 * G * area(p.diameter) ** 2) : 0
+      } else if (op.device && op.nd.data.kind === 'pump') {
+        // power lost: the rotor coasts down, speed halving every `inertia` seconds
+        if (t >= op.tripAt) op.device.speed = (p.speed * command(model, op.nd.id)) / (1 + (t - op.tripAt) / Math.max(0.05, op.inertia))
+      } else if (op.node !== undefined) nodes[op.node].ce = op.full * op.pos(t)
     }
 
     // interior points, and the characteristic arriving at each pipe end

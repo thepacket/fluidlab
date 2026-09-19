@@ -59,6 +59,7 @@ const FIELDS: Record<Kind | 'pipe', Field[]> = {
     { key: 'ratedYield', label: '… when yielding', q: 'flow', show: (p) => p.sourceType === 'well' },
     { key: 'channelInvert', label: 'Channel sill level (elevation)', q: 'length', hint: 'Bed of the open channel where it meets the water', show: (_p, _g, _s, _t, wet) => wet },
     { key: 'temp', label: 'Water temperature (°C)', q: 'none', show: (_p, gas) => !gas },
+    { key: 'superheat', label: 'Superheat (K above saturation)', q: 'none', show: (_p, _g, steam) => steam },
     { key: 'feedTemp', label: 'Feedwater temperature (°C)', q: 'none', show: (_p, _g, steam) => steam },
     { key: 'boilerEfficiency', label: 'Boiler efficiency', q: 'percent', show: (_p, _g, steam) => steam },
     { key: 'steamCost', label: 'Cost of steam (per tonne)', q: 'none', show: (_p, _g, steam) => steam },
@@ -1160,6 +1161,37 @@ function SequenceSteps({ id, props, onChange }: { id: string; props: Props; onCh
   )
 }
 
+/** Play an event sequence through the water-hammer engine: every step becomes an operation in one pressure-wave run. */
+function SequenceSurge({ id }: { id: string }) {
+  const s = useLab()
+  const p = s.nodes.find((n) => n.id === id)!.data.props
+  const wired = s.edges.filter((e) => e.type === 'signal' && e.source === id).map((e) => e.target)
+  const operable = (nid: string) => ['pump', 'valve', 'outlet', 'leak'].includes(s.nodes.find((n) => n.id === nid)?.data.kind ?? '')
+  const moves = ((p.steps ?? []) as SequenceStep[])
+    .flatMap((st) => (st.target === 'all' ? wired : [st.target]).map((t) => ({ id: t, start: st.at, duration: st.ramp, to: st.value, inertia: 2 })))
+    .filter((m) => operable(m.id))
+    .sort((a, b) => a.start - b.start)
+  // the run is judged (Joukowsky, critical time) at the first device that is actually shut or tripped
+  const first = moves.find((m) => m.to < 0.999) ?? moves[0]
+  const runFor = Math.max(0, ...moves.map((m) => m.start + m.duration)) + 10
+  if (!first) return <p className="muted">Add steps that operate a wired pump, valve or tap, and the whole sequence can be run as a pressure surge.</p>
+  const kind = s.nodes.find((n) => n.id === first.id)!.data.kind
+  return (
+    <>
+      <p className="muted">
+        On the lab clock these steps are quasi-steady. Here they are played through the pressure-wave engine instead: {moves.length} operation{moves.length === 1 ? '' : 's'} over {runFor.toFixed(0)}{' '}
+        s, judged at {s.nodes.find((n) => n.id === first.id)!.data.label}.{runFor > 240 ? ' That is a long run for a 5 ms time step — expect to wait.' : ''}
+      </p>
+      <div className="surge-actions">
+        <button className="btn primary" disabled={s.surgeBusy} onClick={() => s.runSurge({ ...first, runFor, more: moves.filter((m) => m !== first) })}>
+          {s.surgeBusy ? 'Running…' : 'Run the sequence as a surge'}
+        </button>
+      </div>
+      {s.surge && s.surge.event.id === first.id && s.surge.event.more && <SurgePanel key={first.id} id={first.id} kind={kind} />}
+    </>
+  )
+}
+
 /** What the sequence tells each wired device over time, with the clock's position. */
 function SequenceChart({ id }: { id: string }) {
   const s = useLab()
@@ -1514,11 +1546,17 @@ function Results({ id, kind }: { id: string; kind: Kind | 'pipe' }) {
         <Row label="Reynolds number" value={Math.round(l.re).toLocaleString('en-US')} />
         <Row label="Flow regime" value={l.regime} tone={l.regime === 'laminar' ? 'good' : l.regime === 'transitional' ? 'warn' : undefined} />
         <Row label="Friction factor f" value={l.f.toFixed(4)} />
+        {l.temp !== undefined && l.fNominal !== undefined && Math.abs(l.f / l.fNominal - 1) > 0.005 && (
+          <Row label={`Water at ${l.temp.toFixed(0)} °C is ${l.f < l.fNominal ? 'thinner' : 'thicker'}: friction`} value={`${((l.f / l.fNominal - 1) * 100).toFixed(0)} % against nominal`} />
+        )}
         <Row label="Head loss" value={fmtU(l.headloss, 'head', u)} />
         <Row label="Pressure in → out" value={`${fmt(l.flow >= 0 ? l.pStart : l.pEnd, 'pressure', u)} → ${fmtU(l.flow >= 0 ? l.pEnd : l.pStart, 'pressure', u)}`} />
         {st?.links[id] && (
           <>
-            <Row label="Steam temperature" value={`${st.links[id].tSat.toFixed(0)} °C`} />
+            <Row
+              label="Steam temperature, in → out"
+              value={`${st.links[id].tIn.toFixed(0)} → ${st.links[id].tOut.toFixed(0)} °C${st.links[id].superheat > 0.5 ? `  ·  ${st.links[id].superheat.toFixed(0)} K superheat left` : ''}`}
+            />
             <Row label="Heat lost to the room" value={fmtU(st.links[id].heatLoss, 'power', u)} />
             <Row label="Condensate formed" value={kgh(st.links[id].condensate)} />
             <Row label="Condensate made warming it up from cold" value={`${st.links[id].warmup.toFixed(1)} kg`} />
@@ -1903,6 +1941,12 @@ export function Inspector() {
         <section>
           <h4>Water hammer</h4>
           <SurgePanel key={id} id={id} kind={kind as Kind} />
+        </section>
+      )}
+      {kind === 'sequence' && !gasMode && (
+        <section>
+          <h4>Water hammer</h4>
+          <SequenceSurge id={id} />
         </section>
       )}
       <section>

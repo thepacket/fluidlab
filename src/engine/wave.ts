@@ -18,9 +18,11 @@ import {
   froude,
   hydraulicRadius,
   isChannel,
+  isFull,
   lining,
   normalDepth,
   slopeClass,
+  slotWidth,
   specificEnergy,
   superDepth,
   topWidth,
@@ -53,7 +55,10 @@ export const cellsFor = (length: number) => Math.min(60, Math.max(12, Math.round
 
 function depthOf(p: Props, a: number): number {
   if (a <= 0) return 0
-  if (p.shape === 'circ') return bisect((y) => area(p, y) - a, 0, p.diameter, 24)
+  if (p.shape === 'circ') {
+    const full = area(p, p.diameter)
+    return a >= full ? p.diameter + (a - full) / slotWidth(p) : bisect((y) => area(p, y) - a, 0, p.diameter, 24)
+  }
   const b = p.shape === 'tri' ? 0 : p.width
   const z = p.shape === 'rect' ? 0 : p.sideSlope
   return z > 0 ? (-b + Math.sqrt(b * b + 4 * z * a)) / (2 * z) : a / b
@@ -283,7 +288,7 @@ export function stepWave(model: Model, results: Results, prev: WaveState | null,
         let q = s.q[i] - (h / g.dx) * (fl[i + 1] - fr[i])
         const y = depthOf(g.p, a)
         if (y < DRY) q = 0
-        else q /= 1 + (h * G * g.p.manningN ** 2 * Math.abs(q)) / (a * a * hydraulicRadius(g.p, y) ** (4 / 3)) // implicit Manning
+        else q /= 1 + (h * G * g.p.manningN ** 2 * Math.abs(q)) / (a * hydraulicRadius(g.p, y) ** (4 / 3)) // implicit Manning
         s.a[i] = a
         s.q[i] = q
       }
@@ -339,7 +344,7 @@ export function waveView(model: Model, results: Results, st: WaveState): { chann
         zones.push('jump')
       }
       if (depth[i] < DRY) continue
-      const zn = zoneName(cls, depth[i], yn, yc)
+      const zn = isFull(g.p, depth[i]) ? 'full' : zoneName(cls, depth[i], yn, yc)
       if (zones[zones.length - 1] !== zn) zones.push(zn)
     }
     if (zones.length) out.profile = zones.join(' → ')

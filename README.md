@@ -185,6 +185,33 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   fluid, units, clock speed and live-heat / live-flow modes) and then drops the fragment, so a reload keeps your edits
   rather than the link's copy. Every built-in rig fits in under 2,000 characters; `scripts/share-check.ts` round-trips
   them all. If the clipboard is not available the link is shown instead.
+- **Second-round engine work**
+  - _Pipes running full_: a circular reach carries a **Preissmann slot** — a hair-line slit along the crown (0.2 % of
+    the diameter) — so its "depth" can rise above the crown as pressure head while the area and wetted perimeter stay
+    those of the full bore. The steady and the unsteady channel engines both then handle a surcharged culvert or sewer
+    with the equations they already had; the profile reads "full" and the head over the crown is reported.
+  - _Surge sequences_: a water-hammer run can operate any number of devices, each with its own history of moves (every
+    move starts where the last left it; a pump trips when first taken to zero). An event sequence block can be played
+    through the pressure-wave engine from its inspector.
+  - _Gas ejector_: in a gas network a jet pump entrains. Its motive nozzle is a compressible orifice blowing into the
+    suction chamber (it chokes), and the entrained flow is what Cunningham's N(M) allows against the pressure rise asked
+    of it, with M the mass-flow ratio (same gas, same chamber pressure and temperature).
+  - _Gas transients (linepack)_: "live gas" adds a storage term V/(ZRT)·(p − p_old)/dt to the mass balance of every
+    node that pipes end at — backward Euler inside the same Newton solve, so it conserves gas exactly and is stable at
+    any clock speed. Each time the solver answers, its pressures become the memory for the next step. Lumped storage,
+    quasi-steady momentum: right for minutes-long events (outages, demand swings), not for acoustic waves.
+  - _Superheat in steam mains_: enthalpy is carried along the flows. A boiler can superheat, a throttling valve keeps
+    enthalpy, and a pipe must take the superheat out (losing heat faster while it lasts) before it condenses anything;
+    the flows are re-solved with the condensate that really forms. Density and the loads' steam demand still assume
+    saturation.
+  - _Water that thins as it warms_: in heated rigs every pipe's friction factor is re-evaluated at its own water
+    temperature (Vogel viscosity, Kell density) and fed back as an equivalent length until flows and temperatures agree
+    — 22 % less head loss at 80 °C in a small copper run. Uses the settled temperatures, not the live ones; buoyancy
+    (thermosiphon) is not modelled.
+  - Two bugs fixed on the way. The solver thread was sent a model rebuilt field by field, which silently dropped the
+    lab time — so daily demand patterns never moved in the app, though every script (which calls the engine directly)
+    passed; it now passes every field. And the unsteady channel engine's Manning term divided by A² instead of A, over-stating friction
+    in sections under 1 m². Weir-controlled profiles hid it; a uniform-flow check now guards it.
 - **Refinements**
   - _Pipes can tap a channel_: a joint with both pipes and reaches on it gives the pipe side the channel's water level
     as a fixed head, and the channel loses what the pipes take (a pump lifting from a canal); the two engines go round
@@ -202,10 +229,10 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   - _Event sequences_ can wait for a signal on their input (start on it, or run only while it is on), pick each
     repeat up where the last one ended, and chart any number of devices three to a plot.
 - **Searchable palette** with collapsible groups; catalogue parts travel as `kind:variant`.
-- **57 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
+- **58 experiments** with briefs and auto-checked goals (gravity feed → Venturi/orifice meters → level switch,
   constant-pressure PID booster, flow loop with a motorised valve → fittings, clogging strainer vs NPSH, relief
   valve → pressure vessel short-cycling, night flow & leakage, tank shapes, float valve → sprinkler branch line, fire-pump acceptance test, irrigation lateral uniformity,
-  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap → waiting for hot water, warming up a heating loop, lagging a hot-water main → pumping into a canal, a canal out of a lake → a flood wave down a river, a cylinder that stratifies, bringing the condensate home → starting a pump station, a room thermostat, holding a canal level). `scripts/control-sim.ts` runs the loops closed
+  balancing a heating loop → water hammer, surge vessel, pump trip → standpipe, booster set with a sequencer, jet pump → compressed-air main, gas service regulator, choked blowdown → uniform flow, backwater behind a weir, sluice gate & hydraulic jump, spillway chute → sizing a steam main, lagging and drip traps, reducing station and a blowing trap → waiting for hot water, warming up a heating loop, lagging a hot-water main → pumping into a canal, a canal out of a lake → a flood wave down a river, a cylinder that stratifies, bringing the condensate home → starting a pump station, a room thermostat, holding a canal level, riding through on linepack). `scripts/control-sim.ts` runs the loops closed
   in Node to prove each control goal is reachable and not trivially met.
 - **Differential instruments**: a ΔP gauge tapped through zero-flow sensing lines (compiled as a closed link), and a
   Venturi/orifice element. EPANET only tracks piezometric head, so the throat differential is computed from Bernoulli

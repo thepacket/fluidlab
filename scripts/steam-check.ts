@@ -1,7 +1,7 @@
 // Steam engine against steam tables and hand calculations.
 import { engine } from '../src/engine/epanet'
 import { area, frictionFactor, P_ATM } from '../src/model/physics'
-import { flashFraction, hfg, pipeHeatLoss, rhoSteam, tSat, throttledTemp } from '../src/model/steam'
+import { CP_STEAM, flashFraction, hfg, hg, pipeHeatLoss, rhoSteam, tSat, throttledTemp } from '../src/model/steam'
 import { FLUIDS, defaultPipeProps, defaultProps, type Kind, type Model } from '../src/model/types'
 
 await engine.ready()
@@ -43,8 +43,12 @@ check('throttling 10 → 3 bar abs leaves superheat', throttledTemp(10e5, 3e5) -
   const p2 = r.nodes.HX.pressure + P_ATM
   const p1 = 700e3 + P_ATM
   check('load condenses duty / h_fg', r.steam!.loads.HX.steam, duty / hfg(p2), 1e-3)
-  const cond = (pipeHeatLoss(m.edges[0].data!.props, tSat((p1 + p2) / 2)) * L) / hfg((p1 + p2) / 2)
-  check('pipe condensate = heat loss / h_fg', r.steam!.links.main.condensate, cond, 1e-3)
+  // energy balance on the pipe: what it loses, less the little the steam gives up by arriving at a lower-pressure
+  // saturation state, condenses at h_fg
+  const lossW = r.steam!.links.main.heatLoss
+  const cond = (lossW - r.steam!.boilers.B.steam * (hg(p1) - hg(p2))) / hfg(p2)
+  check('pipe heat loss', lossW, pipeHeatLoss(m.edges[0].data!.props, (tSat(p1) + tSat(p2)) / 2) * L, 1e-3)
+  check('pipe condensate from the energy balance', r.steam!.links.main.condensate, cond, 5e-3)
   check('boiler makes load + condensate', r.steam!.boilers.B.steam, r.steam!.loads.HX.steam + cond, 1e-3)
   // Darcy with the mean density
   const mdot = r.links.main.flow
@@ -141,6 +145,33 @@ check('throttling 10 → 3 bar abs leaves superheat', throttledTemp(10e5, 3e5) -
   check('stall point', full.stallAt, (tBack - 60) / (tSat(engine.solve(build(1)).nodes.HX.pressure + P_ATM) - 60), 0.01)
   const low = engine.solve(build(0.3))
   check('below it, the load is reported as stalled', low.steam!.loads.HX.stalled ? 1 : 0, 1)
+}
+
+// 7. superheat: 60 K of it from the boiler has to be lost before the main condenses anything, and the steam stays
+//    hotter than saturation until then
+{
+  const build = (superheat: number, length: number): Model => ({
+    fluid: steam,
+    nodes: [node('B', 'reservoir', { pressure: 800e3, superheat }), node('HX', 'steamload', { duty: 300e3, processTemp: 120 })],
+    edges: [pipe('main', 'B', 'HX', { length, diameter: 0.065, insulation: 0 })],
+  })
+  const short = engine.solve(build(60, 20))
+  const lk = short.steam!.links.main
+  const mdot = short.steam!.boilers.B.steam
+  check('a short bare main only cools the superheated steam', lk.condensate, 0, 0)
+  check(
+    '…by heat loss ÷ (ṁ·c_p), plus what the pressure drop adds back',
+    lk.tIn - lk.tOut,
+    lk.heatLoss / (mdot * CP_STEAM) + (tSat(800e3 + P_ATM) - tSat(short.nodes.HX.pressure + P_ATM)) - (hg(800e3 + P_ATM) - hg(short.nodes.HX.pressure + P_ATM)) / CP_STEAM,
+    0.02,
+  )
+  check('boiler makes only what the load takes', mdot, short.steam!.loads.HX.steam, 1e-4)
+  const long = engine.solve(build(60, 400)).steam!
+  const sat = engine.solve(build(0, 400)).steam!
+  check('a long one runs out of superheat and condenses the rest', long.links.main.superheat, 0, 0)
+  // the saving is a little under the superheat's own power: while it lasts the pipe is hotter and loses heat faster
+  const saved = ((sat.links.main.condensate - long.links.main.condensate) * hfg(long.loads.HX.space + P_ATM)) / (long.boilers.B.steam * CP_STEAM * 60)
+  check('…less than saturated steam would: most of the superheat’s power is saved', saved > 0.7 && saved < 1 ? 1 : 0, 1)
 }
 
 if (failed) {

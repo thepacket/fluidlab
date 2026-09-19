@@ -19,9 +19,7 @@ interface Job {
 
 /** Strip React Flow bookkeeping so only the hydraulic model crosses the thread boundary. */
 const slim = (m: Model): Model => ({
-  fluid: m.fluid,
-  levels: m.levels,
-  controls: m.controls,
+  ...m, // every plain field (lab time, linepack step, …) crosses as it is; only nodes and edges need trimming
   nodes: m.nodes.map((n) => ({ id: n.id, data: { kind: n.data.kind, label: n.data.label, props: n.data.props } })),
   edges: m.edges.map((e) => ({
     id: e.id,

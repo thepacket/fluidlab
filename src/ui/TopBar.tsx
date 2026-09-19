@@ -137,6 +137,15 @@ export function TopBar() {
           ))}
         </div>
       )}
+      {s.results.gas && !steam && (
+        <div className="seg" title="Gas networks: settled pressures, or live — the gas stored in the pipes (linepack) makes pressure follow a change slowly">
+          {(['steady', 'live'] as const).map((m) => (
+            <button key={m} className={s.gasMode === m ? 'on' : ''} onClick={() => s.set({ gasMode: m })}>
+              {m === 'steady' ? 'settled' : 'live gas'}
+            </button>
+          ))}
+        </div>
+      )}
       {s.results.gas && (
         <div className="gas-badge" title={steam ? 'Saturated steam: flows are mass flows' : 'Flows are standard volumes at 15 °C and 1 atm'}>
           {steam ? 'STEAM · mass flow' : 'GAS · standard flow'}

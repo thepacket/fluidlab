@@ -19,6 +19,8 @@ import {
   pumpEfficiency,
   pumpMaxFlow,
   regimeOf,
+  waterDensity,
+  waterViscosity,
   reynolds,
   valveK,
 } from '../model/physics'
@@ -157,8 +159,14 @@ class EpanetEngine implements HydraulicEngine {
   private solvePressurised(model: Model, overrides: Overrides = {}): Results {
     if (model.fluid.gas) {
       // a different physics altogether: see engine/gas.ts — and engine/steam.ts for what steam adds on top
-      const r = solveGas(model, overrides)
-      const s = solveSteam(model, r)
+      let r = solveGas(model, overrides)
+      let s = solveSteam(model, r)
+      // Superheat (from the boiler, or left by a reducing valve) has to be lost before a pipe condenses anything, so the
+      // steam layer's condensate can differ from the saturated estimate the flows were solved with: go round once more.
+      if (s && Object.entries(s.steam.links).some(([id, l]) => Math.abs(l.condensate - l.saturated) > 1e-7 && r.links[id])) {
+        r = solveGas(model, { ...overrides, condensate: Object.fromEntries(Object.entries(s.steam.links).map(([id, l]) => [id, l.condensate])) })
+        s = solveSteam(model, r)
+      }
       return s ? { ...r, steam: s.steam, thermal: s.thermal } : r
     }
     const t0 = performance.now()
@@ -364,6 +372,26 @@ class EpanetEngine implements HydraulicEngine {
       }
     }
     if (res.ok) res.thermal = solveThermal(model, res)
+    // Hot water is thinner — at 80 °C its viscosity is a third of what it is at 20 °C — so a heated loop loses less head
+    // than the solver, which knows one viscosity, thinks. Each pipe's friction factor is re-evaluated at its own water
+    // temperature and handed back as an equivalent length; a pass or two and flows and temperatures agree.
+    if (res.ok && res.thermal && model.fluid.id.startsWith('water')) {
+      const friction: Record<string, number> = {}
+      let shift = 0
+      for (const e of model.edges) {
+        const l = res.links[e.id]
+        const th = res.thermal.links[e.id]
+        if (!l || !th || !e.data) continue
+        const temp = (th.tStart + th.tEnd) / 2
+        const rr = e.data.props.roughness / e.data.props.diameter
+        const reHot = l.re * (model.fluid.dynamicViscosity / model.fluid.density) * (waterDensity(temp) / waterViscosity(temp))
+        const fNominal = frictionFactor(Math.max(l.re, 1), rr)
+        friction[e.id] = l.re > 1 ? frictionFactor(Math.max(reHot, 1), rr) / fNominal : 1
+        shift = Math.max(shift, Math.abs(friction[e.id] - (overrides.friction?.[e.id] ?? 1)))
+        res.links[e.id] = { ...l, temp, fNominal, re: reHot, f: frictionFactor(Math.max(reHot, 1), rr), regime: regimeOf(reHot) }
+      }
+      if (shift > 0.003 && (overrides.thermalPass ?? 0) < 3) return this.solvePressurised(model, { ...overrides, friction, thermalPass: (overrides.thermalPass ?? 0) + 1 })
+    }
     res.solveMs = performance.now() - t0
     return res
   }

@@ -2,15 +2,27 @@
 // condense duty / h_fg, and pipes that condense what their surface loses). This pass follows the *condensate*:
 // where it forms, which trap it drains to, whether that trap can cope — and adds up where the boiler's heat went.
 import { G, P_ATM, area, frictionFactor } from '../model/physics'
-import { flashFraction, hWater, hf, hfg, hg, pSat, rhoSteam, steamSpace, trapType, warmupCondensate, pipeHeatLoss, tSat, throttledTemp, trapCapacity } from '../model/steam'
+import { CP_STEAM, flashFraction, hWater, hf, hfg, hg, pSat, rhoSteam, steamSpace, steamTemp, trapType, warmupCondensate, pipeHeatLoss, tSat, trapCapacity } from '../model/steam'
 import { isControl, type Model, type Results } from '../model/types'
 import { pipeCondensate } from './gas'
 import { command } from './inp'
-import type { Thermal } from './thermal'
+import { thermalNetwork, type Carrier, type Thermal } from './thermal'
 
 export interface SteamResults {
   /** per pipe: heat lost to the room (W) and the condensate that makes (kg/s) */
-  links: Record<string, { heatLoss: number; condensate: number; tSat: number; /** kg made warming the cold pipe up */ warmup: number }>
+  links: Record<
+    string,
+    {
+      heatLoss: number
+      condensate: number
+      /** what it would condense if the steam arrived saturated */ saturated: number
+      tSat: number
+      /** °C in and out, and K of superheat left at the outlet */ tIn: number
+      tOut: number
+      superheat: number
+      /** kg made warming the cold pipe up */ warmup: number
+    }
+  >
   loads: Record<
     string,
     {
@@ -62,13 +74,58 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
   const feedTemp = firstBoiler?.data.props.feedTemp ?? 80
   const steamCost = firstBoiler?.data.props.steamCost ?? 35 // per tonne
 
-  for (const [id, n] of Object.entries(res.nodes)) thermal.nodes[id] = seen(tSat(abs(n.pressure)))
+  // ---- energy: carry the steam's enthalpy along the flows ----
+  // A boiler may superheat; a throttling valve keeps enthalpy while dropping pressure, which leaves the steam superheated
+  // too. Either way a pipe has to take that superheat out before it can condense anything, and the steam stays hotter
+  // than saturation until it has.
+  const net = thermalNetwork(model, res)
+  const pAt = (k: string) => {
+    const [id, end] = k.split(':')
+    return abs(end ? (end === 'out' ? res.devices[id].pOut : res.devices[id].pIn) : res.nodes[id].pressure)
+  }
+  const H = new Map<string, number>()
+  for (const k of net.points) H.set(k, hg(pAt(k)))
+  for (const [k, n] of net.fixed) if (n.data.kind === 'reservoir') H.set(k, hg(pAt(k)) + CP_STEAM * Math.max(0, n.data.props.superheat ?? 0))
+  const edgeOf = new Map(model.edges.map((e) => [e.id, e]))
+  const made = new Map<string, number>() // condensate formed in each pipe, kg/s
+  const lost = new Map<string, number>()
+  const arriving = (c: Carrier, hIn: number): number => {
+    if (!c.edge) return hIn // an inline part throttles: same enthalpy, lower pressure
+    const p = edgeOf.get(c.edge)!.data!.props
+    const len = Math.max(0.01, p.length)
+    const dry = hg(pAt(c.to))
+    // The first stretch of the pipe runs hotter than saturation and only cools; once the superheat is spent the rest
+    // runs at saturation temperature and condenses. Find how much of the length the superheat lasts for.
+    const spare = c.q * Math.max(0, hIn - dry)
+    const qHot = pipeHeatLoss(p, (steamTemp(hIn, pAt(c.from)) + tSat(pAt(c.to))) / 2) * len
+    const qSat = pipeHeatLoss(p, tSat((pAt(c.from) + pAt(c.to)) / 2)) * len
+    const hotShare = qHot > 0 ? Math.min(1, spare / qHot) : 1
+    const q = hotShare >= 1 ? qHot : spare + (1 - hotShare) * qSat
+    const hOut = hIn - q / c.q
+    lost.set(c.edge, q)
+    made.set(c.edge, hotShare >= 1 ? 0 : ((1 - hotShare) * qSat) / hfg(pAt(c.to)))
+    return Math.max(hOut, dry) // what travels on is dry steam; the condensate goes to the traps
+  }
+  const carriers = net.carriers.filter((c) => c.q > 0)
+  const feeding = new Map<string, Carrier[]>()
+  for (const c of carriers) feeding.set(c.to, [...(feeding.get(c.to) ?? []), c])
+  for (let sweep = 0; sweep < 100; sweep++) {
+    let change = 0
+    for (const [k, list] of feeding) {
+      if (net.fixed.has(k)) continue
+      const h = list.reduce((s, c) => s + c.q * arriving(c, H.get(c.from)!), 0) / list.reduce((s, c) => s + c.q, 0)
+      change = Math.max(change, Math.abs(h - H.get(k)!))
+      H.set(k, h)
+    }
+    if (change < 1) break
+  }
+  const tempAt = (k: string) => steamTemp(H.get(k) ?? hg(pAt(k)), pAt(k))
+  for (const id of Object.keys(res.nodes)) if (net.points.has(id)) thermal.nodes[id] = seen(tempAt(id))
   for (const [id, d] of Object.entries(res.devices)) {
-    const nd = byId.get(id)!
-    const [pIn, pOut] = d.flow >= 0 ? [abs(d.pIn), abs(d.pOut)] : [abs(d.pOut), abs(d.pIn)]
-    const tOut = nd.data.kind === 'valve' && Math.abs(d.flow) > 1e-9 && pIn - pOut > 2000 ? throttledTemp(pIn, pOut) : tSat(pOut)
-    if (tOut > tSat(pOut) + 0.5) out.throttled[id] = tOut
-    thermal.devices[id] = { tIn: seen(tSat(abs(d.pIn))), tOut: seen(tSat(abs(d.pOut))), heat: 0 }
+    const [a, b] = d.flow >= 0 ? [`${id}:in`, `${id}:out`] : [`${id}:out`, `${id}:in`]
+    const tOut = tempAt(b)
+    if (tOut > tSat(pAt(b)) + 0.5) out.throttled[id] = tOut
+    thermal.devices[id] = { tIn: seen(tempAt(a)), tOut: seen(tOut), heat: 0 }
   }
 
   // ---- condensate made in the pipes, and the way the steam is flowing ----
@@ -79,11 +136,16 @@ export function solveSteam(model: Model, res: Results): { steam: SteamResults; t
     const l = res.links[e.id]
     if (e.type === 'signal' || !e.data || !l) continue
     const pMean = abs((l.pStart + l.pEnd) / 2)
-    const condensate = pipeCondensate(e.data.props, pMean)
-    const heatLoss = pipeHeatLoss(e.data.props, tSat(pMean)) * Math.max(0.01, e.data.props.length)
+    const saturated = pipeCondensate(e.data.props, pMean)
+    // a pipe with no flow in it still loses heat and still condenses: fall back on the saturated figure there
+    const condensate = made.get(e.id) ?? saturated
+    const heatLoss = lost.get(e.id) ?? pipeHeatLoss(e.data.props, tSat(pMean)) * Math.max(0.01, e.data.props.length)
     const warmup = warmupCondensate(e.data.props, pMean)
-    out.links[e.id] = { heatLoss, condensate, tSat: tSat(pMean), warmup }
-    thermal.links[e.id] = { tStart: seen(tSat(abs(l.pStart))), tEnd: seen(tSat(abs(l.pEnd))) }
+    const [kA, kB] = [net.key(e.source, e.sourceHandle), net.key(e.target, e.targetHandle)]
+    const [tA, tB] = [net.points.has(kA) ? tempAt(kA) : tSat(abs(l.pStart)), net.points.has(kB) ? tempAt(kB) : tSat(abs(l.pEnd))]
+    const [tIn, tOut, pOutAbs] = l.flow >= 0 ? [tA, tB, abs(l.pEnd)] : [tB, tA, abs(l.pStart)]
+    out.links[e.id] = { heatLoss, condensate, saturated, tSat: tSat(pMean), tIn, tOut, superheat: Math.max(0, tOut - tSat(pOutAbs)), warmup }
+    thermal.links[e.id] = { tStart: seen(tA), tEnd: seen(tB) }
     out.totals.mainsLoss += heatLoss
     const [from, to] = l.flow >= 0 ? [e.source, e.target] : [e.target, e.source]
     if (Math.abs(l.flow) > 1e-9) {

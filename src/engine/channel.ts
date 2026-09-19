@@ -17,6 +17,7 @@ import {
   gateDepth,
   hydraulicRadius,
   isChannel,
+  isFull,
   lakeSill,
   lining,
   normalDepth,
@@ -417,7 +418,7 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}, d
           out.jump = { x: (i - 0.5) * r.dx, y1, y2, loss, power: rhoG * r.q * loss }
           zones.push('jump')
         }
-        const zn = zoneName(cls, r.y[i], r.yn, r.yc)
+        const zn = isFull(r.p, r.y[i]) ? 'full' : zoneName(cls, r.y[i], r.yn, r.yc)
         if (zones[zones.length - 1] !== zn) zones.push(zn)
       }
       // a lone station of another zone at either end is just the boundary itself (critical depth at a brink)
@@ -444,8 +445,8 @@ export function solveChannel(model: Model, feeds: Record<string, number> = {}, d
     }
     const yMax = Math.max(...r.y)
     const label = r.e.data!.label
-    if (r.p.shape === 'circ' && (yMax >= r.p.diameter * 0.94 || (r.yn === null && r.s0 > 1e-9)))
-      warnings.push({ id: r.e.id, level: 'warn', text: `${label}: the pipe is running full — it has stopped being an open channel, and the depths shown are not reliable` })
+    if (r.p.shape === 'circ' && yMax >= r.p.diameter)
+      warnings.push({ id: r.e.id, level: 'info', text: `${label}: running full — pressurised, with ${(yMax - r.p.diameter).toFixed(2)} m of head over its crown at the worst point` })
     else if (r.p.shape !== 'circ' && yMax > r.p.bankHeight)
       warnings.push({ id: r.e.id, level: 'warn', text: `${label}: overtopping — water is ${yMax.toFixed(2)} m deep in a ${r.p.bankHeight} m channel` })
     if (out.vMax > lining(r.p.lining).vMax)

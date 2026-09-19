@@ -218,6 +218,24 @@ const truthy = (name: string, ok: boolean, note = '') => {
   truthy('pump suction head = canal water level, less the suction pipe’s friction', lost > 0 && lost < 0.1, `${(lost * 100).toFixed(1)} cm`)
 }
 
+// 12. a culvert running full: drowned at its outlet and asked for more than it can carry with a free surface, it is a
+//     pressurised pipe — upstream head = tailwater + (S_f − S₀)·L with the full-bore Manning friction slope
+{
+  const D = 0.6
+  const L = 40
+  const Q = 0.6
+  const m = rig(
+    [node('I', 'inflow', { elevation: 0.2, flow: Q }), node('O', 'outfall', { elevation: 0, mode: 'level', level: 1.5 })],
+    [reach('c', 'I', 'O', { length: L, shape: 'circ', diameter: D, lining: 'concrete' })],
+  )
+  const res = solveChannel(m)!
+  const r = res.channel!.reaches.c
+  const A = (Math.PI * D * D) / 4
+  const sf = (0.013 * Q) ** 2 / (A * A * (D / 4) ** (4 / 3))
+  check('surcharged culvert: upstream pressure head', r.depth[0], 1.5 + (sf - 0.2 / L) * L, 0.01)
+  truthy('reported as running full', r.profile.includes('full') && res.warnings.some((w) => w.text.includes('running full')), r.profile)
+}
+
 if (failed) {
   console.error(`${failed} open-channel check(s) failed`)
   process.exit(1)

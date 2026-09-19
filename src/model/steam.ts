@@ -61,7 +61,11 @@ export const hWater = (t: number) => 4190 * t
 /** Fraction of condensate that flashes back to steam when it drops from p1 to p2 (absolute). */
 export const flashFraction = (p1: number, p2: number) => (p1 > p2 ? Math.max(0, (hf(p1) - hf(p2)) / hfg(p2)) : 0)
 /** Temperature after throttling dry saturated steam from p1 to p2 at constant enthalpy: it comes out slightly superheated. */
-export const throttledTemp = (p1: number, p2: number) => tSat(p2) + Math.max(0, hg(p1) - hg(p2)) / 2100
+export const throttledTemp = (p1: number, p2: number) => tSat(p2) + Math.max(0, hg(p1) - hg(p2)) / CP_STEAM
+/** specific heat of steam a little above saturation, J/kg·K */
+export const CP_STEAM = 2200
+/** Temperature of steam carrying enthalpy h at pressure p: saturated, or superheated by whatever h exceeds h_g by. */
+export const steamTemp = (h: number, pAbs: number) => tSat(pAbs) + Math.max(0, h - hg(pAbs)) / CP_STEAM
 
 const K_INSULATION = 0.045 // W/m·K, mineral wool at steam temperatures
 export const AMBIENT = 20

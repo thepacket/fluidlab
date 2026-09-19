@@ -48,6 +48,12 @@ export interface Overrides {
   pumpSpeed?: Record<string, number>
   /** joints where pipework taps an open channel: the channel's water level there, which the pipe side sees as a fixed head */
   heads?: Record<string, number>
+  /** steam: what each pipe really condenses (kg/s) once superheat has been accounted for — replaces the saturated estimate */
+  condensate?: Record<string, number>
+  /** heated water: each pipe's friction relative to the fluid's nominal temperature (hot water is thinner), applied as an equivalent length */
+  friction?: Record<string, number>
+  /** how many times the thermal correction has already been round */
+  thermalPass?: number
 }
 
 const n = (v: number) => (Math.abs(v) < 1e-12 ? '0' : Number(v.toPrecision(8)).toString())
@@ -343,7 +349,9 @@ export function compile(full: Model, overrides: Overrides = {}): Compiled {
     if (!p) return
     const id = `P${i}`
     pipeIds[x.e.id] = id
-    P.push(`${id} ${x.a} ${x.b} ${n(Math.max(0.01, p.length))} ${n(Math.max(1, p.diameter * 1000))} ${n(Math.max(1e-5, p.roughness * 1000))} ${n(p.minorK || 0)} OPEN`)
+    P.push(
+      `${id} ${x.a} ${x.b} ${n(Math.max(0.01, p.length) * (overrides.friction?.[x.e.id] ?? 1))} ${n(Math.max(1, p.diameter * 1000))} ${n(Math.max(1e-5, p.roughness * 1000))} ${n(p.minorK || 0)} OPEN`,
+    )
     const src = byId.get(x.e.source)
     if (!src) warnings.push({ id: x.e.id, level: 'warn', text: 'Pipe has a missing end' })
   })

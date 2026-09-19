@@ -18,6 +18,13 @@ export function regimeOf(re: number): 'still' | 'laminar' | 'transitional' | 'tu
 }
 
 /** Darcy friction factor, same scheme EPANET uses: Hagen–Poiseuille, Swamee–Jain, cubic blend between. */
+/** Water between 0 and 150 °C: dynamic viscosity (Pa·s, Vogel) and density (kg/m³, Kell). */
+export const waterViscosity = (t: number) => 2.414e-5 * 10 ** (247.8 / (Math.min(150, Math.max(0, t)) + 133.15))
+export const waterDensity = (t: number) => {
+  const c = Math.min(150, Math.max(0, t))
+  return 1000 * (1 - ((c + 288.9414) / (508929.2 * (c + 68.12963))) * (c - 3.9863) ** 2)
+}
+
 export function frictionFactor(re: number, relRough: number): number {
   if (re < 1e-6) return 0
   if (re <= 2000) return 64 / re

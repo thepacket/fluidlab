@@ -85,6 +85,8 @@ export interface Model {
   fluid: Fluid
   /** live tank levels (m), keyed by node id; falls back to initLevel */
   levels?: Record<string, number>
+  /** live gas: seconds this solve advances the linepack by, from the `id:line` pressures in `levels` (0 / absent = steady) */
+  lineDt?: number
   /** lab time (s) — only matters to demand patterns, and is quantised so it doesn't force constant re-solves */
   time?: number
   /** 0‥1 commands from controllers, keyed by device id; absent = uncontrolled. A command scales the device's own setting. */
@@ -190,6 +192,7 @@ export function defaultProps(kind: Kind): Props {
     case 'reservoir':
       return {
         temp: 15,
+        superheat: 0,
         feedTemp: 80,
         boilerEfficiency: 0.82,
         steamCost: 35,
@@ -328,6 +331,9 @@ export interface NodeResult {
   outflow: number
 }
 export interface LinkResult {
+  /** heated rigs: mean water temperature in the pipe, and the friction factor it would have had at the fluid's nominal temperature */
+  temp?: number
+  fNominal?: number
   flow: number // m³/s, + = source → target
   velocity: number
   headloss: number // m, in flow direction

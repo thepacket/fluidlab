@@ -2,7 +2,7 @@
 import { engine } from '../src/engine/epanet'
 import { stepHeat, type HeatState } from '../src/engine/heat'
 import { EXPERIMENTS } from '../src/experiments'
-import { area, tankVolume } from '../src/model/physics'
+import { area, frictionFactor, tankVolume, waterDensity, waterViscosity } from '../src/model/physics'
 import { FLUIDS, defaultPipeProps, defaultProps, type Kind, type Model } from '../src/model/types'
 
 await engine.ready()
@@ -118,6 +118,24 @@ const march = (m: Model, seconds: number, dt: number, each?: (t: number, s: Heat
   check('live room warms up to the same temperature', live.rooms.r, room, 0.01)
   const off = engine.solve({ ...m, controls: { b: 0 } } as Model)
   check('boiler switched off by a controller: the room falls to outside', off.thermal!.rooms!.r, -5, 0.02)
+}
+
+// 6. hot water is thinner: the same flow down the same pipe loses less head at 80 °C than at 20 °C, by the ratio of the
+//    friction factors at the two Reynolds numbers
+{
+  const build = (temp: number): Model => ({
+    fluid: water,
+    nodes: [node('R', 'reservoir', { head: 30, temp }), node('use', 'outlet', { mode: 'demand', demand: 0.2e-3 })],
+    edges: [pipe('run', 'R', 'use', { length: 100, diameter: 0.02, material: 'copper', roughness: 0.0015e-3 })],
+  })
+  const cold = engine.solve(build(15)).links.run // 15 °C is the default: no thermal layer, nominal (20 °C) properties
+  const hot = engine.solve(build(80)).links.run
+  const nu20 = water.dynamicViscosity / water.density
+  const nu80 = waterViscosity(80) / waterDensity(80)
+  const rr = 0.0015e-3 / 0.02
+  check('viscosity of water at 80 °C (mPa·s)', waterViscosity(80) * 1000, 0.355, 0.02)
+  check('head loss, hot ÷ cold', hot.headloss / cold.headloss, frictionFactor(cold.re * (nu20 / nu80), rr) / frictionFactor(cold.re, rr), 0.01)
+  check('reported Reynolds number follows the temperature', hot.re / cold.re, nu20 / nu80, 0.01)
 }
 
 if (failed) {

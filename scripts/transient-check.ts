@@ -112,3 +112,34 @@ for (const i of [0.5, 2, 5, 10]) tryOut('pump-trip', `trip, speed halves in ${i}
   console.log(`tee        ${ok}  idle drift ${(riseOf(idle) / 1000).toFixed(2)} kPa · slam rise ${(riseOf(slam) / 1000).toFixed(0)} kPa (Joukowsky ${(slam.joukowsky / 1000).toFixed(0)})`)
   if (!ok) process.exit(1)
 }
+
+// an event sequence in one run: a valve shuts, and later a second one does — each leaves its own hammer on the trace
+{
+  const m: Model = {
+    fluid: FLUIDS[0],
+    nodes: [
+      node('R', 'reservoir', { head: 40 }),
+      node('J', 'junction'),
+      node('V1', 'valve', { diameter: 0.04 }),
+      node('A', 'outlet', { nozzleDiameter: 0.015 }),
+      node('V2', 'valve', { diameter: 0.04 }),
+      node('B', 'outlet', { nozzleDiameter: 0.015 }),
+    ],
+    edges: [
+      pipe('p0', 'R', 'J', 'r', 'l', { length: 300, material: 'steel' }),
+      pipe('p1', 'J', 'V1', 'r', 'in', { length: 50, material: 'steel' }),
+      pipe('p2', 'V1', 'A', 'out', 'l', { length: 1 }),
+      pipe('p3', 'J', 'V2', 'b', 'in', { length: 50, material: 'steel' }),
+      pipe('p4', 'V2', 'B', 'out', 'l', { length: 1 }),
+    ],
+  }
+  const st = engine.solve(m)
+  const one = runTransient(m, st, { id: 'V1', start: 0.5, duration: 0.05, to: 0, runFor: 6 })
+  const both = runTransient(m, st, { id: 'V1', start: 0.5, duration: 0.05, to: 0, runFor: 6, more: [{ id: 'V2', start: 3, duration: 0.05, to: 0 }] })
+  const at = (r: typeof one, key: string, t: number) => r.series[key][r.times.findIndex((x) => x >= t)]
+  const late = (r: typeof one) => Math.max(...r.times.map((t, i) => (t > 3 ? r.series['V2:in'][i] : -Infinity)))
+  const flowAfter = at(both, 'V2:in', 5.9)
+  const ok = one.ok && both.ok && late(both) > late(one) + 100e3 && Math.abs(at(both, 'V1:in', 2.5) - at(one, 'V1:in', 2.5)) < 1 && flowAfter > 0
+  console.log(`sequence   ${ok}  second closure adds ${((late(both) - late(one)) / 1000).toFixed(0)} kPa at its own valve; the run is identical until it starts`)
+  if (!ok) process.exit(1)
+}

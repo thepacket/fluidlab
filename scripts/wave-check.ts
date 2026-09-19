@@ -66,6 +66,33 @@ const y = steadyLow.channel!.reaches.a.depth[40]
 const celerity = 0.2 / y + Math.sqrt(G * y)
 check('the rise arrives at about L / (u + c)', arrival, 300 / celerity, 0.35)
 
+// 2b. friction on its own: a long uniform channel must sit at normal depth, which only the right Manning term gives
+{
+  const m: Model = {
+    fluid: FLUIDS[0],
+    nodes: [node('I', 'inflow', { elevation: 1, flow: 0.3 }), node('O', 'outfall', { elevation: 0, mode: 'normal' })],
+    edges: [reach('r', 'I', 'O', { length: 500, width: 0.6, bankHeight: 2 })],
+  }
+  const steady = solveChannel(m)!
+  const s = march(m, steady, null, 1200)
+  const v = waveView(m, steady, s)
+  check('uniform flow settles at the Manning normal depth', v.channel.reaches.r.depth[15], steady.channel!.reaches.r.yn!, 0.02)
+}
+
+// 3. a pressurised culvert (Preissmann slot): the unsteady engine must hold the steady surcharged state too
+{
+  const m: Model = {
+    fluid: FLUIDS[0],
+    nodes: [node('I', 'inflow', { elevation: 0.2, flow: 0.6 }), node('O', 'outfall', { elevation: 0, mode: 'level', level: 1.5 })],
+    edges: [reach('c', 'I', 'O', { length: 40, shape: 'circ', diameter: 0.6, lining: 'concrete' })],
+  }
+  const steady = solveChannel(m)!
+  const s = march(m, steady, null, 120)
+  const v = waveView(m, steady, s)
+  check('surcharged culvert: holds the steady pressure head', v.channel.reaches.c.depth[0], steady.channel!.reaches.c.depth[0], 0.04)
+  check('surcharged culvert: holds the flow', v.channel.reaches.c.flow, 0.6, 0.02)
+}
+
 if (failed) {
   console.error(`${failed} wave check(s) failed`)
   process.exit(1)

@@ -101,6 +101,8 @@ export interface Experiment {
   heatMode?: 'steady' | 'live'
   /** 'live' marches the open-channel water surface through lab time (flood waves, gate surges) */
   flowMode?: 'steady' | 'live'
+  /** 'live' keeps the gas held in the pipes (linepack), so a gas network takes time to follow a change */
+  gasMode?: 'steady' | 'live'
   autoRun?: boolean
   select?: string
   build: () => { nodes: LabNode[]; edges: LabEdge[] }
@@ -2282,6 +2284,52 @@ export const EXPERIMENTS: Experiment[] = [
         { at: 0, target: 'in', value: 0.5, ramp: 150 },
         { at: 250, target: 'in', value: 1, ramp: 300 },
         { at: 700, target: 'in', value: 0.4, ramp: 350 },
+      ]
+      return rig
+    },
+  },
+  {
+    id: 'linepack',
+    no: '58',
+    title: 'Riding through on linepack',
+    concept: 'Gas stored in the pipe itself',
+    formula: 'dp/dt = (ṁ_in − ṁ_out) · Z·R·T / V',
+    brief:
+      'A gas main is also a storage vessel: the gas packed into it at pressure keeps the users supplied for a while after the supply stops. How long depends on the volume of pipe and how far the pressure is allowed to sag. This rig runs in “live gas” mode — each solve is an implicit step that remembers the pressures before it — and an event sequence shuts the supply for three minutes.',
+    steps: [
+      'Press play. At 30 s the station valve shuts; watch the pressure at the far end sag, and recover when it reopens.',
+      'Select the far gauge and open its trend.',
+      'The users’ regulators need 250 kPa. Give the main more linepack — press reset (⟲) after each change.',
+    ],
+    goal: {
+      text: 'Ride through the three-minute outage with the far end never below 250 kPa',
+      check: (_r, _n, _l, history) => {
+        const low = Math.min(...history.map((h) => h.v.far ?? Infinity))
+        const over = (history.at(-1)?.t ?? 0) > 260
+        return { done: over && isFinite(low) && low >= 250e3, readout: `${isFinite(low) ? `lowest so far ${(low / 1000).toFixed(0)} kPa` : '—'}${over ? '' : ' · outage still to come or under way'}` }
+      },
+    },
+    fluidId: 'natgas',
+    timeScale: 10,
+    gasMode: 'live',
+    select: 'far',
+    build: () => {
+      const rig = new Rig()
+        .add('src', 'reservoir', 120, 300, { pressure: 400e3 }, 'Gate station')
+        .add('v', 'valve', 320, 300, { diameter: 0.1, body: 'ball', kOpen: 0.1 }, 'Station valve')
+        .add('mid', 'junction', 600, 300)
+        .add('far', 'gauge', 860, 300, {}, 'Far end')
+        .add('users', 'outlet', 1060, 300, { mode: 'demand', demand: 1500 / 3600 }, 'Town')
+        .add('seq', 'sequence', 320, 120, {}, 'Outage')
+        .pipe('src', 'v', { length: 5, diameter: 0.1, material: 'steel', roughness: 0.045e-3 })
+        .pipe('v', 'mid', { length: 1500, diameter: 0.1, material: 'steel', roughness: 0.045e-3 }, ['out', 'l'], 'Main, first half')
+        .pipe('mid', 'far', { length: 1500, diameter: 0.1, material: 'steel', roughness: 0.045e-3 }, [], 'Main, second half')
+        .pipe('far', 'users', { length: 20, diameter: 0.1, material: 'steel', roughness: 0.045e-3 })
+        .wire('seq', 'v')
+        .done()
+      rig.nodes.find((n) => n.id === 'seq')!.data.props.steps = [
+        { at: 30, target: 'v', value: 0, ramp: 5 },
+        { at: 210, target: 'v', value: 1, ramp: 5 },
       ]
       return rig
     },

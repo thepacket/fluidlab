@@ -42,6 +42,9 @@ interface State {
   /** open channels: 'steady' shows the settled water surface, 'live' marches it through lab time (engine/wave.ts) */
   flowMode: 'steady' | 'live'
   wave: WaveState | null
+  /** gas networks: 'live' keeps the gas stored in the pipes (linepack), so pressures take time to follow a change */
+  gasMode: 'steady' | 'live'
+  lineDt: number
   /** what the solver last returned, before any live layer was painted over it */
   solved: Results | null
   engineReady: boolean
@@ -99,6 +102,9 @@ interface State {
 }
 
 let steadyBeforeReplay: Results | null = null
+/** live gas bookkeeping: the solver answer the linepack was last seeded from, and the lab time since */
+let lineSeen: Results | null = null
+let lineElapsed = 0
 const STORAGE_KEY = 'fluidlab.project.v1'
 let lastTag: string | undefined
 let lastTagAt = 0
@@ -111,11 +117,12 @@ const outletFeeds = (nodes: LabNode[], r: Results) => Object.fromEntries(nodes.f
 /** Does this component make lab time matter (so the accelerated clock applies)? */
 export const usesClock = (n: LabNode) => n.data.kind === 'tank' || n.data.kind === 'vessel' || isControl(n.data.kind) || (!!n.data.props.pattern && n.data.props.pattern !== 'constant')
 
-export const model = (s: Pick<State, 'nodes' | 'edges' | 'fluidId' | 'levels' | 'controls' | 'simTime'>): Model => ({
+export const model = (s: Pick<State, 'nodes' | 'edges' | 'fluidId' | 'levels' | 'controls' | 'simTime'> & { gasMode?: State['gasMode']; lineDt?: number }): Model => ({
   nodes: s.nodes,
   edges: s.edges,
   fluid: FLUIDS.find((f) => f.id === s.fluidId) ?? FLUIDS[0],
   levels: s.levels,
+  lineDt: s.gasMode === 'live' ? s.lineDt : 0,
   controls: s.controls,
   // demand patterns follow the clock; minute steps are plenty and avoid a re-solve on every tick
   time: s.nodes.some((n) => n.data.props.pattern && n.data.props.pattern !== 'constant') ? Math.floor(s.simTime / 60) * 60 : 0,
@@ -183,6 +190,8 @@ export const useLab = create<State>((set, get) => ({
   heat: null,
   flowMode: 'steady',
   wave: null,
+  gasMode: 'steady',
+  lineDt: 0,
   solved: null,
   engineReady: false,
   levels: {},
@@ -357,6 +366,8 @@ export const useLab = create<State>((set, get) => ({
       heatMode: ex.heatMode ?? 'steady',
       flowMode: ex.flowMode ?? 'steady',
       wave: null,
+      gasMode: ex.gasMode ?? 'steady',
+      lineDt: 0,
       ...(ex.heatMode === 'live' ? { overlay: 'thermal' as const } : {}),
       heat: null,
       running: true,
@@ -438,11 +449,29 @@ export const useLab = create<State>((set, get) => ({
     }
     if (!s.running || !s.results.ok) return
     // tanks and timers live on the accelerated lab clock; a purely steady rig just counts real seconds
-    const clocked = s.nodes.some(usesClock) || (s.heatMode === 'live' && !!s.results.thermal) || (s.flowMode === 'live' && !!s.results.channel)
+    const clocked = s.nodes.some(usesClock) || (s.gasMode === 'live' && !!s.results.gas) || (s.heatMode === 'live' && !!s.results.thermal) || (s.flowMode === 'live' && !!s.results.channel)
     const dt = dtReal * (clocked ? s.timeScale : 1)
     const levels = { ...s.levels }
     const fluid = FLUIDS.find((f) => f.id === s.fluidId) ?? FLUIDS[0]
     let moved = false
+    // live gas: every time the solver comes back, its pressures become the linepack's memory and the lab time that
+    // has passed since becomes the next implicit step. At rest nothing changes, so nothing re-solves.
+    let lineDt = s.lineDt
+    const gasNow = s.solved ?? s.results
+    if (s.gasMode === 'live' && gasNow.gas && !gasNow.steam) {
+      lineElapsed += dt
+      if (gasNow !== lineSeen && gasNow.ok) {
+        lineSeen = gasNow
+        for (const [id, n] of Object.entries(gasNow.nodes)) if (n.extra?.volume) levels[`${id}:line`] = n.pressure + P_ATM
+        lineDt = lineElapsed
+        lineElapsed = 0
+        moved = true
+      }
+    } else if (Object.keys(levels).some((k) => k.endsWith(':line'))) {
+      for (const k of Object.keys(levels)) if (k.endsWith(':line')) delete levels[k]
+      lineSeen = null
+      moved = true
+    }
     for (const n of s.nodes) {
       if (n.data.kind !== 'tank' && n.data.kind !== 'vessel') continue
       const r = s.results.nodes[n.id]
@@ -521,7 +550,7 @@ export const useLab = create<State>((set, get) => ({
     const simTime = s.simTime + dt
     const history = [...s.history.slice(-599), { t: simTime, v }]
     const live = heat || wave ? { heat, wave, results } : {}
-    set(moved ? { ...live, levels, simTime, history, totals, ctrl, controls: ctrl.commands } : { ...live, simTime, history, totals, ctrl, controls: ctrl.commands })
+    set(moved ? { ...live, levels, lineDt, simTime, history, totals, ctrl, controls: ctrl.commands } : { ...live, simTime, history, totals, ctrl, controls: ctrl.commands })
   },
 
   runSurge: (event) => {

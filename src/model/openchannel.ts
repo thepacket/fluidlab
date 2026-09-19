@@ -57,8 +57,16 @@ export function defaultChannelProps(): Props {
 
 // ---- section geometry -----------------------------------------------------------------
 
-/** Deepest water a section can hold before it is no longer an open channel. */
-export const sectionTop = (p: Props) => (p.shape === 'circ' ? p.diameter : 100)
+/**
+ * A closed pipe running full is handled with a Preissmann slot: a hair-line slit is imagined along the crown, so the
+ * "depth" can keep rising above it. Above the crown that depth is simply the pressure head, the area and wetted
+ * perimeter are those of the full bore, and the same free-surface equations describe pressurised flow. The slot is
+ * narrow enough to hold next to no water (0.2 % of the diameter) and wide enough that waves in it stay computable.
+ */
+export const slotWidth = (p: Props) => 0.002 * p.diameter
+/** Deepest "water" the solvers will consider: a closed pipe may be pressurised well above its crown. */
+export const sectionTop = (p: Props) => (p.shape === 'circ' ? p.diameter + 100 : 100)
+export const isFull = (p: Props, y: number) => p.shape === 'circ' && y >= p.diameter
 
 const theta = (p: Props, y: number) => 2 * Math.acos(Math.min(1, Math.max(-1, 1 - (2 * y) / p.diameter)))
 
@@ -66,7 +74,7 @@ export function area(p: Props, y: number): number {
   if (y <= 0) return 0
   if (p.shape === 'circ') {
     const t = theta(p, Math.min(y, p.diameter))
-    return (p.diameter ** 2 / 8) * (t - Math.sin(t))
+    return (p.diameter ** 2 / 8) * (t - Math.sin(t)) + Math.max(0, y - p.diameter) * slotWidth(p)
   }
   const b = p.shape === 'tri' ? 0 : p.width
   const z = p.shape === 'rect' ? 0 : p.sideSlope
@@ -80,7 +88,7 @@ export function perimeter(p: Props, y: number): number {
   return b + 2 * y * Math.sqrt(1 + z * z)
 }
 export function topWidth(p: Props, y: number): number {
-  if (p.shape === 'circ') return Math.max(1e-6, p.diameter * Math.sin(theta(p, Math.min(y, p.diameter)) / 2))
+  if (p.shape === 'circ') return Math.max(slotWidth(p), p.diameter * Math.sin(theta(p, Math.min(y, p.diameter)) / 2)) // never narrower than the slot
   const b = p.shape === 'tri' ? 0 : p.width
   const z = p.shape === 'rect' ? 0 : p.sideSlope
   return Math.max(1e-6, b + 2 * z * y)
@@ -88,6 +96,10 @@ export function topWidth(p: Props, y: number): number {
 /** A·ȳ — first moment of the flow area about the water surface (= ∫A dη from the bed up). */
 export function firstMoment(p: Props, y: number): number {
   if (y <= 0) return 0
+  if (p.shape === 'circ' && y > p.diameter) {
+    const over = y - p.diameter
+    return firstMoment(p, p.diameter) + area(p, p.diameter) * over + (slotWidth(p) * over * over) / 2
+  }
   if (p.shape === 'circ') {
     const n = 16
     const h = y / n

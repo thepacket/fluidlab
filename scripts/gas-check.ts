@@ -141,3 +141,69 @@ const pipe = (id: string, s: string, t: string, sh: string, th: string, props = 
   console.log(`riser      ${ok}  top of a 30 m riser ${r.nodes.Top.pressure.toFixed(1)} Pa · hand calculation ${want.toFixed(1)} Pa (2000 at the bottom)`)
   if (!ok) process.exit(1)
 }
+
+// 6. an air ejector: compressed air entrains air from the room and delivers it against a small back-pressure; the
+//    operating point must sit on Cunningham's characteristic, with the motive nozzle choked
+{
+  const m: Model = {
+    fluid: air,
+    nodes: [
+      node('M', 'reservoir', { pressure: 500e3 }),
+      node('Room', 'reservoir', { pressure: 0 }),
+      node('E', 'jetpump', { nozzleDiameter: 0.004, throatDiameter: 0.012 }),
+      node('Out', 'outlet', { nozzleDiameter: 0.014, cd: 0.9 }),
+    ],
+    edges: [
+      pipe('pm', 'M', 'E', 'r', 'm', { length: 2, diameter: 0.015 }),
+      pipe('ps', 'Room', 'E', 'r', 's', { length: 1, diameter: 0.04 }),
+      pipe('pd', 'E', 'Out', 'd', 'l', { length: 2, diameter: 0.04 }),
+    ],
+  }
+  const r = engine.solve(m)
+  const x = r.nodes.E.extra!
+  const ok = r.ok && x.q2 > 0 && x.M > 0.2 && x.N > 0.005 && Math.abs(x.N - x.Nmodel) < 0.02 * x.Nmodel && Math.abs(r.nodes.Out.outflow - (x.q1 + x.q2)) < 1e-6
+  console.log(
+    `ejector    ${ok}  motive ${(x.q1 * 3600).toFixed(1)} Sm³/h entrains ${(x.q2 * 3600).toFixed(1)} (M ${x.M.toFixed(2)}) · N ${x.N.toFixed(4)} vs model ${x.Nmodel.toFixed(4)}`,
+    r.warnings.map((w) => w.text.slice(0, 40)),
+  )
+  if (!ok) process.exit(1)
+}
+
+// 7. linepack: a charged main cut off from its supply, still feeding a user, loses pressure at ṁ·ZRT/V — and the
+//    implicit step must conserve gas exactly whatever its size
+{
+  const L = 2000
+  const D = 0.1
+  const q = 100 / 3600
+  const m: Model = {
+    fluid: air,
+    nodes: [node('A', 'junction'), node('B', 'junction', { demand: q })],
+    edges: [pipe('main', 'A', 'B', 'r', 'l', { length: L, diameter: D })],
+  }
+  const V = area(D) * L
+  let levels: Record<string, number> = { 'A:line': 601325, 'B:line': 601325 }
+  const mass = (lv: Record<string, number>) => ((lv['A:line'] + lv['B:line']) * (V / 2)) / zrt(air)
+  const m0 = mass(levels)
+  let ok = true
+  for (let step = 0; step < 10; step++) {
+    const r = engine.solve({ ...m, levels, lineDt: 30 })
+    ok &&= r.ok
+    levels = { 'A:line': r.nodes.A.pressure + 101325, 'B:line': r.nodes.B.pressure + 101325 }
+  }
+  const drawn = q * rhoStd(air) * 300
+  const good = ok && Math.abs(m0 - mass(levels) - drawn) / drawn < 1e-3
+  console.log(
+    `linepack   ${good}  300 s of draw-off took ${(m0 - mass(levels)).toFixed(3)} kg out of the main · the user drew ${drawn.toFixed(3)} kg · now ${((levels['B:line'] - 101325) / 1000).toFixed(1)} kPa`,
+  )
+  if (!good) process.exit(1)
+  // with its supply back, the same marching must end on the steady answer
+  const fed: Model = { ...m, nodes: [node('S', 'reservoir', { pressure: 500e3 }), ...m.nodes], edges: [pipe('feed', 'S', 'A', 'r', 'l', { length: 500, diameter: D }), ...m.edges] }
+  const steady = engine.solve(fed)
+  for (let step = 0; step < 40; step++) {
+    const r = engine.solve({ ...fed, levels, lineDt: 60 })
+    levels = { 'A:line': r.nodes.A.pressure + 101325, 'B:line': r.nodes.B.pressure + 101325 }
+  }
+  const settled = Math.abs(levels['B:line'] - 101325 - steady.nodes.B.pressure) < 50
+  console.log(`linepack   ${settled}  re-fed, it settles on the steady pressure: ${((levels['B:line'] - 101325) / 1000).toFixed(2)} vs ${(steady.nodes.B.pressure / 1000).toFixed(2)} kPa`)
+  if (!settled) process.exit(1)
+}

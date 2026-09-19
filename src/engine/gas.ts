@@ -13,7 +13,7 @@
 // Method: unknown pressures at the free nodes, mass balance as the residual, damped Newton with a numerical
 // Jacobian (rigs are small), wrapped in a short loop that refreshes the friction factors.
 import { dischargeDevice, lossDevice } from '../model/catalog'
-import { G, P_ATM, area, elementK, fittingK, frictionFactor, meterK, ratedDp, regimeOf, valveK } from '../model/physics'
+import { G, P_ATM, area, elementK, fittingK, frictionFactor, jetN, meterK, ratedDp, regimeOf, valveK } from '../model/physics'
 import { EMPTY_RESULTS, isControl, isInline, type Fluid, type Model, type ModelNode, type Props, type Results, type Warning } from '../model/types'
 import { hfg, loadSteam, pipeHeatLoss, rhoSteam, tSat } from '../model/steam'
 import { command, commandedOff, valvePosition, type Overrides } from './inp'
@@ -66,7 +66,9 @@ interface GLink {
   id: string
   a: number
   b: number
-  kind: 'pipe' | 'loss' | 'closed' | 'compressor' | 'prv' | 'psv' | 'fcv'
+  kind: 'pipe' | 'loss' | 'closed' | 'compressor' | 'prv' | 'psv' | 'fcv' | 'jet-m' | 'jet-s'
+  /** ejector links need a third pressure: the suction chamber (for the motive nozzle) or the motive supply (for the entrained stream) */
+  aux?: number
   /** (f·L/D + K) / A² — the resistance in p² terms, before ZRT */
   res: number
   noReverse: boolean
@@ -161,9 +163,10 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
           if (isFinite(K)) link.res = onBore(K, p.diameter)
           else link.kind = 'closed'
         } else {
-          // a gas ejector's entrainment is a compressible-flow problem of its own: here it only costs pressure
-          link.res = h === 'm' ? onBore(1 + p.kn, p.nozzleDiameter) : (1 + p.ks) / Math.max(1e-9, area(p.throatDiameter) - area(p.nozzleDiameter)) ** 2
-          if (h === 's') link.noReverse = true
+          // an ejector: the motive nozzle (which may choke) blows into the suction chamber, and entrains what
+          // Cunningham's characteristic N(M) allows against the pressure rise it is asked for — see `flow` below
+          link.kind = h === 'm' ? 'jet-m' : 'jet-s'
+          link.noReverse = true
           ejector = true
         }
         links.push(link)
@@ -193,7 +196,13 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
     else if (kind === 'relief') n.relief = { set: P_ATM + p.setPressure, cdA: 0.7 * area(p.diameter) }
   }
 
-  if (ejector) warnings.push({ level: 'info', text: 'Jet pumps only cost pressure in a gas network — entrainment by a gas jet is not modelled' })
+  if (ejector)
+    for (const l of links) {
+      if (l.kind !== 'jet-m' && l.kind !== 'jet-s') continue
+      const other = index.get(`${l.id.split(':')[0]}:${l.kind === 'jet-m' ? 's' : 'm'}`)
+      if (other !== undefined) l.aux = other
+      else if (l.kind === 'jet-s') l.kind = 'closed' // nothing to drive it
+    }
   const port = (id: string, handle?: string | null) => index.get(`${id}:${handle}`) ?? (index.has(id) ? index.get(id) : index.get(`${id}:${handle === 'out' ? 'out' : 'in'}`))
   for (const e of model.edges) {
     if (e.type === 'signal' || !e.data || e.data.props.conduit === 'condensate') continue
@@ -216,6 +225,21 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
     })
   }
 
+  // ---- linepack: the gas held in the pipes themselves ----
+  // Each pipe's volume is booked at the plain nodes at its ends. In a live run those nodes remember their pressure,
+  // and the mass balance gains a storage term V/(ZRT)·(p − p_old)/dt: backward Euler, so it conserves gas exactly and
+  // is stable at any clock speed. With dt = 0 the term vanishes and this is the steady solver it always was.
+  const volume = new Float64Array(nodes.length)
+  const holds = (i: number) => !nodes[i].fixed && !nodes[i].key.includes(':')
+  for (const l of links) {
+    if (!l.pipe) continue
+    const ends = [l.a, l.b].filter(holds)
+    ends.forEach((i) => (volume[i] += (area(l.pipe!.diameter) * l.pipe!.length) / ends.length))
+  }
+  const lineDt = model.lineDt ?? 0
+  const pOld = nodes.map((n, i) => (lineDt > 0 && volume[i] > 0 ? model.levels?.[`${n.key}:line`] : undefined))
+  const stores = (i: number) => pOld[i] !== undefined
+
   // ---- what can reach a pressure source ----
   const byKind = new Map(model.nodes.map((n) => [n.id, n.data.kind]))
   const adj = nodes.map(() => [] as number[])
@@ -226,7 +250,7 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
       adj[l.b].push(l.a)
     }
   const reached = new Set<number>()
-  const stack = nodes.map((n, i) => (n.fixed ? i : -1)).filter((i) => i >= 0)
+  const stack = nodes.map((n, i) => (n.fixed || stores(i) ? i : -1)).filter((i) => i >= 0) // a charged main is a source of its own
   while (stack.length) {
     const i = stack.pop()!
     if (reached.has(i)) continue
@@ -244,7 +268,7 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
   }
   const live = links.filter((l) => reached.has(l.a) && reached.has(l.b))
   for (const e of model.edges) if (e.type !== 'signal' && e.data?.props.conduit !== 'condensate' && !live.some((l) => l.id === e.id)) excluded.push(e.id)
-  if (!live.length || !nodes.some((n) => n.fixed)) {
+  if (!live.length || !nodes.some((n, i) => n.fixed || stores(i))) {
     return { ...EMPTY_RESULTS, gas: true, excluded, warnings, error: model.nodes.length ? 'Connect a pressure source (reservoir) or a receiver to something with a pipe' : undefined }
   }
 
@@ -254,8 +278,10 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
   // A flat starting guess is hopeless across a regulator (400 kPa upstream, 2 kPa downstream). Walk outwards from
   // the sources instead: pressure carries across a pipe, drops to the setpoint through a regulator, and is
   // multiplied by the design ratio through a compressor.
-  for (const n of nodes) if (!n.fixed) n.p = NaN
-  const queue = nodes.map((n, i) => (n.fixed ? i : -1)).filter((i) => i >= 0)
+  nodes.forEach((n, i) => {
+    if (!n.fixed) n.p = stores(i) ? pOld[i]! : NaN
+  })
+  const queue = nodes.map((n, i) => (n.fixed || stores(i) ? i : -1)).filter((i) => i >= 0)
   while (queue.length) {
     const i = queue.shift()!
     for (const l of links) {
@@ -276,8 +302,27 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
   // steam is not an ideal gas at one temperature: its p/ρ comes from the steam table at the link's mean pressure
   const zrtAt = (pa: number, pb: number) => (fluid.steam ? zrt(fluid, (pa + pb) / 2) : ZRT)
   const sqrtLaw = (dPi: number, res: number, k: number) => (res > 0 ? dPi / Math.sqrt(res * k * (Math.abs(dPi) + EPS)) : dPi * 1e-3) // tiny res: near-rigid coupling
-  const flow = (l: GLink, pa: number, pb: number): number => {
+  const nozzle = (p: Props) => area(p.nozzleDiameter) / Math.sqrt(1 + (p.kn ?? 0.05))
+  const flow = (l: GLink, pa: number, pb: number, P: ArrayLike<number>): number => {
     if (l.kind === 'closed') return 0
+    if (l.kind === 'jet-m') return orificeFlow(nozzle(l.props), pa, Math.min(pa, l.aux !== undefined ? P[l.aux] : pb), fluid).mdot
+    if (l.kind === 'jet-s') {
+      // pa = suction chamber, pb = discharge, P[aux] = motive supply. Same gas at the same temperature and (chamber)
+      // pressure on both sides of the mixing, so the volumetric flow ratio M is simply the mass flow ratio.
+      const pm = P[l.aux!]
+      const m1 = orificeFlow(nozzle(l.props), pm, Math.min(pm, pa), fluid).mdot
+      if (m1 <= 0 || pm <= pb) return 0
+      const need = (pb - pa) / (pm - pb)
+      if (need >= jetN(0, l.props)) return 0
+      let [lo, hi] = [0, 1]
+      while (jetN(hi, l.props) > Math.max(0, need) && hi < 64) hi *= 2
+      for (let k = 0; k < 40; k++) {
+        const mid = (lo + hi) / 2
+        if (jetN(mid, l.props) > Math.max(0, need)) lo = mid
+        else hi = mid
+      }
+      return m1 * lo
+    }
     // Pressures here are gauge + one atmosphere, i.e. measured against the air outside at the same height. Going up a
     // riser the gas column weighs less than that air column if the gas is lighter, so its gauge pressure *rises* with
     // height (natural gas: about +5 Pa per metre) — enough to matter in a tall building on a 2 kPa service.
@@ -304,11 +349,11 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
   const residual = (P: Float64Array): Float64Array => {
     const r = new Float64Array(nodes.length)
     for (const l of live) {
-      const m = flow(l, P[l.a], P[l.b])
+      const m = flow(l, P[l.a], P[l.b], P)
       r[l.a] -= m
       r[l.b] += m
     }
-    for (const i of free) r[i] -= nodes[i].demand + nodes[i].cond + vent(nodes[i], P[i])
+    for (const i of free) r[i] -= nodes[i].demand + nodes[i].cond + vent(nodes[i], P[i]) + (stores(i) ? (volume[i] * (P[i] - pOld[i]!)) / (zrtAt(P[i], P[i]) * lineDt) : 0)
     return r
   }
   const norm = (r: Float64Array) => free.reduce((s, i) => Math.max(s, Math.abs(r[i])), 0)
@@ -329,7 +374,7 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
       for (const n of nodes) n.cond = 0
       for (const l of live)
         if (l.pipe) {
-          const c = pipeCondensate(l.props, (P[l.a] + P[l.b]) / 2)
+          const c = overrides.condensate?.[l.id] ?? pipeCondensate(l.props, (P[l.a] + P[l.b]) / 2)
           const ends = [l.a, l.b].filter((i) => !nodes[i].fixed)
           ends.forEach((i) => (nodes[i].cond += c / ends.length))
         }
@@ -375,7 +420,7 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
     }
     let moved = 0
     for (const l of live) {
-      const m = flow(l, P[l.a], P[l.b])
+      const m = flow(l, P[l.a], P[l.b], P)
       moved = Math.max(moved, Math.abs(m - l.mdot) / Math.max(1e-9, Math.abs(m)))
       l.mdot = m
     }
@@ -400,6 +445,25 @@ export function solveGas(model: Model, overrides: Overrides = {}): Results {
     // a source's "outflow" is negative (it supplies); a receiver's is positive while it fills
     const outflow = n.fixed ? net[i] / rs : (n.demand + vent(n, P[i])) / rs
     res.nodes[key] = { head: asHead(gauge(i)), pressure: gauge(i), elevation: 0, outflow }
+    // linepack: the volume booked here, and the gas going into (+) or coming out of (−) it right now, kg/s
+    if (volume[i] > 0) res.nodes[key].extra = { volume: volume[i], stored: stores(i) ? (volume[i] * (P[i] - pOld[i]!)) / (zrtAt(P[i], P[i]) * lineDt) : 0 }
+    if (byId.get(key)?.data.kind === 'jetpump') {
+      const [lm, ls] = [live.find((l) => l.id === `${key}:m`), live.find((l) => l.id === `${key}:s`)]
+      const [pm, ps] = [lm ? P[lm.a] : P[i], ls ? P[ls.a] : P[i]]
+      const M = lm && lm.mdot > 1e-12 ? (ls?.mdot ?? 0) / lm.mdot : 0
+      res.nodes[key].extra = {
+        ...res.nodes[key].extra,
+        q1: (lm?.mdot ?? 0) / rs,
+        q2: (ls?.mdot ?? 0) / rs,
+        M,
+        N: pm - P[i] > 1 ? (P[i] - ps) / (pm - P[i]) : 0,
+        Nmodel: jetN(M, byId.get(key)!.data.props),
+        pMotive: pm - P_ATM,
+        pSuction: ps - P_ATM,
+      }
+      if (lm && orificeFlow(1, pm, ps, fluid).choked)
+        warnings.push({ id: key, level: 'info', text: `${byId.get(key)!.data.label}: the motive nozzle is choked — more motive pressure now buys mass flow, not jet velocity` })
+    }
     const v = orificeFlow(n.cdA, P[i], P_ATM, fluid)
     if (v.choked && v.mdot > 0) choked.push(key)
     if (n.relief && P[i] > n.relief.set) warnings.push({ id: key, level: 'warn', text: `${byId.get(key)!.data.label}: lifting — venting gas to hold its set pressure` })
