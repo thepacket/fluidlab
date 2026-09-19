@@ -3,7 +3,7 @@ import { memo, useEffect, useMemo, useRef } from 'react'
 import type { LabEdge } from '../experiments'
 import { fmt, unitLabel } from '../model/units'
 import { useLab } from '../store'
-import { useEditor } from './editorState'
+import { snapToGrid, useEditor } from './editorState'
 import { buildPath, labelSpot, middleRun, publishRoute, useRoutes, vertices } from './route'
 import { DRY, PLAIN, pressureColor, thermalColor, velocityColor } from './colors'
 
@@ -147,7 +147,7 @@ function PipeEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
             onPointerMove={(e) => {
               if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
               const p = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-              routeEdge(id, bend.axis === 'x' ? { cx: Math.round(p.x / 10) * 10 } : { cy: Math.round(p.y / 10) * 10 })
+              routeEdge(id, bend.axis === 'x' ? { cx: snapToGrid(p.x) } : { cy: snapToGrid(p.y) })
             }}
             onDoubleClick={(e) => (e.stopPropagation(), checkpoint(), routeEdge(id, null))}
           />

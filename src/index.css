@@ -1944,11 +1944,33 @@ input[type='range']::-webkit-slider-thumb {
   font: 700 13px var(--mono);
   color: var(--accent);
 }
-.elev-toggle {
+.bench-tools {
   position: absolute;
   right: 56px;
   bottom: 15px;
-  z-index: 5;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bench.has-elev .bench-tools {
+  bottom: 176px;
+}
+.grid-light {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  color: var(--text-2);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.grid-light input {
+  width: 92px;
+  accent-color: var(--accent);
+}
+.elev-toggle {
   padding: 5px 11px;
   font-size: 11.5px;
   color: var(--text-2);
@@ -2063,4 +2085,10 @@ input[type='range']::-webkit-slider-thumb {
 }
 .bench.has-elev .react-flow__controls {
   bottom: 172px;
+}
+.react-flow__selection,
+.react-flow__nodesselection-rect {
+  background: rgba(53, 224, 255, 0.07);
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
 }

@@ -7,7 +7,7 @@ import { isChannel, isChannelKind } from './model/openchannel'
 import { CONTROLLABLE, KIND_META, ROTATABLE, isControl, type Kind } from './model/types'
 import type { Quantity } from './model/units'
 import { newId, nextLabel, useLab } from './store'
-import { footprint, useEditor, type Assembly, type Pt } from './ui/editorState'
+import { footprint, snapToGrid, useEditor, type Assembly, type Pt } from './ui/editorState'
 import { routeOf } from './ui/route'
 
 // ---- splice a part into a pipe ---------------------------------------------------------------------
@@ -81,10 +81,9 @@ export function splice(nodeId: string, edgeId: string, at: Pt, checkpoint = true
   else if (!forward && level) [pin, pout] = [pout, pin]
   const turned: LabNode = { ...node, data: { ...node.data, rot: ROTATABLE.includes(kind) ? rot : node.data.rot } }
   const f = footprint(turned)
-  const snap = (v: number) => Math.round(v / 10) * 10
   // sit the port line on the pipe; along the pipe, stay where the part was dropped
   const tidy = (v: number) => Math.round(v * 10) / 10
-  const position = level ? { x: snap(at.x - f.w / 2), y: tidy(a.y - (f.port - f.y)) } : { x: tidy(a.x - f.w / 2), y: snap(at.y - f.h / 2) }
+  const position = level ? { x: snapToGrid(at.x - f.w / 2), y: tidy(a.y - (f.port - f.y)) } : { x: tidy(a.x - f.w / 2), y: snapToGrid(at.y - f.h / 2) }
   if (checkpoint) s.checkpoint()
   const half = { ...edge.data.props, length: Math.max(0.1, (edge.data.props.length ?? 10) / 2) }
   const first: LabEdge = { ...edge, target: nodeId, targetHandle: pin, selected: false, data: { ...edge.data, route: undefined, props: half } }
@@ -164,8 +163,7 @@ export function place(clip: Assembly, at?: Pt) {
   const cx = (Math.min(...boxes.map((b) => b.x)) + Math.max(...boxes.map((b) => b.x + b.w))) / 2
   const cy = (Math.min(...boxes.map((b) => b.y)) + Math.max(...boxes.map((b) => b.y + b.h))) / 2
   const step = 30 * ++pasteCount
-  const snap = (v: number) => Math.round(v / 10) * 10
-  const [dx, dy] = at ? [snap(at.x - cx), snap(at.y - cy)] : [step, step]
+  const [dx, dy] = at ? [snapToGrid(at.x - cx), snapToGrid(at.y - cy)] : [step, step]
   const ids = new Map<string, string>()
   for (const n of clip.nodes) ids.set(n.id, newId('n'))
   for (const g of new Set(clip.nodes.map((n) => n.data.group).filter(Boolean))) ids.set(g as string, newId('g'))

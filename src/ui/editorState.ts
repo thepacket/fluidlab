@@ -34,6 +34,16 @@ const readAssemblies = (): Assembly[] => {
   }
 }
 
+const GRID_LIGHT_KEY = 'fluidlab.gridLight.v1'
+const readGridLight = () => {
+  try {
+    const v = Number(localStorage.getItem(GRID_LIGHT_KEY) ?? NaN)
+    return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0.5
+  } catch {
+    return 0.5
+  }
+}
+
 interface EditorState {
   menu: MenuState | null
   /** `client` is set when the part is to be cut into the pipe at that point of the screen */
@@ -51,6 +61,9 @@ interface EditorState {
   hoverEdge: string | null
   elevation: boolean
   labels: boolean
+  /** how bright the bench grid is drawn, 0 (hidden) to 1 */
+  gridLight: number
+  setGridLight: (v: number) => void
   assemblies: Assembly[]
   setAssemblies: (list: Assembly[]) => void
   say: (text: string) => void
@@ -70,6 +83,15 @@ export const useEditor = create<EditorState>((set) => ({
   hoverEdge: null,
   elevation: false,
   labels: true,
+  gridLight: readGridLight(),
+  setGridLight: (gridLight) => {
+    try {
+      localStorage.setItem(GRID_LIGHT_KEY, String(gridLight))
+    } catch {
+      /* private mode: the setting lasts for the session */
+    }
+    set({ gridLight })
+  },
   assemblies: readAssemblies(),
   setAssemblies: (assemblies) => {
     try {
@@ -85,6 +107,10 @@ export const useEditor = create<EditorState>((set) => ({
     toastTimer = setTimeout(() => set({ toast: null }), 3200)
   },
 }))
+
+/** The bench snap grid, in bench pixels. */
+export const GRID = 5
+export const snapToGrid = (v: number) => Math.round(v / GRID) * GRID
 
 /** A part's outline and port line as drawn on the bench — a part turned 90° swaps its width and height. */
 export function footprint(n: LabNode, at: Pt = n.position) {

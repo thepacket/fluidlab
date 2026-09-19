@@ -15,7 +15,7 @@ import { P_ATM, VESSEL_FILL_LIMIT, tankLevel, tankVolume, vesselWater } from './
 import { defaultChannelProps, isChannel, isChannelKind } from './model/openchannel'
 import { CONTROLLABLE, EMPTY_RESULTS, FLUIDS, KIND_META, ROTATABLE, isControl, defaultPipeProps, defaultProps, type Kind, type Model, type Props, type Results } from './model/types'
 import { flowUnitFor, METRIC, type UnitPrefs } from './model/units'
-import { footprint, useEditor } from './ui/editorState'
+import { GRID, footprint, useEditor } from './ui/editorState'
 
 export type Overlay = 'pressure' | 'velocity' | 'thermal' | 'plain'
 /** Everything undo/redo restores: the rig itself, not the simulation state around it. */
@@ -231,7 +231,8 @@ export const useLab = create<State>((set, get) => ({
       if (me) {
         const f = footprint(me, ch.position)
         const guides: { x?: number; y?: number } = {}
-        let [dx, dy] = [7, 7]
+        // the pull lets go inside one grid step, so a part can still be set one step off its neighbour's line
+        let [dx, dy] = [GRID - 1, GRID - 1]
         for (const o of before) {
           if (o.id === me.id) continue
           const g = footprint(o)

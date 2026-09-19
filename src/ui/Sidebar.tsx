@@ -171,6 +171,9 @@ export function Sidebar() {
                 <kbd>drop</kbd> a part on a pipe to cut it in · <kbd>/</kbd> adds by name
               </p>
               <p>
+                <kbd>drag</kbd> the bench to box-select · <kbd>space</kbd>+drag or middle button moves it · wheel zooms
+              </p>
+              <p>
                 <kbd>⌘C</kbd> <kbd>⌘V</kbd> <kbd>⌘D</kbd> copy, paste, duplicate · <kbd>right-click</kbd> for more
               </p>
             </div>

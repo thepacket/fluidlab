@@ -1,4 +1,4 @@
-import { Background, BackgroundVariant, ConnectionMode, Controls, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow } from '@xyflow/react'
+import { Background, BackgroundVariant, ConnectionMode, Controls, ReactFlow, SelectionMode, ReactFlowProvider, useNodesInitialized, useReactFlow } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { addPart, copy, duplicate, edgeAt, fitsEdge, group, paste, place, portName, selectAll, splice, throughPorts, whyNot } from './editor'
@@ -11,7 +11,7 @@ import { PipeEdge } from './ui/PipeEdge'
 import { SignalEdge } from './ui/SignalEdge'
 import { Sidebar } from './ui/Sidebar'
 import { BenchMarks, ContextMenu, ElevationStrip, InlineEdit, QuickAdd, SelectionBar, Toast } from './ui/EditorLayer'
-import { paletteDrag, pointer, useEditor } from './ui/editorState'
+import { GRID, paletteDrag, pointer, useEditor } from './ui/editorState'
 import { TopBar } from './ui/TopBar'
 import { rampCss, thermalCss } from './ui/colors'
 import { Icon } from './ui/icons'
@@ -152,6 +152,8 @@ function Bench() {
   const onReconnect = useLab((s) => s.onReconnect)
   const connecting = useEditor((s) => s.connecting)
   const elevation = useEditor((s) => s.elevation)
+  const gridLight = useEditor((s) => s.gridLight)
+  const setGridLight = useEditor((s) => s.setGridLight)
   const reconnecting = useRef<string | null>(null)
   const benchRef = useRef<HTMLElement>(null)
 
@@ -390,6 +392,11 @@ function Bench() {
         onEdgeMouseEnter={(_, edge) => useEditor.setState({ hoverEdge: edge.id })}
         onEdgeMouseLeave={() => useEditor.setState({ hoverEdge: null })}
         zoomOnDoubleClick={false}
+        // a drag on the empty bench draws a selection box, as in any drawing tool; the bench is moved with the middle
+        // button or with Space held. A finger on a touch screen still moves the bench — it has no other way to.
+        selectionOnDrag={!mobile}
+        panOnDrag={mobile ? true : [1]}
+        selectionMode={SelectionMode.Partial}
         connectionMode={ConnectionMode.Loose}
         connectionRadius={34}
         connectionLineStyle={{ stroke: '#35e0ff', strokeWidth: 5, strokeLinecap: 'round', strokeDasharray: '2 10' }}
@@ -397,12 +404,13 @@ function Bench() {
         minZoom={0.25}
         maxZoom={2.5}
         snapToGrid
-        snapGrid={[10, 10]}
+        snapGrid={[GRID, GRID]}
         proOptions={{ hideAttribution: true }}
         elevateEdgesOnSelect={false}
       >
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="#1d2a42" />
-        <Background id="major" variant={BackgroundVariant.Lines} gap={200} color="#101a2b" />
+        {/* drawn at full brightness and faded by the grid slider: half-way is the everyday look */}
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1.6} color="#7f9fd6" style={{ opacity: gridLight }} />
+        <Background id="major" variant={BackgroundVariant.Lines} gap={200} color="#3b5480" style={{ opacity: gridLight }} />
         {!mobile && <Controls position="bottom-right" showInteractive={false} />}
         <BenchMarks />
         <InlineEdit />
@@ -412,10 +420,28 @@ function Bench() {
       <QuickAdd />
       <Toast />
       <ElevationStrip />
-      {!mobile && !elevation && nodes.length > 0 && (
-        <button className="elev-toggle" onClick={() => useEditor.setState({ elevation: true })} title="A side view of the rig: elevations and the hydraulic grade line">
-          Elevation
-        </button>
+      {!mobile && (
+        <div className="bench-tools">
+          <label className="grid-light" title="Brightness of the bench grid">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
+              <circle cx="3" cy="3" r="1.3" />
+              <circle cx="8" cy="3" r="1.3" />
+              <circle cx="13" cy="3" r="1.3" />
+              <circle cx="3" cy="8" r="1.3" />
+              <circle cx="8" cy="8" r="1.3" />
+              <circle cx="13" cy="8" r="1.3" />
+              <circle cx="3" cy="13" r="1.3" />
+              <circle cx="8" cy="13" r="1.3" />
+              <circle cx="13" cy="13" r="1.3" />
+            </svg>
+            <input type="range" min="0" max="1" step="0.05" value={gridLight} onChange={(e) => setGridLight(Number(e.target.value))} aria-label="Grid brightness" />
+          </label>
+          {!elevation && nodes.length > 0 && (
+            <button className="elev-toggle" onClick={() => useEditor.setState({ elevation: true })} title="A side view of the rig: elevations and the hydraulic grade line">
+              Elevation
+            </button>
+          )}
+        </div>
       )}
       <ExperimentCard />
       {mobile && (
