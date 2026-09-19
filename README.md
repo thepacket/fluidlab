@@ -274,6 +274,11 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
   - **Port hints**: while a pipe or wire is being pulled, the ports it may end on stand out and the rest step back; a
     refused connection says why; resting on a port names it.
   - **Warnings** frame the part or pipe they are about when clicked, and the list opens in full.
+  - **Touch screens**: a long press opens the menu a right-click would (on a part, a pipe or the bench); a double tap
+    does what a double-click does (set a part's key value — docked across the bench on a phone — or add a part by
+    name). One finger moves the bench; the box-select button switches it to drawing a selection box, and two fingers
+    still pinch and pan. A delete button appears with a selection. With a pipe selected, a part picked from the list
+    is cut into that pipe, since a finger cannot drag from the list. Pipe-end, bend and elevation handles are larger.
   - **Groups and assemblies**: `⌘G` groups the selected parts — they are framed, named, and move, copy and delete as
     one. "Save" keeps a selection, with its pipes and wires, in the parts list (in this browser) for other rigs.
 

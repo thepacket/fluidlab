@@ -1,7 +1,7 @@
 import { Background, BackgroundVariant, ConnectionMode, Controls, ReactFlow, SelectionMode, ReactFlowProvider, useNodesInitialized, useReactFlow } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { addPart, copy, duplicate, edgeAt, fitsEdge, group, paste, place, portName, selectAll, splice, throughPorts, whyNot } from './editor'
+import { addPart, pipeMiddle, removeSelected, copy, duplicate, edgeAt, fitsEdge, group, paste, place, portName, selectAll, splice, throughPorts, whyNot } from './editor'
 import { EXPERIMENTS } from './experiments'
 import type { Kind } from './model/types'
 import { fmt, unitLabel } from './model/units'
@@ -16,7 +16,7 @@ import { TopBar } from './ui/TopBar'
 import { rampCss, thermalCss } from './ui/colors'
 import { Icon } from './ui/icons'
 import { nodeTypes } from './ui/nodes'
-import { useIsMobile } from './ui/useIsMobile'
+import { useIsMobile, useIsTouch } from './ui/useIsMobile'
 
 const edgeTypes = { pipe: PipeEdge, signal: SignalEdge }
 
@@ -153,6 +153,8 @@ function Bench() {
   const connecting = useEditor((s) => s.connecting)
   const elevation = useEditor((s) => s.elevation)
   const gridLight = useEditor((s) => s.gridLight)
+  const boxSelect = useEditor((s) => s.boxSelect)
+  const anySelected = useLab((s) => s.nodes.some((n) => n.selected) || s.edges.some((e) => e.selected))
   const setGridLight = useEditor((s) => s.setGridLight)
   const reconnecting = useRef<string | null>(null)
   const benchRef = useRef<HTMLElement>(null)
@@ -170,13 +172,74 @@ function Bench() {
     },
     [screenToFlowPosition],
   )
+  const openMenuAt = useCallback(
+    (x: number, y: number, target: { type: 'node' | 'edge' | 'pane'; id?: string }) => {
+      const s = useLab.getState()
+      const hit = target.id ? (s.nodes.find((n) => n.id === target.id) ?? s.edges.find((e) => e.id === target.id)) : null
+      if (hit && !hit.selected) s.select(target.id!)
+      // on a phone the details sheet lies over the foot of the bench: keep the menu above it
+      useEditor.setState({ menu: { ...spot(x, y, 240, window.innerWidth <= 860 ? 440 : 330), target }, menuAt: Date.now(), quick: null, edit: null })
+    },
+    [spot],
+  )
   const openMenu = (e: MouseEvent | React.MouseEvent, target: { type: 'node' | 'edge' | 'pane'; id?: string }) => {
     e.preventDefault()
-    const s = useLab.getState()
-    const hit = target.id ? (s.nodes.find((n) => n.id === target.id) ?? s.edges.find((x) => x.id === target.id)) : null
-    if (hit && !hit.selected) s.select(target.id!)
-    useEditor.setState({ menu: { ...spot(e.clientX, e.clientY), target }, quick: null, edit: null })
+    openMenuAt(e.clientX, e.clientY, target)
   }
+
+  // Fingers have no right button and no reliable double-click: a long press opens the menu, and a double tap does
+  // what a double-click does. Listened for in the capture phase, because the bench swallows pointer events it uses.
+  useEffect(() => {
+    const el = benchRef.current!
+    const OWN = '.ctx-menu, .quick-add, .elev-strip, .exp-card, .alerts, .legend, .select-bar, .bench-tools, .fab, .box-toggle, .react-flow__controls, .react-flow__handle, .inline-edit, .pipe-bend'
+    const what = (t: HTMLElement) => {
+      if (t.closest(OWN)) return null
+      const node = t.closest('.react-flow__node')?.getAttribute('data-id')
+      const edge = t.closest('.react-flow__edge')?.getAttribute('data-id')
+      return node ? { type: 'node' as const, id: node } : edge ? { type: 'edge' as const, id: edge } : t.closest('.react-flow__pane') ? { type: 'pane' as const } : null
+    }
+    let press: { x: number; y: number; at: number; timer: number } | null = null
+    let lastTap = { x: 0, y: 0, at: 0 }
+    const cancel = () => (press && clearTimeout(press.timer), (press = null))
+    const down = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return
+      cancel()
+      if (!e.isPrimary) return // a second finger: this is a pinch
+      const target = what(e.target as HTMLElement)
+      if (!target) return
+      const timer = window.setTimeout(() => {
+        press = null
+        lastTap.at = 0
+        navigator.vibrate?.(8)
+        openMenuAt(e.clientX, e.clientY, target)
+      }, 480)
+      press = { x: e.clientX, y: e.clientY, at: Date.now(), timer }
+    }
+    const move = (e: PointerEvent) => press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10 && cancel()
+    const up = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' || !press) return cancel()
+      const quick = Date.now() - press.at < 300
+      cancel()
+      if (!quick) return
+      const now = Date.now()
+      const twice = now - lastTap.at < 340 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30
+      lastTap = twice ? { x: 0, y: 0, at: 0 } : { x: e.clientX, y: e.clientY, at: now }
+      const target = twice ? what(e.target as HTMLElement) : null
+      if (target?.type === 'node') useEditor.setState({ edit: target.id, menu: null })
+      else if (target?.type === 'pane') useEditor.setState({ quick: spot(e.clientX, e.clientY, 300, 360), menu: null })
+    }
+    el.addEventListener('pointerdown', down, true)
+    el.addEventListener('pointermove', move, true)
+    el.addEventListener('pointerup', up, true)
+    el.addEventListener('pointercancel', cancel, true)
+    return () => (
+      cancel(),
+      el.removeEventListener('pointerdown', down, true),
+      el.removeEventListener('pointermove', move, true),
+      el.removeEventListener('pointerup', up, true),
+      el.removeEventListener('pointercancel', cancel, true)
+    )
+  }, [openMenuAt, spot])
 
   // a loose part dragged over a pipe it fits lights the pipe up; letting go cuts it in
   const spliceTarget = (nodeId: string, x: number, y: number) => {
@@ -262,6 +325,7 @@ function Bench() {
 
   const initialized = useNodesInitialized()
   const mobile = useIsMobile()
+  const touch = useIsTouch() || mobile
   const checkpoint = useLab((s) => s.checkpoint)
   const sheetOpen = useLab((s) => s.sheet === 'insp') && mobile
   const set = useLab((s) => s.set)
@@ -299,7 +363,13 @@ function Bench() {
     const onAdd = (e: Event) => {
       const el = document.querySelector('.bench')!.getBoundingClientRect()
       const p = screenToFlowPosition({ x: el.left + el.width / 2 + (Math.random() - 0.5) * 120, y: el.top + el.height / 2 + (Math.random() - 0.5) * 120 })
-      const [kind, variant] = (e as CustomEvent<string>).detail.split(':')
+      const key = (e as CustomEvent<string>).detail
+      // with a pipe selected, a part picked from the list is cut into it — the way in for a finger, which cannot drag from the list
+      const s = useLab.getState()
+      const pipe = s.nodes.some((n) => n.selected) ? undefined : s.edges.find((x) => x.selected && x.type !== 'signal')
+      const middle = pipe && fitsEdge(key.split(':')[0] as Kind, pipe) ? pipeMiddle(pipe.id) : null
+      if (pipe && middle) return addPart(key, middle, undefined, pipe.id)
+      const [kind, variant] = key.split(':')
       addNode(kind as Kind, p.x, p.y, variant)
     }
     window.addEventListener('fluidlab:add', onAdd)
@@ -368,7 +438,6 @@ function Bench() {
         onReconnect={onReconnect}
         onReconnectStart={(_, edge) => (reconnecting.current = edge.type ?? 'pipe')}
         onReconnectEnd={() => (reconnecting.current = null)}
-        reconnectRadius={16}
         isValidConnection={(c) => {
           const ends = signalEnds(c, useLab.getState().nodes)
           // a pipe end may only move to a fluid port, a wire end to a signal port
@@ -393,9 +462,10 @@ function Bench() {
         onEdgeMouseLeave={() => useEditor.setState({ hoverEdge: null })}
         zoomOnDoubleClick={false}
         // a drag on the empty bench draws a selection box, as in any drawing tool; the bench is moved with the middle
-        // button or with Space held. A finger on a touch screen still moves the bench — it has no other way to.
-        selectionOnDrag={!mobile}
-        panOnDrag={mobile ? true : [1]}
+        // button or with Space held. On a touch screen one finger moves the bench, unless box-select is switched on.
+        selectionOnDrag={touch ? boxSelect : true}
+        panOnDrag={touch ? !boxSelect : [1]}
+        reconnectRadius={touch ? 26 : 16}
         selectionMode={SelectionMode.Partial}
         connectionMode={ConnectionMode.Loose}
         connectionRadius={34}
@@ -448,6 +518,22 @@ function Bench() {
         <button className="fab" onClick={() => set({ sheet: 'parts' })} aria-label="Components and experiments">
           {Icon.parts}
         </button>
+      )}
+      {touch && nodes.length > 0 && (
+        <div className={`touch-tools ${mobile ? '' : 'wide'}`}>
+          <button className={boxSelect ? 'on' : ''} onClick={() => useEditor.setState({ boxSelect: !boxSelect })} aria-pressed={boxSelect} title="Drag a box round parts to select them">
+            <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeDasharray="3 2.6">
+              <rect x="3" y="3" width="14" height="14" rx="2" />
+            </svg>
+          </button>
+          {anySelected && (
+            <button className="danger" onClick={removeSelected} aria-label="Delete the selection">
+              <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                <path d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10M9 9v5M11 9v5" />
+              </svg>
+            </button>
+          )}
+        </div>
       )}
       <Legend />
       <Alerts />

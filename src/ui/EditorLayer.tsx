@@ -10,6 +10,7 @@ import { useLab } from '../store'
 import { PALETTE } from './Sidebar'
 import { footprint, useEditor } from './editorState'
 import { KindIcon } from './icons'
+import { useIsMobile } from './useIsMobile'
 
 // ---- right-click menu ---------------------------------------------------------------------------------
 
@@ -71,7 +72,7 @@ export function ContextMenu() {
   const s = useLab.getState()
   const close = () => useEditor.setState({ menu: null })
   const item = (label: string, run: () => void, opts: { key?: string; off?: boolean; danger?: boolean } = {}) => (
-    <button key={label} className={opts.danger ? 'danger' : ''} disabled={opts.off} onClick={() => (close(), run())}>
+    <button key={label} className={opts.danger ? 'danger' : ''} disabled={opts.off} onClick={() => Date.now() - useEditor.getState().menuAt > 350 && (close(), run())}>
       {label}
       {opts.key && <kbd>{opts.key}</kbd>}
     </button>
@@ -261,6 +262,7 @@ export function InlineEdit() {
   const node = useLab((s) => s.nodes.find((n) => n.id === id))
   const units = useLab((s) => s.units)
   const update = useLab((s) => s.updateNode)
+  const mobile = useIsMobile()
   useEffect(() => {
     if (!id) return
     const close = () => useEditor.setState({ edit: null })
@@ -279,23 +281,30 @@ export function InlineEdit() {
     if (node.data.kind === 'tank') useLab.setState({ levels: Object.fromEntries(Object.entries(useLab.getState().levels).filter(([k]) => k !== node.id)) })
   }
   const shown = toDisplay(value, kv.q, units)
-  return (
+  const body = (
+    <div className={`inline-edit nodrag nopan ${mobile ? 'docked' : ''}`} onPointerDown={(e) => e.stopPropagation()}>
+      <span>
+        {node.data.label} · {kv.label}
+      </span>
+      <input type="range" min={kv.min} max={Math.max(kv.max, value)} step={kv.step} value={value} onChange={(e) => setValue(Number(e.target.value))} />
+      <input
+        autoFocus={!window.matchMedia('(pointer: coarse)').matches} // on a touch screen the slider comes first; the keyboard only when asked for
+        type="number"
+        inputMode="decimal"
+        value={Number(shown.toPrecision(4))}
+        step={toDisplay(kv.step, kv.q, units)}
+        onChange={(e) => setValue(toSI(Number(e.target.value), kv.q, units))}
+        onFocus={(e) => e.target.select()}
+      />
+      <em>{unitLabel(kv.q, units)}</em>
+    </div>
+  )
+  // on a phone there is no room beside the part: the editor docks across the bench instead
+  return mobile ? (
+    body
+  ) : (
     <NodeToolbar nodeId={node.id} isVisible position={Position.Top} offset={14}>
-      <div className="inline-edit nodrag nopan" onPointerDown={(e) => e.stopPropagation()}>
-        <span>
-          {node.data.label} · {kv.label}
-        </span>
-        <input type="range" min={kv.min} max={Math.max(kv.max, value)} step={kv.step} value={value} onChange={(e) => setValue(Number(e.target.value))} />
-        <input
-          autoFocus
-          type="number"
-          value={Number(shown.toPrecision(4))}
-          step={toDisplay(kv.step, kv.q, units)}
-          onChange={(e) => setValue(toSI(Number(e.target.value), kv.q, units))}
-          onFocus={(e) => e.target.select()}
-        />
-        <em>{unitLabel(kv.q, units)}</em>
-      </div>
+      {body}
     </NodeToolbar>
   )
 }
@@ -394,7 +403,7 @@ export function ElevationStrip() {
               onPointerUp={() => ((frozen.current = null), setDragging(null))}
             >
               {water > 0 && <line x1={x(n)} x2={x(n)} y1={y(z)} y2={y(z + water)} className="elev-water" />}
-              <circle cx={x(n)} cy={y(z)} r="12" fill="transparent" />
+              <circle cx={x(n)} cy={y(z)} r="16" fill="transparent" />
               <circle cx={x(n)} cy={y(z)} r="4.5" className="elev-dot" />
               <text x={x(n)} y={y(z) + 16} textAnchor="middle" className="elev-name">
                 {n.data.label}

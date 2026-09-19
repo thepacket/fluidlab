@@ -103,9 +103,9 @@ export function splice(nodeId: string, edgeId: string, at: Pt, checkpoint = true
 }
 
 /** Add a part from the library; if it lands on a pipe it fits, cut it in. */
-export function addPart(key: string, flow: Pt, client?: Pt) {
+export function addPart(key: string, flow: Pt, client?: Pt, into?: string) {
   const [kind, variant] = key.split(':') as [Kind, string?]
-  const edgeId = client ? edgeAt(client.x, client.y) : null
+  const edgeId = into ?? (client ? edgeAt(client.x, client.y) : null)
   useLab.getState().addNode(kind, flow.x, flow.y, variant)
   const fresh = useLab.getState().nodes.at(-1)!
   if (
@@ -116,6 +116,15 @@ export function addPart(key: string, flow: Pt, client?: Pt) {
     )
   )
     splice(fresh.id, edgeId, flow, false)
+}
+
+/** The middle of a pipe's longest straight run: where a part picked from the list is cut into a selected pipe. */
+export function pipeMiddle(edgeId: string): Pt | null {
+  const pts = routeOf(edgeId)
+  if (!pts || pts.length < 2) return null
+  let best = 1
+  for (let i = 2; i < pts.length; i++) if (Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) > Math.hypot(pts[best].x - pts[best - 1].x, pts[best].y - pts[best - 1].y)) best = i
+  return { x: (pts[best].x + pts[best - 1].x) / 2, y: (pts[best].y + pts[best - 1].y) / 2 }
 }
 
 // ---- copy, paste, duplicate ---------------------------------------------------------------------------

@@ -61,6 +61,10 @@ interface EditorState {
   hoverEdge: string | null
   elevation: boolean
   labels: boolean
+  /** touch screens: one finger draws a selection box instead of moving the bench */
+  boxSelect: boolean
+  /** when the menu was opened — a finger lifting off a long press must not pick an item */
+  menuAt: number
   /** how bright the bench grid is drawn, 0 (hidden) to 1 */
   gridLight: number
   setGridLight: (v: number) => void
@@ -83,6 +87,8 @@ export const useEditor = create<EditorState>((set) => ({
   hoverEdge: null,
   elevation: false,
   labels: true,
+  boxSelect: false,
+  menuAt: 0,
   gridLight: readGridLight(),
   setGridLight: (gridLight) => {
     try {

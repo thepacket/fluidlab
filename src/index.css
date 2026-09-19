@@ -2092,3 +2092,123 @@ input[type='range']::-webkit-slider-thumb {
   border: 1px dashed var(--accent);
   border-radius: 6px;
 }
+
+/* ---- touch screens ----------------------------------------------------------- */
+.bench {
+  -webkit-touch-callout: none; /* a long press opens the bench menu, not the browser's */
+}
+.bench .react-flow,
+.ctx-menu,
+.select-bar {
+  -webkit-user-select: none;
+  user-select: none;
+}
+.pipe-bend,
+.elev-part {
+  touch-action: none;
+}
+.touch-tools {
+  position: absolute;
+  left: 12px;
+  bottom: 156px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 10px;
+}
+.touch-tools.wide {
+  bottom: 96px;
+}
+.touch-tools button {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  color: var(--text-2);
+  background: rgba(11, 18, 30, 0.94);
+  border: 1px solid var(--line-2);
+  backdrop-filter: blur(8px);
+}
+.touch-tools button.on {
+  color: #04101f;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 18px rgba(53, 224, 255, 0.45);
+}
+.touch-tools button.danger {
+  color: var(--bad);
+}
+.bench.has-elev .touch-tools,
+.bench.has-elev .fab {
+  bottom: 182px;
+}
+.bench.has-elev .touch-tools:not(.wide) {
+  bottom: 240px;
+}
+.select-bar {
+  max-width: calc(100% - 28px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+@media (pointer: coarse) {
+  .ctx-menu > button {
+    padding: 11px 12px;
+    font-size: 14px;
+  }
+  .ctx-menu kbd {
+    display: none; /* no keyboard to press them on */
+  }
+  .align-row button {
+    width: 38px;
+    height: 38px;
+  }
+  .select-bar > button {
+    padding: 9px 11px;
+  }
+  .pipe-bend {
+    width: 26px;
+    height: 26px;
+  }
+  .quick-list button {
+    padding: 10px 8px;
+  }
+  .inline-edit {
+    padding: 10px 12px;
+  }
+  .inline-edit input[type='range'] {
+    width: 170px;
+  }
+  .elev-dot {
+    r: 7px;
+  }
+  .elev-strip header em {
+    display: none;
+  }
+}
+@media (max-width: 860px) {
+  .select-bar {
+    top: auto;
+    bottom: 98px;
+    left: 70px;
+    right: 10px;
+  }
+  .bench.has-elev .select-bar {
+    bottom: 182px;
+  }
+  .inline-edit.docked {
+    position: absolute;
+    top: 118px;
+    left: 10px;
+    right: 10px;
+    z-index: 20;
+    flex-wrap: wrap;
+  }
+  .inline-edit.docked span {
+    flex-basis: 100%;
+  }
+  .inline-edit.docked input[type='range'] {
+    flex: 1;
+    width: auto;
+  }
+}
