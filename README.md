@@ -322,7 +322,15 @@ npm run test:engine  # solves a smoke network + every experiment rig in Node
 
 ## Privacy
 
-There is no server side, no account and no analytics. A rig is kept in the browser's local storage, in a project
+There is no application server or account. On `fluidlab.fly.dev`, optional Google Analytics measures visits
+and returning browsers only after you choose **Allow analytics**. Declining sends no analytics requests.
+Use **Privacy** to withdraw consent; browser Do Not Track and Global Privacy Control are respected.
+Analytics uses a fixed app URL/title, omits referrers and campaign values, and does not record rigs, inputs,
+filenames, query strings or share-link hashes. Enhanced measurement and advertising signals are disabled.
+Cookie identifiers expire after 90 days. Counts describe consenting browsers, not exact people, and begin
+after installation; they cannot reconstruct earlier visits. Local development does not load analytics.
+
+A rig is kept in the browser's local storage, in a project
 file you save, or inside the `#rig=` part of a share link — which browsers do not send to the server, and which the
 app drops from the address bar once the rig has loaded. Saved assemblies, the clipboard and the grid setting are
 local storage too.

@@ -1,0 +1,8 @@
+.analytics-preferences { position: fixed; bottom: 8px; left: 8px; z-index: 9000; font: 12px system-ui; padding: 5px 9px; border: 1px solid #64748b; border-radius: 5px; color: #e2e8f0; background: #172033; cursor: pointer; }
+.analytics-consent { position: fixed; bottom: 42px; left: 8px; z-index: 9001; box-sizing: border-box; max-width: 420px; width: calc(100vw - 16px); padding: 16px; border: 1px solid #64748b; border-radius: 8px; color: #e2e8f0; background: #172033; box-shadow: 0 4px 24px #0006; font: 14px/1.5 system-ui; }
+.analytics-consent[hidden] { display: none; }
+.analytics-consent p { margin: 0 0 12px; }
+.analytics-consent a { display: block; color: #7dd3fc; margin-bottom: 12px; }
+.analytics-consent button { padding: 7px 10px; margin-right: 8px; border: 1px solid #94a3b8; border-radius: 4px; background: #25354b; color: #fff; cursor: pointer; font: inherit; }
+.analytics-consent button:disabled { opacity: .5; cursor: default; }
+.analytics-consent button:focus-visible, .analytics-preferences:focus-visible { outline: 2px solid #7dd3fc; outline-offset: 2px; }
