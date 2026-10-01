@@ -1,6 +1,8 @@
 # Security
 
-FluidLab is a static site. It has no server side, no accounts and no analytics: a rig lives in the browser's local
+FluidLab is a static site with no application server or accounts. Production has optional, consent-based
+Google Analytics for basic visitor measurement (see README Privacy). Scientific inputs, filenames and
+share links must never be sent to analytics. A rig lives in the browser's local
 storage, in a project file you save yourself, or inside the `#rig=` part of a share link, which browsers do not send
 to the server.
 
